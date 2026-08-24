@@ -63,7 +63,8 @@ rules:
   # container and its imageID, and reaches the claim by exec'ing into the seat —
   # and adds only this.
   #
-  # Read-only, and that is the whole grant now. It used to include `patch` on
+  # Read-only apart from one deletion, and that is the whole grant now. It used
+  # to include `patch` on
   # deployments and statefulsets, and `patch`/`delete` on pods, because
   # provenance went on the workload's pod template and the template edit was
   # also what rolled the workload. That verb deployed code, and it was the most
@@ -81,6 +82,20 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "replicasets"]
     verbs: ["get"]
+  # Retirement, and the one write left in this grant. `podbench hotfix retire`
+  # reads the claim to say which steps of a retirement have landed, and
+  # `--delete-claim` performs the last one — once nothing mounts it. That step
+  # is the one nobody does, which is how a claim goes on shadowing an image the
+  # fix is already in; the claim carries Prune=false,Delete=false precisely so
+  # that no sync will ever do it for them.
+  #
+  # `get` and `list` are both needed and are different questions: the pod names
+  # its claim while it is still wired, and once it is not, the only thing left
+  # pointing at the claim is the podbench.dev/hotfix-target label on the object
+  # itself.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "delete"]
   {{- end }}
 {{- if .Values.rbac.subjects }}
 ---

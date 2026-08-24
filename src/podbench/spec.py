@@ -1187,6 +1187,23 @@ def admission_rewrites(
     ``{"capabilities": {"drop": ["ALL"]}}`` and adds nothing; the pod comes back
     with thirteen capabilities added to it.
 
+    **Nothing prints this any more.** The rewrites that cost the seat something
+    are caught before they get here - :func:`admission_wedges_the_kubelet` drops
+    the rung, and :func:`capabilities_removed` has its own warning - so what is
+    left is a stored spec differing from a request that produced exactly the
+    seat asked for, and the report says so by measuring the seat rather than by
+    reciting the diff (#203). It stays because it is the measurement, and
+    because the thing to do with it is a debug report rather than a WARNING.
+
+    That is a deliberate deviation from #203's wording, recorded here because
+    the shape it leaves is odd on its own: the ask was to *demote* the harmless
+    case to a debug report, and this repo has no debug report to demote it to,
+    so the call site was deleted rather than moved. The consequence is that both
+    keyword arguments below, and the scalar phrases the walk used to print, are
+    exercised only by ``tests/test_spec.py`` and ``tests/test_launcher.py``
+    until something grows one - which is the right way round, because a
+    measurement is cheap to keep and expensive to rediscover.
+
     ``include_removed_capabilities=False`` drops the one phrase that has a
     warning of its own — :data:`podbench.launcher.CAPABILITY_STRIPPED_WARNING`
     is printed for the same event, and the two are emitted together on a
@@ -1252,10 +1269,10 @@ def admission_rewrites(
 def requested_seat_spec(stored: Mapping[str, Any]) -> dict[str, Any]:
     """What podbench is known to have asked for, read back off the seat stored.
 
-    A reconnect has the landed spec and no memory of the request, so the two
-    admission facts a first attach reports — a stripped capability and a
-    rewritten securityContext — have nothing to diff against. The *capability*
-    half is recoverable anyway, and it is the half both DLS clusters mutate:
+    A reconnect has the landed spec and no memory of the request, so the
+    admission fact a first attach reports — a stripped capability — has nothing
+    to diff against. It is recoverable anyway, and it is the half both DLS
+    clusters mutate:
     podbench asks for ``SYS_PTRACE`` on the full rung and for nothing at all on
     every rung below, and the full rung is the only one that writes
     ``runAsUser: 0`` — the degraded rung refuses a root target outright, and the

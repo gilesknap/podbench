@@ -33,6 +33,7 @@ from rich.text import Text
 __all__ = [
     "MAX_WIDTH",
     "MIN_WIDTH",
+    "WARNING_HANG",
     "WARNING_LEAD",
     "Column",
     "Row",
@@ -78,6 +79,16 @@ WARNING_LEAD = "WARNING"
 Named here rather than spelled twice: :func:`_styled` colours exactly this
 prefix, and the callers that author warnings use the same constant, so the two
 cannot drift into a warning that is not highlighted.
+"""
+
+WARNING_HANG = len(WARNING_LEAD) + 2
+"""Columns a warning's continuation lines are indented by.
+
+Derived from :data:`WARNING_LEAD` and its two-space separator rather than
+spelled as a number, because a hand-counted copy re-aligns nowhere when the
+leader's length changes - and a hanging indent that no longer sits under its
+leader is the class of defect that looks right in the source and wrong on the
+terminal.
 """
 
 _SECTION_LINE = re.compile(r"^(\S+)$")
@@ -580,7 +591,7 @@ def _styled_row(
     return styled
 
 
-def emit(text: str | Iterable[Text], *, stderr: bool = False) -> None:
+def emit(text: str | Iterable[str | Text], *, stderr: bool = False) -> None:
     """Print an already-wrapped report, colouring the leaders in it.
 
     Line by line, because that is the unit a style applies to and because
@@ -588,9 +599,12 @@ def emit(text: str | Iterable[Text], *, stderr: bool = False) -> None:
     done by the caller against :func:`wrap_width`, with hanging indents rich
     knows nothing about.
 
-    An iterable of :class:`~rich.text.Text` is printed as it arrives, with none
-    of the line rules applied — that is what :func:`table` returns, and a line
-    that already knows what its spans mean must not have them guessed at again.
+    A :class:`~rich.text.Text` is printed as it arrives, with none of the line
+    rules applied — that is what :func:`table` returns, and a line that already
+    knows what its spans mean must not have them guessed at again. A ``str`` in
+    the same iterable still goes through them, which is what lets one block mix
+    a caller's own prose with somebody else's relayed output: the prose earns
+    its ``WARNING`` and its labels, and the relay is left exactly as it arrived.
     """
     out = console(stderr=stderr)
     lines = text.split("\n") if isinstance(text, str) else text

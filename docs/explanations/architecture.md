@@ -280,13 +280,13 @@ rootfs is reset on every restart. Beside and never over: nothing the image ships
 is hidden by the mount, which is what lets the seed be a plain copy rather than
 an initContainer racing the application.
 
-The workflow ships as `podbench hotfix`
-(`init`/`apply`/`status`/`consolidate`, plus `--print-values` for the chart
-snippet). It met a cluster on 2026-08-22 — an edit reached a live IOC's running
-code with `restartCount` unchanged — and two things about it remain
-undemonstrated: survival across pod replacement, which needs a real claim rather
-than the generic ephemeral volume that run used, and `consolidate`, which no
-cluster has run. See [What `hotfix` does](hotfix-flow.md).
+The workflow ships as `podbench hotfix` (`values` for the chart snippet, then
+`check`/`init`/`apply`/`status`/`consolidate`/`retire`). It met a cluster on 2026-08-22 — an edit
+reached a live IOC's running code with `restartCount` unchanged — and two things
+about it remain undemonstrated: survival across pod replacement, which needs a
+real claim rather than the generic ephemeral volume that run used, and
+`consolidate`, which no cluster has run. See
+[What `hotfix` does](hotfix-flow.md).
 
 ## See also
 

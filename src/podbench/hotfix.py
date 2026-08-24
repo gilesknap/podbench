@@ -55,7 +55,7 @@ import io
 import json
 import shlex
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -64,11 +64,12 @@ from pathlib import Path
 from typing import Annotated, Any, NoReturn, Protocol, cast
 
 import typer
+from rich.text import Text
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from .cli import new_app, require_subcommand, run
-from .console import emit, paragraph
+from .console import WARNING_HANG, WARNING_LEAD, emit, paragraph, rule
 from .kubectl import (
     DEFAULT_CALL_TIMEOUT,
     CommandResult,
@@ -80,7 +81,9 @@ from .kubectl import (
 from .launcher import (
     CONTAINER_BASE,
     LauncherError,
+    application_mount,
     attach,
+    declared_volumes,
     kubectl_for,
     resolve_pod_name,
     running_seat,
@@ -97,6 +100,8 @@ from .model import (
     and_list,
     as_dict,
 )
+from .oci import REVISION_LABEL, SOURCE_LABEL, parse_reference
+from .oci import image_labels as read_image_labels
 from .spec import target_uid_gid
 
 __all__ = [
@@ -105,8 +110,14 @@ __all__ = [
     "MAX_RECORDED_COMMITS",
     "METADATA_FILES",
     "SEAT_HOME_SIZE",
+    "CheckStatus",
+    "ClaimState",
+    "HOTFIX_TARGET_LABEL",
     "InterpreterProbe",
     "LocalStore",
+    "PreflightCheck",
+    "RetirementCheck",
+    "RetirementStep",
     "ManifestVersionError",
     "MultiReplicaError",
     "HotfixCommit",
@@ -124,6 +135,7 @@ __all__ = [
     "checkout_path",
     "consolidate",
     "drift_commits",
+    "format_preflight",
     "format_status",
     "identity_configmap",
     "init",
@@ -132,7 +144,41 @@ __all__ = [
     "seeded_python",
     "interpreter_warning",
     "main",
+    "base_commit_from",
     "claim_container",
+    "claim_mount_path",
+    "resolve_venv",
+    "VENV_DISAGREES_WITH_POD",
+    "VENV_INVISIBLE_TO_STATUS",
+    "NO_SOURCE_REPO",
+    "SOURCE_LABEL_UNCORROBORATED",
+    "image_name_agrees",
+    "CLAIM_NOT_MOUNTED",
+    "CLAIM_ALREADY_SEEDED",
+    "SEAT_NOT_RUNNING",
+    "IMAGE_HAS_NO_PROJECT",
+    "IMAGE_HAS_NO_INTERPRETER",
+    "NON_EXEC_PROBE_BLOCKS_THE_HOLD",
+    "preflight",
+    "retire",
+    "retirement",
+    "retirement_summary",
+    "format_retirement",
+    "claim_state",
+    "hotfix_wiring",
+    "pod_fs_group",
+    "pod_claim_name",
+    "WIRING_IS_THE_APPLICATIONS_OWN",
+    "SEAT_HOME_IS_THE_SEATS",
+    "FSGROUP_NOT_ATTRIBUTED",
+    "CLAIM_OUTLIVES_THE_FLIP",
+    "CLAIM_GONE_BUT_STILL_WIRED",
+    "CLAIM_STILL_MOUNTED",
+    "CLAIM_MOUNTERS_UNREADABLE",
+    "CLAIM_CONTENTS_UNVERIFIED",
+    "CLAIM_NOT_LABELLED_FOR_THIS_TARGET",
+    "CLAIM_UNMEASURED",
+    "STATUS_DOES_NOT_READ_CLAIMS",
     "STATE_SEPARATOR",
     "read_pod_state",
     "require_supervisor",
@@ -172,7 +218,7 @@ and the volume root are the same directory. There is nowhere else on the volume
 to put it.
 """
 
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 """Schema version written by this podbench.
 
 Read leniently and written strictly: a manifest with a lower version (or none at
@@ -180,6 +226,22 @@ all, which is version 0) loads with defaults for what it lacks, because a future
 podbench will meet volumes written by this one and by whatever came before it. A
 *higher* version is refused outright — guessing at fields we have never seen is
 how a fix silently loses its provenance.
+
+Version 2 adds :attr:`HotfixManifest.claim_venv` and
+:attr:`HotfixManifest.base_commit_assumed`. Both default safely, so the bump is
+not needed to *load* a v1 manifest. It is needed to keep ``apply`` from
+laundering one: a v1 manifest cannot say whether its base was measured, and
+rewriting it at the current version with the field's default would turn "this
+schema could not record it" into "it was measured" — the one direction that
+field must never move in. :attr:`~HotfixManifest.stale_schema` is what carries
+that, and it is also what makes ``status`` say the provenance may be absent.
+
+The cost, which is real and is the reason the rule exists rather than a bump
+being free: a podbench that predates this one refuses a v2 manifest outright.
+For ``status`` that is one row, not the listing — :func:`read_pod_state`
+catches :class:`ManifestVersionError` along with every other unreadable
+manifest and reports the pod as such, so the exit-code contract still holds per
+row.
 """
 
 MAX_RECORDED_COMMITS = 20
@@ -236,6 +298,20 @@ finished by then has failed at something the user needs told about.
 LOG_SEPARATOR = "\x1f"
 _LOG_FORMAT = f"--pretty=format:%H{LOG_SEPARATOR}%s"
 
+CLAIM_VENV_DIR = ".venv"
+"""The venv's directory name on the claim, relative to the checkout.
+
+``uv`` creates ``.venv`` and the runtime switch looks for it, so the two have to
+agree - which is why this is one constant threaded to both ends rather than a
+literal at each. :func:`install_argv` sets ``UV_PROJECT_ENVIRONMENT`` when it is
+anything else, because otherwise uv would build ``.venv`` beside the venv the
+supervisor is looking for and the pod would quietly run the image's code.
+
+Up here beside the other vocabulary, and not beside :data:`IMAGE_PROJECT_PATH`
+where it reads more naturally, because :class:`HotfixManifest` defaults a field
+to it and a dataclass default is evaluated when the class is created.
+"""
+
 _WORKLOAD_KINDS: dict[str, str] = {
     "deployment": "deployment",
     "deployments": "deployment",
@@ -256,6 +332,97 @@ class MultiReplicaError(HotfixError):
 
 class ManifestVersionError(HotfixError):
     """A manifest written by a newer podbench than this one."""
+
+
+# -- output ------------------------------------------------------------------
+
+_FINISHED_INDENT = "  "
+"""What marks a line as authored finished rather than as prose to be wrapped.
+
+Any leading whitespace does; two spaces is what this module writes. The marker
+is the indent and not a flag on the data because a :class:`HotfixError` carries
+one string and nothing else, which is the difference from
+:func:`podbench.launcher._editor_step` - that one is handed a note and an
+``is_step`` predicate and can keep the two shapes apart without a convention.
+"""
+
+
+def _relay(text: str) -> str:
+    """Somebody else's output, marked so :func:`_laid_out` leaves it alone.
+
+    kubectl's and uv's stderr reach the user through a :class:`HotfixError` that
+    wraps a sentence round them. :func:`podbench.console.wrap` collapses runs of
+    whitespace and breaks on spaces, so reflowing a relayed line is how a paste
+    stops matching what the person actually saw - and one of these carries a
+    multi-line uv resolution report.
+
+    A stream that said nothing is named rather than relayed as an empty line:
+    an indented blank is a blank to :func:`_laid_out`, which would leave the
+    sentence's trailing colon promising a quote that is not there - and output
+    that looks truncated is read as podbench having lost it.
+
+    >>> _relay("error: no solution found\\n  hint: pin it")
+    '  error: no solution found\\n    hint: pin it'
+    >>> _relay("")
+    '  (no output)'
+    """
+    lines = text.splitlines() if text.strip() else ["(no output)"]
+    return "\n".join(f"{_FINISHED_INDENT}{line}" for line in lines)
+
+
+def _verbatim(text: str) -> list[Text]:
+    """*text* printed as it arrived, with nothing of podbench's laid over it.
+
+    The whole-message counterpart of :func:`_relay`, which marks somebody else's
+    output *inside* a sentence podbench wrote. A :class:`KubectlError` is the
+    other shape: ``KubectlError._message`` inlines kubectl's stderr behind an
+    argv and an exit code, so wrapping the "prose" would break lines through the
+    only part of it that matters.
+
+    >>> [line.plain for line in _verbatim("error: forbidden\\n  by RBAC")]
+    ['error: forbidden', '  by RBAC']
+    """
+    return [Text(line) for line in text.split("\n")]
+
+
+def _laid_out(text: str) -> list[Text]:
+    """*text* as the terminal should draw it: prose wrapped, the rest untouched.
+
+    One rule, read off the line itself. A line the caller wrote **flush left**
+    is prose and is wrapped to :func:`podbench.console.wrap_width`. A line it
+    **indented** was authored finished - a numbered step, a ``do this:``
+    offer, a relayed error - and is printed exactly as it arrived.
+
+    Either way the line comes back as a :class:`~rich.text.Text`, so none of
+    ``console``'s line rules run over it. That is not caution about the relay
+    alone: those rules read a *rendered* line's shape, and both
+    :data:`podbench.console._SHOUT` and
+    :data:`podbench.console._SECTION_LINE` say in as many words that they are
+    safe because prose never reaches them flush left ("the prose is wrapped and
+    its continuations are indented"). Here it does, so an ordinary sentence
+    opening on a capital had that capital drawn as a section heading - measured
+    on :data:`FROM_POD_ESCAPE`'s last paragraph, whose "So" came out with a bold
+    cyan ``S`` - and a wrap leaving one word on the last line drew the whole
+    word as one. Prose earns no leader, so nothing is lost by saying so.
+
+    Blank lines survive, which is what keeps a multi-paragraph message
+    (:data:`FROM_POD_ESCAPE` is appended to most of them) reading as paragraphs.
+
+    >>> for line in _laid_out("one\\n\\n  two  three"):
+    ...     print(repr(line.plain))
+    'one'
+    ''
+    '  two  three'
+    """
+    lines: list[Text] = []
+    for line in text.split("\n"):
+        if not line.strip():
+            lines.append(Text(""))
+        elif line[:1].isspace():
+            lines.append(Text(line))
+        else:
+            lines.extend(Text(wrapped) for wrapped in paragraph(line))
+    return lines
 
 
 # -- the manifest ----------------------------------------------------------
@@ -304,6 +471,29 @@ class HotfixManifest:
     base_commit: str = ""
     """The commit the released image was built from; drift is measured from it."""
 
+    base_commit_assumed: bool = False
+    """Whether :attr:`base_commit` was measured or merely stood in for.
+
+    Measured means the caller stated it, or the image's own
+    :data:`~podbench.oci.REVISION_LABEL` supplied it and the clone has that
+    commit. Everything else — an image with no labels, a registry that would not
+    answer, a revision the repository does not contain — falls back to the
+    clone's ``HEAD``, which without ``--ref`` is the default branch's tip and is
+    almost never what the image was built from. ``status`` says so rather than
+    print ``+N commit(s)`` as though the N were a measurement.
+    """
+
+    claim_venv: str = CLAIM_VENV_DIR
+    """The venv's *directory name* on the claim — ``--claim-venv``, not
+    :attr:`venv`, which is the mountPath.
+
+    Recorded because it is a cross-command contract nothing used to check
+    (#209): ``init`` took the flag, the manifest did not carry it, and ``apply``
+    had no such flag at all — so a rebuild triggered by a packaging change went
+    to ``.venv`` while the supervisor's runtime switch looked somewhere else,
+    and the pod quietly went on running the image's code.
+    """
+
     author: str = ""
     timestamp: str = ""
     ahead: int = 0
@@ -326,6 +516,8 @@ class HotfixManifest:
             "container": self.container,
             "commit": self.commit,
             "baseCommit": self.base_commit,
+            "baseCommitAssumed": self.base_commit_assumed,
+            "claimVenv": self.claim_venv,
             "author": self.author,
             "timestamp": self.timestamp,
             "ahead": self.ahead,
@@ -348,6 +540,8 @@ class HotfixManifest:
         0
         >>> HotfixManifest.from_mapping({"version": 1, "ahead": 2}).ahead
         2
+        >>> HotfixManifest.from_mapping({"version": 1}).claim_venv
+        '.venv'
         """
         version = _as_int(payload.get("version")) or 0
         if version > MANIFEST_VERSION:
@@ -374,6 +568,8 @@ class HotfixManifest:
             container=_as_str(payload.get("container")) or "",
             commit=_as_str(payload.get("commit")) or "",
             base_commit=_as_str(payload.get("baseCommit")) or "",
+            base_commit_assumed=payload.get("baseCommitAssumed") is True,
+            claim_venv=_as_str(payload.get("claimVenv")) or CLAIM_VENV_DIR,
             author=_as_str(payload.get("author")) or "",
             timestamp=_as_str(payload.get("timestamp")) or "",
             ahead=_as_int(payload.get("ahead")) or len(commits),
@@ -438,16 +634,6 @@ difference as a ptrace denial. A layout that differs is expressible with
 IMAGE_INTERPRETER_PATH = "/python"
 """The interpreter beside :data:`IMAGE_PROJECT_PATH`, in the same image."""
 
-CLAIM_VENV_DIR = ".venv"
-"""The venv's directory name on the claim, relative to the checkout.
-
-``uv`` creates ``.venv`` and the runtime switch looks for it, so the two have to
-agree - which is why this is one constant threaded to both ends rather than a
-literal at each. :func:`install_argv` sets ``UV_PROJECT_ENVIRONMENT`` when it is
-anything else, because otherwise uv would build ``.venv`` beside the venv the
-supervisor is looking for and the pod would quietly run the image's code.
-"""
-
 
 def seed_source(
     container_root: str = "/proc/1/root",
@@ -483,11 +669,9 @@ def seed_source(
 
 
 TARGET_ROOT_UNREADABLE = (
-    "{root} cannot be listed, so the seed cannot run. That path is the "
-    "application container's own filesystem seen through PID 1, and reaching it "
-    "needs the ptrace rung - a seat that landed without CAP_SYS_PTRACE, or in a "
-    "namespace whose policy denies it, cannot see the target's root at all. "
-    "`podbench doctor` names the mechanism."
+    "{root} cannot be listed, so the seed cannot run: reading the target's own "
+    "filesystem through PID 1 needs the ptrace rung. `podbench doctor` measures "
+    "it and names what denied it."
 )
 """Said when the seat genuinely cannot see the target's root.
 
@@ -497,23 +681,29 @@ whole of #178. This one is about the rung; the other is about the image. Until
 epics-containers image - which has no ``/app`` - was reported as a ptrace denial
 and the user was sent to ``doctor``, which correctly reported the rung healthy.
 A contradiction, and no next step.
+
+What a missing rung *is* - a seat that landed without ``CAP_SYS_PTRACE``, or
+into a namespace whose policy denies it - is said once in
+``docs/how-to/hotfix-a-running-pod.md``, where somebody reading about the mode
+will meet it, and measured by ``doctor``, which is where the reader is sent.
+Naming it here as well spent three lines restating the report the next sentence
+tells them to run.
+
+It names what the listing *needs*, and stops short of asserting that this seat
+lacks it. :func:`target_root_readable` is one ``ls`` exit status, so any non-zero
+- an exec that failed, a seat that died mid-command - reaches here too, and a
+flat "this seat does not have it" followed by "run ``doctor``" is #178's shape
+again: podbench asserts the rung, ``doctor`` measures it healthy, and the reader
+has a contradiction and no next step. Pointing at the measurement costs nothing
+and cannot be contradicted by it.
 """
 
 TARGET_HAS_NO_PROJECT = (
     "the target's image has no project at {image_project}, so there is nothing "
-    "to seed the claim from. Its filesystem reads fine ({root} lists) - this is "
-    "a layout difference, not a permission one.\n"
-    "\n"
-    "`{image_project}` is python-copier-template's convention and not a law: an "
-    "epics-containers image keeps its venv at /venv with a separate /python, "
-    "and a compiled IOC has no Python project at all. Point podbench at the "
-    "layout this image actually has with `--image-project PATH` and "
-    "`--image-interpreter PATH`, or check you are targeting the container you "
-    "meant with `--container NAME`.\n"
-    "\n"
-    "This is not something to work around by copying the seat's own /app: the "
-    "seat is a different image and its venv is podbench's, not the "
-    "application's."
+    "to seed the claim from. Its filesystem reads fine ({root} lists), so this "
+    "is a layout difference: name the paths this image really uses with "
+    "`--image-project PATH` and `--image-interpreter PATH`, or the container "
+    "you meant with `--container NAME`."
 )
 """Said when the root is fine and the project simply is not there.
 
@@ -528,6 +718,15 @@ message that mentions a mechanism at all - even to rule it out - is one a reader
 will go and chase. The path it prints is the one **inside the image**, not the
 ``/proc/1/root/...`` form podbench reads it through, because ``--image-project``
 takes the former and an error should print what you would type.
+
+Which layouts exist and why ``/app`` beside ``/python`` is only
+python-copier-template's convention - an epics-containers image keeps its venv
+at ``/venv``, a compiled IOC has no Python project at all - is in
+``docs/how-to/hotfix-a-running-pod.md``, along with the one workaround that has
+to be refused: copying the seat's own ``/app``, which is a different image whose
+venv is podbench's rather than the application's. Two of the three paragraphs
+this used to print were that material, read by somebody who at that moment needs
+a flag rather than a taxonomy.
 """
 
 
@@ -969,6 +1168,12 @@ class HotfixTarget:
     workload_kind: str | None = None
     workload_name: str | None = None
     replicas: int | None = None
+    claim_mount: str = ""
+    """Where :attr:`container` mounts the hotfix claim, ``""`` when it does not.
+
+    Carried on the target because three verbs used to *ask* for it as
+    ``--venv``; see :func:`resolve_venv`.
+    """
 
     @property
     def workload(self) -> str | None:
@@ -976,6 +1181,111 @@ class HotfixTarget:
         if self.workload_kind is None or self.workload_name is None:
             return None
         return f"{self.workload_kind}/{self.workload_name}"
+
+
+def claim_mount_path(pod_json: Mapping[str, Any], container: str) -> str:
+    """Where *container* mounts the hotfix claim, or ``""`` if it does not.
+
+    Resolved by the **volume's name** rather than by its mountPath, because the
+    mountPath is the answer being looked for. :data:`HOTFIX_CLAIM_VOLUME` is
+    podbench's own vocabulary — :func:`values_snippet` is what emits it — so
+    this stays chart-agnostic in the way keying on a chart's own names would
+    not.
+
+    The search itself is :func:`podbench.launcher.application_mount`, which the
+    launcher already runs over the same volume for the seat-vs-application mount
+    note. A second copy of it here is how the two come to disagree about where
+    the claim is.
+
+    >>> pod = {"spec": {"containers": [{"name": "app", "volumeMounts": [
+    ...     {"name": "podbench-app", "mountPath": "/podbench/app"}]}]}}
+    >>> claim_mount_path(pod, "app")
+    '/podbench/app'
+    >>> claim_mount_path(pod, "sidecar")
+    ''
+    """
+    mount = application_mount(pod_json, container, HOTFIX_CLAIM_VOLUME)
+    return (_as_str(mount.get("mountPath")) or "").rstrip("/")
+
+
+VENV_DISAGREES_WITH_POD = (
+    "--venv {requested} disagrees with the pod: container {container} mounts "
+    "the claim at {mounted}. The manifest lives at the root of the claim, so a "
+    "--venv naming anywhere else writes this hotfix's provenance into the "
+    "container's own filesystem, where it dies with the pod and where "
+    "`hotfix status` cannot find it. Drop the flag — podbench reads the "
+    "mountPath off the pod."
+)
+"""#205 item 1. The refusal is the point: the old flag accepted this silently."""
+
+VENV_INVISIBLE_TO_STATUS = (
+    "the claim is mounted at {venv}, not {default}, so `hotfix status` will "
+    "not list this pod — it finds hotfixed pods by scanning for a mountPath of "
+    "{default}. The rest of the mode is fixed at {default} as well: the seed, "
+    "the copied interpreter and the supervisor's runtime switch all name it, "
+    "so `hotfix init` will refuse a claim mounted anywhere else."
+)
+"""Said out loud on the one path that can still reach a non-default mount.
+
+Named rather than refused *here* because ``apply`` and ``consolidate`` reach a
+claim through a manifest that already records where it is, and a mode that
+refused the value outright would be a mode with no escape hatch. What must not
+happen is that it goes unsaid.
+
+The second sentence is not a hedge. ``init`` seeds :func:`checkout_path`,
+copies the interpreter to :data:`~podbench.model.HOTFIX_INTERPRETER_PATH` and
+emits a supervisor switch naming :data:`~podbench.model.HOTFIX_APP_PATH`, none
+of which move with the mount — so it refuses with "the claim is not mounted".
+Saying "the fix itself is unaffected" would have been a warning contradicted by
+the refusal one line later, which is worse than either message alone.
+"""
+
+
+def _venv_note(venv: str) -> str | None:
+    return (
+        None
+        if venv == HOTFIX_APP_PATH
+        else VENV_INVISIBLE_TO_STATUS.format(venv=venv, default=HOTFIX_APP_PATH)
+    )
+
+
+def resolve_venv(target: HotfixTarget, requested: str | None) -> tuple[str, str | None]:
+    """The claim's mountPath, read off the pod, and a warning if it is unusual.
+
+    ``--venv`` was required by ``init``, ``apply`` and ``consolidate`` and used
+    by none of the measurement (#205 item 1): ``status`` reads the manifest at
+    :data:`~podbench.model.HOTFIX_APP_PATH` and finds the mounting container by
+    scanning for exactly that mountPath. So any other value wrote a manifest
+    ``status`` could not see, and a hotfixed pod invisible to ``status`` is the
+    precise failure the mode exists to prevent. Nothing warned.
+
+    The pod already knows the answer, so it is asked. A value that disagrees
+    with what the pod mounts is refused rather than obeyed, and a claim genuinely
+    mounted elsewhere is honoured with :data:`VENV_INVISIBLE_TO_STATUS` said out
+    loud.
+
+    >>> here = HotfixTarget(PodRef("d", "p"), "app", "", "",
+    ...                     claim_mount="/podbench/app")
+    >>> resolve_venv(here, None)
+    ('/podbench/app', None)
+    >>> resolve_venv(HotfixTarget(PodRef("d", "p"), "app", "", ""), None)
+    ('/podbench/app', None)
+    >>> resolve_venv(here, "/opt/venv")  # doctest: +ELLIPSIS
+    Traceback (most recent call last):
+    podbench.hotfix.HotfixError: --venv /opt/venv disagrees with the pod: ...
+    """
+    mounted = target.claim_mount
+    if requested is None:
+        venv = mounted or HOTFIX_APP_PATH
+        return venv, _venv_note(venv)
+    venv = requested.rstrip("/") or requested
+    if mounted and venv != mounted:
+        raise HotfixError(
+            VENV_DISAGREES_WITH_POD.format(
+                requested=requested, container=target.container, mounted=mounted
+            )
+        )
+    return venv, _venv_note(venv)
 
 
 def replica_count(obj: Mapping[str, Any]) -> int | None:
@@ -1011,27 +1321,66 @@ def resolve_target(
     reschedule — so both are accepted and both are checked for the single
     replica this mode requires.
     """
+    return _resolve_target(kube, reference, container=container)[0]
+
+
+def _resolve_target(
+    kube: Kubectl,
+    reference: str,
+    *,
+    container: str | None = None,
+    require_single_replica: bool = True,
+) -> tuple[HotfixTarget, dict[str, Any]]:
+    """The target, and the pod JSON this walk resolved it out of.
+
+    Both, for :func:`preflight`, which needs the pod's own document as well —
+    the livenessProbe and the ephemeral container statuses. Asking ``get pod``
+    a second time to re-read what this walk has just read is a call against an
+    API server that answers nothing new, and it would put the report's rows a
+    reconcile apart from the target they are about.
+
+    ``require_single_replica`` is off for :func:`retire` alone. The refusal is
+    about *writing* to a ReadWriteOnce claim, and the state a retirement report
+    exists to confirm — the wiring out, the team scaled back up — is precisely
+    the one it forbids, so asking "is this retired?" would answer with ``init``
+    at somebody who has already finished.
+    """
     kind, separator, name = reference.partition("/")
     if not separator:
-        return _target_from_pod(kube, reference, container)
+        return _target_from_pod(
+            kube, reference, container, require_single_replica=require_single_replica
+        )
     if not name:
         raise HotfixError(f"no name in {reference!r}")
     if kind in ("pod", "pods", "po"):
-        return _target_from_pod(kube, name, container)
+        return _target_from_pod(
+            kube, name, container, require_single_replica=require_single_replica
+        )
     workload_kind = _WORKLOAD_KINDS.get(kind)
     if workload_kind is None:
         raise HotfixError(
             f"hotfix mode works on pods, deployments and statefulsets, not {kind!r}"
         )
-    return _target_from_workload(kube, workload_kind, name, container)
+    return _target_from_workload(
+        kube,
+        workload_kind,
+        name,
+        container,
+        require_single_replica=require_single_replica,
+    )
 
 
 def _target_from_workload(
-    kube: Kubectl, kind: str, name: str, container: str | None
-) -> HotfixTarget:
+    kube: Kubectl,
+    kind: str,
+    name: str,
+    container: str | None,
+    *,
+    require_single_replica: bool = True,
+) -> tuple[HotfixTarget, dict[str, Any]]:
     workload = _get_json(kube, kind, name)
     replicas = replica_count(workload)
-    if replicas is not None and replicas != 1:
+    if require_single_replica and replicas is not None and replicas != 1:
         _refuse_multi_replica(kind, name, replicas)
     selector = as_dict(as_dict(workload.get("spec")).get("selector"))
     labels = as_dict(selector.get("matchLabels"))
@@ -1041,22 +1390,55 @@ def _target_from_workload(
     result = kube.run("get", "pods", "-l", query, "-o", "json")
     pods = [as_dict(item) for item in _as_list(_load_json(result.stdout).get("items"))]
     live = [pod for pod in pods if _phase(pod) not in ("Succeeded", "Failed")]
-    if len(live) != 1:
+    if not live or (len(live) != 1 and require_single_replica):
         raise HotfixError(
             f"{kind}/{name} matches {len(live)} live pods; hotfix mode needs "
             "exactly one. Name the pod directly if this is a rollout in flight."
         )
+    chosen = _still_wired_first(live)
     # The workload is already known and already checked, so the ownership walk
     # below is skipped: repeating it would be two more API calls to rediscover
     # the object the caller named.
-    target = _target_from_pod_json(kube, live[0], container, follow_owner=False)
-    return replace(
-        target, workload_kind=kind, workload_name=name, replicas=replicas or 1
+    target = _target_from_pod_json(kube, chosen, container, follow_owner=False)
+    return (
+        replace(target, workload_kind=kind, workload_name=name, replicas=replicas or 1),
+        chosen,
     )
 
 
-def _target_from_pod(kube: Kubectl, name: str, container: str | None) -> HotfixTarget:
-    return _target_from_pod_json(kube, kube.get_pod(name), container)
+def _still_wired_first(live: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Which of a workload's live pods a report must be measured against.
+
+    Only ever more than one under ``retire``, and the choice is the difference
+    between a report and a lie: the ``wiring`` row asserts the hotfix is out of
+    the application's pod template, so measuring the replica that has already
+    been rolled while another still mounts the claim would tick it. Sorted by
+    name so that the pick is stable between two runs that found the same thing.
+    """
+    ordered = sorted(
+        (as_dict(pod) for pod in live),
+        key=lambda pod: _as_str(as_dict(pod.get("metadata")).get("name")) or "",
+    )
+    return next((pod for pod in ordered if hotfix_wiring(pod)), ordered[0])
+
+
+def _target_from_pod(
+    kube: Kubectl,
+    name: str,
+    container: str | None,
+    *,
+    require_single_replica: bool = True,
+) -> tuple[HotfixTarget, dict[str, Any]]:
+    pod_json = kube.get_pod(name)
+    return (
+        _target_from_pod_json(
+            kube,
+            pod_json,
+            container,
+            require_single_replica=require_single_replica,
+        ),
+        pod_json,
+    )
 
 
 def _target_from_pod_json(
@@ -1065,6 +1447,7 @@ def _target_from_pod_json(
     container: str | None,
     *,
     follow_owner: bool = True,
+    require_single_replica: bool = True,
 ) -> HotfixTarget:
     metadata = as_dict(pod_json.get("metadata"))
     name = _as_str(metadata.get("name"))
@@ -1077,22 +1460,37 @@ def _target_from_pod_json(
         container=chosen,
         image=image,
         image_digest=digest,
+        claim_mount=claim_mount_path(pod_json, chosen),
     )
     owner = _controller_of(metadata) if follow_owner else None
     if owner is None:
         return target
     kind, owner_name = owner
     if kind == "replicaset":
-        return _through_replicaset(kube, target, owner_name)
+        return _through_replicaset(
+            kube, target, owner_name, require_single_replica=require_single_replica
+        )
     if kind in ("statefulset", "deployment"):
-        return _with_workload(kube, target, kind, owner_name)
+        return _with_workload(
+            kube,
+            target,
+            kind,
+            owner_name,
+            require_single_replica=require_single_replica,
+        )
     # Something else owns it — a Job, an operator's CRD. Not refused: there is
     # one pod and the hotfix is legitimate, but the annotation cannot go on a
     # template podbench does not understand.
     return replace(target, workload_kind=kind, workload_name=owner_name, replicas=1)
 
 
-def _through_replicaset(kube: Kubectl, target: HotfixTarget, name: str) -> HotfixTarget:
+def _through_replicaset(
+    kube: Kubectl,
+    target: HotfixTarget,
+    name: str,
+    *,
+    require_single_replica: bool = True,
+) -> HotfixTarget:
     """Resolve a pod's ReplicaSet to the Deployment that owns it.
 
     The Deployment is what has to be annotated: annotating the ReplicaSet's
@@ -1101,22 +1499,33 @@ def _through_replicaset(kube: Kubectl, target: HotfixTarget, name: str) -> Hotfi
     """
     replicaset = _get_json(kube, "replicaset", name)
     replicas = replica_count(replicaset)
-    if replicas is not None and replicas != 1:
+    if require_single_replica and replicas is not None and replicas != 1:
         _refuse_multi_replica("replicaset", name, replicas)
     owner = _controller_of(as_dict(replicaset.get("metadata")))
     if owner is not None and owner[0] == "deployment":
-        return _with_workload(kube, target, "deployment", owner[1])
+        return _with_workload(
+            kube,
+            target,
+            "deployment",
+            owner[1],
+            require_single_replica=require_single_replica,
+        )
     return replace(
         target, workload_kind="replicaset", workload_name=name, replicas=replicas or 1
     )
 
 
 def _with_workload(
-    kube: Kubectl, target: HotfixTarget, kind: str, name: str
+    kube: Kubectl,
+    target: HotfixTarget,
+    kind: str,
+    name: str,
+    *,
+    require_single_replica: bool = True,
 ) -> HotfixTarget:
     workload = _get_json(kube, kind, name)
     replicas = replica_count(workload)
-    if replicas is not None and replicas != 1:
+    if require_single_replica and replicas is not None and replicas != 1:
         _refuse_multi_replica(kind, name, replicas)
     return replace(
         target, workload_kind=kind, workload_name=name, replicas=replicas or 1
@@ -1330,7 +1739,11 @@ def assess(
             "The claim's venv shadows the new image's, so the upgrade has not "
             "reached the running code.",
         )
-    return HotfixHealth.ACTIVE, f"{manifest.ahead} commit(s) ahead of the image"
+    # No detail. The row's own columns already carry `+N commit(s)` and
+    # `active - hotfixed, base image unchanged`, and a healthy row saying the
+    # same number twice was the last of the three repetitions this phase set out
+    # to remove. Every other branch here returns the sentence the columns cannot.
+    return HotfixHealth.ACTIVE, ""
 
 
 @dataclass(frozen=True)
@@ -1471,14 +1884,27 @@ class HotfixRow:
     """The pod's hold, if it has one. ``None`` is *not held*, and is orthogonal
     to :attr:`health` - see :class:`Hold`."""
 
+    retirement: tuple[RetirementCheck, ...] = ()
+    """Where a consolidated hotfix is in its retirement, empty for one that has
+    not started.
+
+    Carried on the row rather than derived in :func:`format_status`, because it
+    is measured from the *pod document* - which the formatter does not have, and
+    must not be handed a second copy of on the way to a listing.
+
+    Deliberately not part of :attr:`ok`. A consolidated fix whose image has not
+    moved yet is a live hotfix doing its job, and a shutdown assertion that went
+    red the moment ``consolidate`` ran would be one nobody could leave in CI.
+    """
+
     @property
     def ok(self) -> bool:
         """Whether this row needs no attention, hold included.
 
         The hold moves the exit code (decision 6). A held pod is not a healthy
         one however healthy its fix: its liveness probe is short-circuited and
-        its supervisor has no backoff, so "no unretired hotfixes" must not come
-        back true while one is still held.
+        its supervisor has no backoff, so "nothing here needs somebody today"
+        must not come back true while one is still held.
 
         >>> row = HotfixRow(PodRef("d", "p"), None, HotfixHealth.ACTIVE, "")
         >>> row.ok
@@ -1490,7 +1916,11 @@ class HotfixRow:
 
 
 def status_rows(
-    kube: Kubectl, *, probe: bool = True, python: str = DEFAULT_PYTHON
+    kube: Kubectl,
+    *,
+    probe: bool = True,
+    python: str = DEFAULT_PYTHON,
+    all_namespaces: bool = False,
 ) -> list[HotfixRow]:
     """Every pod carrying a hotfix claim, with its drift, its risks and its hold.
 
@@ -1510,8 +1940,24 @@ def status_rows(
     hotfix behind it is not a curiosity - it is a pod whose liveness probe is
     short-circuited and whose supervisor is spinning without backoff, and the
     only thing that will notice is this command.
+
+    ``all_namespaces`` is the same listing over the cluster, with the same exit
+    contract on top of it (#205 item 5). ``main``'s docstring has always sold
+    the exit code as a shutdown-checklist assertion, and a namespace-scoped
+    command makes the facility-wide form a shell loop the operator has to write
+    and keep correct. Each pod is still read through a client bound to *its own*
+    namespace: one ``-n`` wrong on an exec is a claim read out of the wrong pod.
     """
-    result = kube.run("get", "pods", "-o", "json")
+    if all_namespaces:
+        # No `-n` beside it. kubectl resolves `-n X --all-namespaces` in favour
+        # of the latter, so this is not a behaviour fix - it is what podbench
+        # can be quoted as having asked when the call is refused and its argv is
+        # relayed verbatim (evidence §5).
+        result = kube.run(
+            "get", "pods", "--all-namespaces", "-o", "json", cluster_wide=True
+        )
+    else:
+        result = kube.run("get", "pods", "-o", "json")
     rows: list[HotfixRow] = []
     for item in _as_list(_load_json(result.stdout).get("items")):
         pod_json = as_dict(item)
@@ -1522,9 +1968,11 @@ def status_rows(
         container = claim_container(pod_json)
         if container is None:
             continue
-        pod = PodRef(kube.namespace, name)
+        namespace = _as_str(metadata.get("namespace")) or kube.namespace
+        client = kube.for_namespace(namespace)
+        pod = PodRef(namespace, name)
         notes: list[str] = []
-        manifest, hold, unreadable = read_pod_state(kube, name, container)
+        manifest, hold, unreadable = read_pod_state(client, name, container)
         if manifest is None and hold is None and not unreadable:
             continue
         image, digest = _image_of(pod_json, container)
@@ -1536,7 +1984,7 @@ def status_rows(
             and digest
             and manifest.base_image_digest != digest
         ):
-            measured = probe_interpreter(kube, name, container, python=python)
+            measured = probe_interpreter(client, name, container, python=python)
         health, detail = assess(
             manifest, current_digest=digest, probe=measured, unreadable=unreadable
         )
@@ -1554,9 +2002,37 @@ def status_rows(
                 current_image=image,
                 notes=tuple(notes),
                 hold=hold,
+                retirement=_retirement_of(pod_json, manifest, digest),
             )
         )
     return rows
+
+
+def _retirement_of(
+    pod_json: Mapping[str, Any], manifest: HotfixManifest | None, digest: str
+) -> tuple[RetirementCheck, ...]:
+    """The retirement steps for a row, measured only once one is under way.
+
+    Only for a consolidated hotfix, because until then there is nothing to
+    retire: every live hotfix is "still wired to its claim", and a listing that
+    said so on every row would be saying nothing on the one row where it is the
+    finding (#205 item 4).
+
+    The claim is left **unmeasured** rather than inferred from the mount - see
+    :data:`STATUS_DOES_NOT_READ_CLAIMS`.
+    """
+    if manifest is None or manifest.consolidated_branch is None:
+        return ()
+    return tuple(
+        retirement(
+            pod_json,
+            manifest,
+            claim=ClaimState(
+                name=pod_claim_name(pod_json), detail=STATUS_DOES_NOT_READ_CLAIMS
+            ),
+            current_digest=digest,
+        )
+    )
 
 
 _FLAG = 10
@@ -1569,16 +2045,22 @@ _ROW_INDENT = " " * 4
 """Where a row's prose sits under it."""
 
 
-def format_status(rows: Sequence[HotfixRow]) -> str:
+def format_status(rows: Sequence[HotfixRow], *, all_namespaces: bool = False) -> str:
     """The status report. Empty is a real and reassuring answer, so say it.
 
     Only the prose is wrapped. The row line itself is a set of columns held
     apart by double spaces, and wrapping collapses whitespace — so a row put
     through it would come back as a sentence, with the commit and the health
     no longer under the headings the eye is running down.
+
+    ``all_namespaces`` changes one thing, and it is the empty answer: "no
+    hotfixed pods in this namespace" from a cluster-wide run is the reassurance
+    somebody wanted for the whole facility, given for one namespace.
     """
     if not rows:
-        return "no hotfixed pods in this namespace"
+        return "no hotfixed pods in " + (
+            "any namespace" if all_namespaces else "this namespace"
+        )
     lines: list[str] = []
     for row in rows:
         manifest = row.manifest
@@ -1588,14 +2070,37 @@ def format_status(rows: Sequence[HotfixRow]) -> str:
         # A column, not a clause in the health sentence: a held pod and an
         # unhealthy fix are different questions and either can be true alone.
         held = f"  {row.hold.summary()}" if row.hold is not None else ""
+        # The count is a difference against the base, so a base nobody measured
+        # makes it a guess — and it is qualified here, in the column the eye
+        # actually lands on, rather than only on the `base` line below.
+        drift = f"+{ahead} commit(s)" + (
+            " from an assumed base"
+            if manifest is not None and manifest.base_commit_assumed
+            else ""
+        )
         lines.append(
-            f"  {flag}".ljust(_FLAG) + f"{row.pod}  +{ahead} commit(s)  {commit}  "
+            f"  {flag}".ljust(_FLAG) + f"{row.pod}  {drift}  {commit}  "
             f"{row.health.value} — {row.health.summary}{held}"
         )
-        lines.extend(paragraph(row.detail, first=_ROW_INDENT, indent=_ROW_INDENT))
+        if row.detail:
+            lines.extend(paragraph(row.detail, first=_ROW_INDENT, indent=_ROW_INDENT))
         if manifest is not None:
+            # The sha is dropped where it is the one already in the row's own
+            # column: at `+0` the claim is *at* its base, so repeating it says
+            # nothing the column did not. What is left is the provenance, which
+            # is the half of this line that appears nowhere else.
+            #
+            # Guarded on the sha being there at all: with neither recorded the
+            # two are equal by vacuity, and "on its base commit" would assert an
+            # identity nobody measured in the one place the old `base ?` said
+            # so.
+            base = (
+                "on its base commit"
+                if manifest.base_commit and manifest.commit == manifest.base_commit
+                else f"base {manifest.base_commit[:7] or '?'}"
+            )
             lines.append(
-                f"{_ROW_INDENT}base {manifest.base_commit[:7] or '?'} · "
+                f"{_ROW_INDENT}{base} · "
                 f"{manifest.author or 'unknown author'} · "
                 f"{manifest.timestamp or 'no timestamp'}"
             )
@@ -1611,6 +2116,26 @@ def format_status(rows: Sequence[HotfixRow]) -> str:
                     f"{_ROW_INDENT}  … and {ahead - len(manifest.commits)} more "
                     "(the manifest keeps the most recent)"
                 )
+        if row.retirement:
+            # One line, and only for a hotfix on its way out: `superseded` used
+            # to be the whole of what this said, correctly and indefinitely,
+            # which is a state nobody can act on (#205 item 4).
+            lead = f"{_ROW_INDENT}retirement: "
+            lines.extend(
+                paragraph(
+                    retirement_summary(
+                        row.retirement,
+                        # The namespace goes in even when it is the current
+                        # one: under `--all-namespaces` the rows come from
+                        # several, and an offer that is pasteable on some rows
+                        # of one listing and not others is worse than a
+                        # redundant flag.
+                        reference=f"pod/{row.pod.name} -n {row.pod.namespace}",
+                    ),
+                    first=lead,
+                    indent=" " * len(lead),
+                )
+            )
         for note in row.notes:
             lines.extend(
                 paragraph(
@@ -1703,7 +2228,7 @@ def require_supervisor(kube: Kubectl, target: HotfixTarget) -> None:
             f"container {target.container} is not running the podbench "
             f"supervisor: {HOTFIX_CHILD_PID_PATH} does not exist. Hotfix mode "
             "relaunches the application in place, which needs the supervisor "
-            "from `podbench hotfix --print-values` to be this container's "
+            "from `podbench hotfix values` to be this container's "
             "command. Without it there is nothing to relaunch, and applying a "
             "fix would restart the container and kill your seat with it."
         )
@@ -1749,13 +2274,265 @@ def _now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
+NO_SOURCE_REPO = (
+    "hotfix init has no source repository to clone: the target image carries "
+    "no {label} label, or its registry would not answer without credentials. "
+    "Pass `--repo URL`."
+)
+"""#205 item 2's other half. ``--repo`` is a value the image usually states.
+
+One constant, said by ``init`` when it refuses and by ``check`` before it, for
+:data:`CLAIM_NOT_MOUNTED`'s reason: ``check``'s whole job is to say ``init``'s
+refusals earlier, and a second spelling is how the two come to describe
+different remedies for one state.
+"""
+
+LABELS_FROM_BASE_IMAGE = (
+    "the image's labels name {labelled}, not {source}: inherited from its base "
+    "image, so its revision is not this repository's"
+)
+"""Why an image's own ``org.opencontainers.image.*`` may describe something else.
+
+**OCI labels are inherited.** A derived image carries its base image's labels
+unless its build overrides them, and many builds do not. Measured 2026-08-23:
+``ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1`` — the IOC this
+mode was proved against — advertises
+``source=https://github.com/DiamondLightSource/ubuntu-devcontainer``, a revision
+in *that* repository and ``title=ubuntu-devcontainer``, while the IOC's own
+source is ``.../fastcs-example``.
+
+:func:`_has_commit` cannot catch this on its own: when the repository *also*
+came from the label, the clone made from it contains the label's own revision,
+so the check passes and the drift is recorded as measured against another
+project's history. Hence :func:`corroborate_source` — the label is believed
+only where something that did not come from the image agrees with it.
+"""
+
+SOURCE_LABEL_UNCORROBORATED = (
+    "the image names {source}, which its own repository {image} does not "
+    "correspond to: `hotfix init` with no `--repo` would clone that "
+    "repository, so pass `--repo URL` if it is not this application's source."
+)
+"""``check``'s ``source`` row when the only thing naming the repository is a
+label the image's own name contradicts.
+
+A ``WARN`` and not a ``FAIL``, because ``init`` does not refuse this state - it
+clones the label's repository and records an ``ASSUMED`` base
+(:func:`base_commit_from`). The defect this replaced was the opposite error: an
+``[ok]`` under "nothing measured here blocks `podbench hotfix init`", which made
+``check`` *more* confident than the verb it exists to speak for. Measured
+2026-08-23 on ``fastcs-example-debug:2025.10.1``, whose labels are
+``ubuntu-devcontainer``'s throughout - see :data:`LABELS_FROM_BASE_IMAGE`.
+
+Three beats and no fourth: *why* an image advertises another project's
+repository is the mechanism, and it is said once in
+``docs/how-to/hotfix-a-running-pod.md`` and ``docs/reference/cli.md`` rather
+than in ten wrapped lines in front of somebody with a broken IOC.
+"""
+
+
+def same_repository(one: str, other: str) -> bool:
+    """Whether two spellings of a git remote name the same repository.
+
+    Compared on host and path, because ``origin`` and a label are written by
+    different tools: one may be scp-style, carry a ``.git`` suffix, a scheme, a
+    username or a trailing slash, and none of that is a difference.
+
+    >>> same_repository("https://github.com/Acme/Api.git", "git@github.com:acme/api")
+    True
+    >>> same_repository("https://github.com/acme/api", "https://github.com/acme/web")
+    False
+    >>> same_repository("", "https://github.com/acme/api")
+    False
+    """
+    return bool(one) and bool(other) and _repo_key(one) == _repo_key(other)
+
+
+def _repo_key(url: str) -> str:
+    """A git remote URL reduced to ``host/path``.
+
+    >>> _repo_key("ssh://git@github.com/acme/api.git/")
+    'github.com/acme/api'
+    >>> _repo_key("git@github.com:acme/api")
+    'github.com/acme/api'
+    """
+    text = url.strip().lower().removeprefix("git+")
+    _, scheme, rest = text.partition("://")
+    text = rest if scheme else text
+    text = text.rpartition("@")[2]
+    head, colon, tail = text.partition(":")
+    if colon and "/" not in head:
+        # scp-style `host:path`, which has no slash before the colon.
+        text = f"{head}/{tail}"
+    return text.rstrip("/").removesuffix(".git").rstrip("/")
+
+
+def image_name_agrees(image: str, source: str) -> bool:
+    """Whether the image's *own* name corresponds to the repository *source* names.
+
+    The one corroborator that is free and always available: a registry path is
+    not part of the config blob, so a base image cannot have set it. Every
+    other independent naming of the repository - ``--repo``, the seeded
+    checkout's ``origin`` - has to be supplied or read from somewhere, and on
+    an unseeded claim there is no checkout to read one from.
+
+    It is a correspondence and not an equality, because a debug or a runtime
+    variant is built from the same source under a suffixed name: measured
+    2026-08-23, ``fastcs-example-debug`` is built from ``fastcs-example``, and
+    an equality test would cry wolf on every image built that way. The suffix
+    is tolerated in **one** direction only - the image's name may extend the
+    repository's, not the other way about - because that is the only direction
+    the variant case describes, and every widening of this test is a widening
+    of what a base image's label can be believed for.
+
+    **It is a corroborator and not a proof**, which is why the row that uses it
+    says what corresponds rather than that the label is this image's own: an
+    image named *after its base* (``ubuntu-devcontainer-python`` built from
+    ``ubuntu-devcontainer``) inherits the base's label and corresponds to it.
+    Nothing free distinguishes that from a variant, so ``--repo`` remains the
+    only settlement and :func:`corroborate_source` - ``init``'s gate on the
+    revision label - deliberately does not take this naming.
+
+    >>> image_name_agrees("ghcr.io/dls/fastcs-example-debug:2025.10.1",
+    ...                   "https://github.com/DiamondLightSource/fastcs-example")
+    True
+    >>> image_name_agrees("ghcr.io/dls/fastcs-example-debug:2025.10.1",
+    ...                   "https://github.com/DiamondLightSource/ubuntu-devcontainer")
+    False
+    >>> image_name_agrees("ghcr.io/dls/ubuntu:1",
+    ...                   "https://github.com/DiamondLightSource/ubuntu-devcontainer")
+    False
+    >>> image_name_agrees("", "https://github.com/acme/api")
+    False
+    """
+    ref = parse_reference(image)
+    if ref is None or not source.strip():
+        return False
+    named = ref.repository.lower().rpartition("/")[2]
+    repo = _repo_key(source).rpartition("/")[2]
+    if not named or not repo:
+        return False
+    return named == repo or named.startswith(f"{repo}-")
+
+
+def corroborate_source(
+    given: str | None, labelled: str, origin: str
+) -> tuple[str, bool, str | None]:
+    """The repository to record, whether the image's labels describe it, and why.
+
+    *given* is ``--repo``, *labelled* is the image's
+    :data:`~podbench.oci.SOURCE_LABEL` and *origin* is the seeded checkout's own
+    remote — ``""`` where there is none to read, which is also the case after a
+    clone, because a clone made from *labelled* corroborates nothing.
+
+    Corroboration is the whole point (see :data:`LABELS_FROM_BASE_IMAGE`): a
+    label is believed only where something *independent of the image* names the
+    same repository. Everything else records an assumed base, which is the
+    honest-uncertainty path #205 item 2 asks for rather than a fallback from it.
+
+    >>> corroborate_source(None, "https://github.com/acme/api",
+    ...                    "git@github.com:acme/api")[1:]
+    (True, None)
+    >>> source, ok, note = corroborate_source(
+    ...     None, "https://github.com/base/devcontainer",
+    ...     "https://github.com/acme/api")
+    >>> source, ok
+    ('https://github.com/acme/api', False)
+    >>> "inherited from its base image" in note
+    True
+    >>> corroborate_source(None, "https://github.com/acme/api", "")
+    ('https://github.com/acme/api', False, None)
+    """
+    independent = (given or "").strip() or origin
+    source = independent or labelled
+    corroborated = bool(labelled) and same_repository(labelled, independent)
+    note = (
+        None
+        if corroborated or not labelled or not independent
+        else LABELS_FROM_BASE_IMAGE.format(labelled=labelled, source=source)
+    )
+    return source, corroborated, note
+
+
+def _origin_url(store: HotfixStore, checkout: str) -> str:
+    """The checkout's ``origin`` remote, or ``""`` where there is none."""
+    probe = store.run(git_argv(checkout, "remote", "get-url", "origin"), check=False)
+    return probe.stdout.strip() if probe.returncode == 0 else ""
+
+
+def _has_commit(store: HotfixStore, checkout: str, sha: str) -> bool:
+    """Whether the checkout actually contains *sha*.
+
+    An image label is a claim about *a* repository, and the one cloned may not
+    be it — a fork, a mirror, a history that was rewritten. A base the clone
+    does not have makes ``git log base..HEAD`` fail outright, so the label is
+    verified before it is believed rather than discovered to be wrong later.
+    """
+    probe = store.run(
+        git_argv(checkout, "cat-file", "-e", f"{sha}^{{commit}}"), check=False
+    )
+    return probe.returncode == 0
+
+
+def base_commit_from(
+    store: HotfixStore,
+    checkout: str,
+    stated: str | None,
+    labels: Mapping[str, str] | None,
+    *,
+    corroborated: bool = True,
+) -> tuple[str, bool, str]:
+    """The commit drift is measured from, whether it was measured, and why.
+
+    Three answers in a fixed order of confidence, and the third is the one
+    #205 item 2 is about: ``git rev-parse HEAD`` of a fresh clone is, without
+    ``--ref``, the default branch's tip, which is almost never the commit the
+    released image was built from. Everything downstream — ``status``'s
+    ``+N commit(s)``, :func:`drift_commits`, the set ``consolidate`` pushes — is
+    a difference against this number, so a guess here is a guess everywhere,
+    and one that reads as a measurement.
+
+    *corroborated* is :func:`corroborate_source`'s verdict on whether the labels
+    describe this repository at all. It gates the revision because
+    :func:`_has_commit` cannot: a clone made from the label's own repository
+    contains the label's own revision whatever project that repository is.
+
+    Returns the sha, whether it was *assumed*, and the line ``init`` prints.
+    """
+    if stated:
+        return stated, False, f"base commit {stated[:7]}, as given"
+    revision = ((labels or {}).get(REVISION_LABEL) or "").strip()
+    if revision and corroborated and _has_commit(store, checkout, revision):
+        return (
+            revision,
+            False,
+            f"base commit {revision[:7]}, from the image's {REVISION_LABEL}",
+        )
+    head = store.run(git_argv(checkout, "rev-parse", "HEAD")).stdout.strip()
+    if not revision:
+        why = f"no {REVISION_LABEL} on the image"
+    elif not corroborated:
+        why = (
+            f"the image names {revision[:7]}, but nothing outside the image "
+            "confirms its labels are this repository's"
+        )
+    else:
+        why = f"the image names {revision[:7]}, not in this checkout"
+    return (
+        head,
+        True,
+        f"base commit {head[:7]} ASSUMED ({why}); pass --base-commit SHA",
+    )
+
+
 def init(
     kube: Kubectl,
     store: HotfixStore,
     target: HotfixTarget,
     *,
     venv: str,
-    repo: str,
+    repo: str | None = None,
+    image_labels: Mapping[str, str] | None = None,
     ref: str | None = None,
     base_commit: str | None = None,
     author: str | None = None,
@@ -1781,6 +2558,20 @@ def init(
     It is a rebuild rather than a copy of the venv. A venv's absolute paths lie
     the moment it moves, so ``uv sync`` is run afterwards in the *application*
     container — the interpreter on the claim is the one the scripts must name.
+
+    *image_labels* are the target image's OCI labels, when they could be read
+    (:func:`podbench.oci.image_labels`). They default ``repo`` and the base
+    commit, which is what stops the two values the image already states from
+    being two more things to type in an emergency. ``None`` is not an error:
+    it means the base is recorded as assumed, which :func:`base_commit_from`
+    is careful to say rather than paper over.
+
+    Labels are **corroborated before they are believed** — see
+    :data:`LABELS_FROM_BASE_IMAGE`, which is the measured case of an image
+    advertising its base image's repository and revision. The seeded checkout's
+    ``origin`` is what corroborates them, and where it disagrees it wins: it is
+    a measurement of the project actually on the claim, and ``manifest.repo`` is
+    where ``consolidate`` will push.
     """
     actions: list[str] = []
     require_supervisor(kube, target)
@@ -1790,11 +2581,16 @@ def init(
     checkout = checkout_path()
 
     if not store.exists(checkout):
-        raise HotfixError(
-            f"{checkout} is not present: the claim is not mounted. Run "
-            "`podbench hotfix --print-values` and deploy the five values it "
-            "emits."
-        )
+        raise HotfixError(CLAIM_NOT_MOUNTED.format(checkout=checkout))
+
+    labelled = ((image_labels or {}).get(SOURCE_LABEL) or "").strip()
+    # Resolved before the seed, not after it. The seed is a ~50s `cp -a` plus an
+    # interpreter copy, and `main`'s except clause prints the error alone - so a
+    # refusal on the far side of it costs the wait and then discards the only
+    # record that the claim was written to at all. `--repo` was a required
+    # option until #205 item 2, which is why this ordering was unreachable.
+    if not (repo or "").strip() and not labelled:
+        raise HotfixError(NO_SOURCE_REPO.format(label=SOURCE_LABEL))
 
     if store.exists(f"{checkout}/pyproject.toml"):
         actions.append(f"claim already seeded at {checkout}")
@@ -1827,17 +2623,30 @@ def init(
 
     if store.exists(f"{checkout}/.git"):
         actions.append(f"checkout already present at {checkout}")
+        # The one naming of the repository that did not come out of the image,
+        # and so the only thing that can tell an inherited label from this
+        # image's own. Read after the seed because the checkout the image ships
+        # is what the seed just copied.
+        origin = _origin_url(store, checkout)
     else:
         clone = ["git", "clone"]
         if ref is not None:
             clone += ["--branch", ref]
-        clone += [repo, checkout]
+        clone += [(repo or "").strip() or labelled, checkout]
         store.run(clone)
-        actions.append(f"cloned {repo} to {checkout}")
+        actions.append(f"cloned {clone[-2]} to {checkout}")
+        # Deliberately not read back: a clone made from the label agrees with
+        # the label by construction, which is not corroboration.
+        origin = ""
 
-    resolved = (
-        base_commit or store.run(git_argv(checkout, "rev-parse", "HEAD")).stdout.strip()
+    source, corroborated, mismatch = corroborate_source(repo, labelled, origin)
+    if mismatch is not None:
+        actions.append(mismatch)
+
+    resolved, assumed, provenance = base_commit_from(
+        store, checkout, base_commit, image_labels, corroborated=corroborated
     )
+    actions.append(provenance)
 
     if install:
         actions.append(
@@ -1848,13 +2657,15 @@ def init(
     manifest = HotfixManifest(
         venv=venv,
         checkout=checkout,
-        repo=repo,
+        repo=source,
         base_image=target.image,
         base_image_digest=target.image_digest,
         interpreter=interpreter,
         container=target.container,
         commit=resolved,
         base_commit=resolved,
+        base_commit_assumed=assumed,
+        claim_venv=claim_venv,
         author=f"{name} <{email}>",
         timestamp=_now(),
         ahead=0,
@@ -1896,11 +2707,11 @@ def _install(
     )
     if result.returncode != 0:
         raise HotfixError(
-            f"rebuilding the venv failed in container {target.container}: "
-            f"{result.stderr.strip() or result.stdout.strip()}. It has to run "
-            "there and not in the seat, whose interpreter is a different "
-            "image's. If the pod has no egress to an index, pre-build the venv "
-            "on the claim and re-run with --no-install."
+            f"rebuilding the venv failed in container {target.container}:\n"
+            f"{_relay(result.stderr.strip() or result.stdout.strip())}\n"
+            "It has to run there and not in the seat, whose interpreter is a "
+            "different image's. If the pod has no egress to an index, pre-build "
+            "the venv on the claim and re-run with --no-install."
         )
     return f"rebuilt the venv at {checkout}/{venv}"
 
@@ -1959,7 +2770,20 @@ def apply_hotfix(
     # commits either way.
     changed = changed_paths(store, checkout, manifest.commit, head)
     if metadata_changed(changed):
-        actions.append(_install(kube, target, seeded_python(store), checkout))
+        # The venv the *manifest* records, never the default (#209). `apply`
+        # has no --claim-venv of its own and never should have: a rebuild that
+        # landed in `.venv` while the supervisor's runtime switch looked in the
+        # directory `init` was told about is the silent revert this whole mode
+        # exists to prevent, and it is not something to ask twice about.
+        actions.append(
+            _install(
+                kube,
+                target,
+                seeded_python(store),
+                checkout,
+                venv=manifest.claim_venv or CLAIM_VENV_DIR,
+            )
+        )
     elif changed:
         actions.append("no packaging metadata changed; editable install still valid")
 
@@ -1976,10 +2800,17 @@ def apply_hotfix(
         commits=commits[:MAX_RECORDED_COMMITS],
         base_image=target.image or manifest.base_image,
         base_image_digest=target.image_digest or manifest.base_image_digest,
+        # Rewriting a v1 manifest as v2 would otherwise turn "this schema could
+        # not record whether the base was measured" into "it was measured",
+        # which is the one direction this field must never move in.
+        base_commit_assumed=manifest.base_commit_assumed or manifest.stale_schema,
         schema_version=MANIFEST_VERSION,
     )
     write_manifest(store, manifest)
-    actions.append(f"{len(commits)} commit(s) ahead of {manifest.base_commit[:7]}")
+    actions.append(
+        f"{len(commits)} commit(s) ahead of {manifest.base_commit[:7]}"
+        f"{' (an assumed base)' if manifest.base_commit_assumed else ''}"
+    )
 
     if bounce:
         actions.append(_relaunch(kube, target))
@@ -2098,12 +2929,12 @@ def _relaunch(
     )
     if result.returncode != 0:
         raise HotfixError(
-            f"the relaunch failed in container {target.container}: "
-            f"{result.stderr.strip() or result.stdout.strip()}. The hold file is "
-            f"removed on every path, so the pod is fail-fast again either way - "
-            f"check {HOTFIX_CHILD_PID_PATH} exists, which is what tells you the "
-            "supervisor is the one from `--print-values` and not the image's own "
-            "entrypoint."
+            f"the relaunch failed in container {target.container}:\n"
+            f"{_relay(result.stderr.strip() or result.stdout.strip())}\n"
+            "The hold file is removed on every path, so the pod is fail-fast "
+            f"again either way - check {HOTFIX_CHILD_PID_PATH} exists, which is "
+            "what tells you the supervisor is the one from `hotfix values` and "
+            "not the image's own entrypoint."
         )
     return f"relaunched the application in {target.container} without a restart"
 
@@ -2160,26 +2991,54 @@ def consolidate(
 def _retirement_checklist(
     branch: str, manifest: HotfixManifest, target: HotfixTarget
 ) -> str:
+    """The steps after this one, and the verb that now tracks them.
+
+    Steps 4 and 5 are the two nobody does, and they are stated as two because
+    the first is in the *application's* values and the second in the claim's
+    chart: turning the claim off leaves the pod wired, which is how a claim
+    goes on shadowing a fixed image (measured on p47-beamline, 2026-08-23 -
+    :data:`WIRING_IS_THE_APPLICATIONS_OWN`). Neither is prose any more:
+    ``hotfix retire`` measures where the reader has got to.
+    """
     workload = target.workload or f"pod/{target.pod.name}"
-    return "\n".join(
-        [
-            "",
-            "next, in order — the claim is now the only copy of this fix:",
-            f"  1. gh pr create --head {branch} --title 'consolidate hotfix "
-            f"{manifest.commit[:7]}'",
-            "  2. merge, and let CI build and publish the image",
-            f"  3. roll {workload} onto the new image and confirm it is healthy",
-            "  4. remove the volume/volumeMount from the application's values",
-            f"  5. turn the claim off: {SUBCHART_VALUES_KEY}.enabled=false, or "
-            "hotfixProject.enabled=false on the central route",
-            "  6. delete the claim. It is annotated Prune=false, so turning it "
-            "off leaves the object standing - which is the point, and makes "
-            "this a deliberate act rather than a side effect of a sync",
-            "",
-            "until step 6 the claim keeps shadowing the image's project, and "
-            "`hotfix status` will report this pod as superseded.",
-        ]
+    # Steps 1 to 3 are authored finished, and step 1 for the reason the
+    # `terminal-reports` skill gives: it is a command somebody selects and
+    # pastes, and a wrap through it costs the report the one line that was for
+    # doing rather than reading. 4 and 5 are prose, so they go through
+    # `paragraph` and take their width from the terminal.
+    lines = [
+        "",
+        "next, in order — the claim is now the only copy of this fix:",
+        f"  1. gh pr create --head {branch} --title 'consolidate hotfix "
+        f"{manifest.commit[:7]}'",
+        "  2. merge, and let CI build and publish the image",
+        f"  3. roll {workload} onto the new image and confirm it is healthy",
+    ]
+    lines.extend(
+        paragraph(
+            "take the volume, volumeMount, args and podSecurityContext back out "
+            "of the application's own values, and redeploy",
+            first="  4. ",
+            indent="     ",
+        )
     )
+    lines.extend(
+        paragraph(
+            f"turn the claim off (`{SUBCHART_VALUES_KEY}.enabled=false`, or "
+            "`hotfixProject.enabled=false` on the central route) and delete it "
+            "— it is annotated Prune=false, so the flip alone leaves it",
+            first="  5. ",
+            indent="     ",
+        )
+    )
+    lines.append("")
+    lines.extend(
+        paragraph(
+            f"`podbench hotfix retire pod/{target.pod.name}` says which of those "
+            "have landed, and deletes the claim once nothing mounts it."
+        )
+    )
+    return "\n".join(lines)
 
 
 # -- helm values -----------------------------------------------------------
@@ -2356,22 +3215,47 @@ not pass --gid" and the sentinel is the only signal there is."""
 
 
 FROM_POD_ESCAPE = (
-    "`--print-values` reads the target by default so the emitted values need no "
-    "hand-editing. To emit them without a cluster, pass `--no-from-pod` and "
-    "supply `--entrypoint`, `--gid` and `--liveness-probe` yourself.\n"
+    "`hotfix values` reads the target itself and there is no offline emission. "
+    "Supplying these values by hand is what produced #176: a probe timing left "
+    "out becomes a Kubernetes default, in the restart-sooner direction.\n"
     "\n"
-    "Supplying them by hand is how #176 happened: a chart renders a supplied "
-    "`livenessProbe` wholesale, so a timing you leave out becomes the Kubernetes "
-    "default and the target is probed sooner and more often than it was before."
+    "So make the read work - `--from-pod POD` names the pod, `-n NS` and "
+    "`--context NAME` say where - or state one field on top of it with "
+    "`--entrypoint`, `--gid` or `--liveness-probe`."
 )
-"""The way out of every failure reading the pod, and what taking it costs.
+"""Why reading the pod is not optional, appended to every failure of it.
 
 Making a cluster read the default means every ``kubectl`` failure now lands on a
 user who did not ask for one, so a bare relay of kubectl's stderr is not enough:
-the message has to name the flag that gets the job done anyway. It also has to
-say what that flag costs, because the escape hatch is the exact route that
-produced #176 - the consequence *is* the point, and a generic "try
-``--no-from-pod``" would hand somebody the footgun without the warning.
+the message has to say what to do next. Until #205 item 6 that was a flag -
+``--no-from-pod`` emitted from the three hand-supplied values instead - and the
+message's second job was to warn that the flag was the exact route that produced
+#176.
+
+The flag is gone and the #176 sentence stays, because what it names is now the
+*reason* there is nothing to fall back to rather than the price of falling back.
+Dropping it would leave a reader who cannot reach the cluster thinking the read
+is a convenience, and their next move is to hand-write the five keys into the
+chart anyway - the same footgun, off the tool and unwarned.
+
+What stays is the *consequence*; the mechanism behind it - a chart renders a
+supplied ``livenessProbe`` wholesale, measured as 120s/30s going to 0s/10s on a
+compiled IOC - is in ``docs/how-to/hotfix-a-running-pod.md``, said once, where
+somebody reading about the mode will meet it. A terminal is where you find out
+*that* it applies to the command in front of you.
+
+What went off it in the 6c pass is only compression - "there is no offline
+emission to fall back to" and "where the read reaches the pod and the pod
+cannot answer for one field" - and the three beats are unchanged: there is no
+fallback, hand-supplying costs a restart-sooner probe, and here are the flags
+that fix the read or override one field of it.
+
+The consequence is stated as a *direction*, not an event, because #176 was
+caught in review and the values were hand-corrected before they deployed: no
+target was ever restarted for it. Saying it was would be one word's worth of
+length and the whole of the message's authority - a reader who opens the issue
+finds it overstated, and a warning caught exaggerating once is discounted
+thereafter.
 """
 
 
@@ -2412,8 +3296,8 @@ def container_entrypoint(container: Mapping[str, Any]) -> str:
             "the target declares neither `command` nor `args`, so the command it "
             "runs lives in the image's ENTRYPOINT and is not in the pod spec at "
             "all - nothing podbench can read from the cluster will find it. Pass "
-            "`--entrypoint CMD` (the rest is still read from the pod), or "
-            f"`--no-from-pod` and supply all three.\n\n{FROM_POD_ESCAPE}"
+            "`--entrypoint CMD`; the gid and the probe are still read from the "
+            f"pod.\n\n{FROM_POD_ESCAPE}"
         )
     return shlex.join(words)
 
@@ -2488,8 +3372,10 @@ def values_snippet(
     vary.
     """
     claim = hotfix_claim(app)
-    # A whole probe carries its timings; a bare command cannot, and the caller is
-    # told so rather than left to find out from a restart ladder.
+    # Timings only ever come from a whole probe, and a probe is entitled to
+    # declare none - the read finds that shape on a target whose schedule lives
+    # in its chart. #176 is what an emitted probe missing them costs, so the
+    # empty case is warned about below rather than left to a restart ladder.
     exec_command = liveness_exec or (
         probe_exec_command(liveness_probe) if liveness_probe else []
     )
@@ -2572,11 +3458,13 @@ def values_snippet(
             ]
         else:
             lines += [
-                "  # WARNING: no timings were supplied, so this probe will use the",
-                "  # Kubernetes defaults - initialDelaySeconds 0, periodSeconds 10.",
-                "  # If the target declared its own, copy them in here or it will be",
-                "  # probed sooner and more often than it was before. Pass the whole",
-                "  # probe (--liveness-probe) instead of --liveness to carry them.",
+                "  # WARNING: the probe this was built from declared no timings, so",
+                "  # this one gets the Kubernetes defaults, initialDelaySeconds 0",
+                "  # and periodSeconds 10. The chart may have been supplying its",
+                "  # own on a branch that a supplied livenessProbe takes instead",
+                "  # of: ioc-instance does, measured at 120s/30s. Check, and copy",
+                "  # those numbers in here, or the target is probed sooner and more",
+                "  # often than it was before.",
             ]
     lines += [
         f"{security_key}:",
@@ -2603,10 +3491,9 @@ def values_snippet(
 
 
 ABSORBED_FROM_PARENT_NOTE = (
-    "podbench: {key} came from {parent} and has been copied into this file. A "
-    "helm list replaces across the parent/child values merge, it does not merge "
-    "- so a service declaring {key} for the first time takes the shared one over "
-    "completely and anything it declared is silently gone. Copied: {names}."
+    "podbench: {key} came from {parent} and has been copied into this file, "
+    "because a helm list replaces across the parent/child merge rather than "
+    "merging into it. Copied: {names}."
 )
 """Said when the merge absorbs the shared file's entries into the target's own.
 
@@ -2614,14 +3501,21 @@ The live proof is ``bl47p-mo-ioc-01``, which declares ``dev-shm`` and whose
 running pod carries no ``beamline-data`` at all - the shared entry every other
 IOC on that beamline inherits. This is the difference between output that is
 correct and output that silently unmounts a beamline directory, so it is said
-out loud rather than done quietly."""
+out loud rather than done quietly.
+
+What the replace costs when it is *not* handled - the service takes the shared
+list over completely and anything it declared is gone - is in
+``docs/how-to/hotfix-a-running-pod.md`` under ``--parent-values``. Here it has
+been handled, so the note names the fact, the reason and the entries copied, and
+:data:`NO_PARENT_NOTE` carries the cost because that is the case where it is
+still to be paid."""
 
 NO_PARENT_NOTE = (
-    "podbench: {path} declares no {key} of its own, and no shared values file "
+    "podbench: {path} declares no {key} of its own and no shared values file "
     "was given. If this service inherits {key} from one, pass it with "
-    "--parent-values: the emitted file declares {key} for the first time, and a "
-    "helm list replaces across the parent/child merge rather than merging, so "
-    "an inherited entry would be silently dropped."
+    "`--parent-values`: the emitted file declares {key} for the first time, "
+    "and a helm list replaces across that merge, so an inherited entry would "
+    "be silently dropped."
 )
 """Said when the target declares no list and podbench cannot see whether one
 was inherited.
@@ -2783,7 +3677,7 @@ mounts, so a reader who is not told assumes it was left half-finished."""
 CLAIM_COMMENT = (
     "\npodbench Hotfix mode: a claim carrying the project, mounted beside the\n"
     "application's own and never over it. The claim's name comes from the\n"
-    "release, and `podbench hotfix --print-values` wrote the matching\n"
+    "release, and `podbench hotfix values` wrote the matching\n"
     "volume into the application's own values.\n"
 )
 """Written above the claim's key in a merged file."""
@@ -3074,16 +3968,16 @@ def _read_values_file(path: str, what: str) -> str:
     """*path*'s text, or a refusal naming what it was for.
 
     Read here and not in :func:`merged_values` for the reason the pod is read in
-    :func:`_read_print_values_from_pod` and not in :func:`values_snippet`: the
+    :func:`_read_values_from_pod` and not in :func:`values_snippet`: the
     thing that decides the output has to be assertable with no filesystem.
     """
     try:
         return Path(path).read_text()
     except OSError as exc:
-        _print_values_failure(f"could not read {what} {path}: {exc}")
+        _values_failure(f"could not read {what} {path}: {exc}")
 
 
-def _merge_print_values_into_file(
+def _merge_values_into_file(
     snippet: str,
     *,
     values: str,
@@ -3111,8 +4005,1427 @@ def _merge_print_values_into_file(
         parent_path=parent_values or "the shared values file",
     )
     for note in notes:
-        print("\n".join(paragraph(note)), file=sys.stderr)
+        emit(_laid_out(note), stderr=True)
     return merged
+
+
+# -- pre-flight -------------------------------------------------------------
+
+
+class CheckStatus(Enum):
+    """How one pre-flight check came out.
+
+    Three tokens rather than ``status``'s two, because the distinction
+    ``doctor`` draws is the one ``check`` needs and it is the exit code: a
+    ``FAIL`` stands between this target and a working ``hotfix init``, a
+    ``WARN`` does not. The spellings are :mod:`podbench.console`'s - that module
+    is what colours every report podbench prints, and a token it has not been
+    taught is left uncoloured - rather than a second vocabulary for a reader of
+    this one to learn.
+    """
+
+    OK = "ok"
+    WARN = "warn"
+    FAIL = "FAIL"
+
+
+@dataclass(frozen=True)
+class PreflightCheck:
+    """One prerequisite of hotfix mode, and what was measured for it."""
+
+    name: str
+    status: CheckStatus
+    detail: str
+
+    @property
+    def blocks(self) -> bool:
+        """Whether this is a state ``init`` would refuse on.
+
+        >>> PreflightCheck("liveness", CheckStatus.WARN, "").blocks
+        False
+        >>> PreflightCheck("claim", CheckStatus.FAIL, "").blocks
+        True
+        """
+        return self.status is CheckStatus.FAIL
+
+
+CLAIM_NOT_MOUNTED = (
+    "{checkout} is not present: the claim is not mounted. Run `podbench hotfix "
+    "values` and deploy the five values it emits."
+)
+"""Said by ``init`` when the claim is not there, and by ``check`` before it.
+
+One constant and not two. ``check``'s whole job is to say ``init``'s refusals
+earlier, and a second copy of this sentence is how the two come to describe
+different remedies for one state.
+"""
+
+IMAGE_HAS_NO_PROJECT = (
+    "the target's image has no project at {image_project}, so there is nothing "
+    "to seed the claim from. Name the paths this image really uses with "
+    "`--image-project PATH` and `--image-interpreter PATH`, or the container "
+    "you meant with `--container NAME`."
+)
+"""Said when the application container answers that the project is not there.
+
+Measured in the application container itself, beside
+:func:`require_supervisor`'s own probe, so it is a statement about the image's
+*layout* and nothing else. :data:`TARGET_HAS_NO_PROJECT` is the same finding
+reached the other way round - through the seat's ``/proc/1/root`` - and says
+"{root} lists" because that is what it measured; this one has not looked at the
+seat and must not borrow the claim.
+
+Like that message it names neither ptrace nor ``doctor``. Both are the false
+trail the old wording opened (#178), and a message that mentions a mechanism at
+all - even to rule it out - is one a reader will go and chase.
+
+Its remedy sentence names the same three flags in the same order and the same
+words as :data:`TARGET_HAS_NO_PROJECT`'s, for the reason
+:data:`CLAIM_NOT_MOUNTED` is one constant and not two: ``check``'s job is
+to say ``init``'s refusals earlier, in ``init``'s terms. Two spellings of one
+remedy read as two different fixes to the reader who meets them an hour apart.
+Not merged into one constant, because the halves that differ - "{root} lists"
+here and not there - are the measurements each one actually made.
+"""
+
+IMAGE_HAS_NO_INTERPRETER = (
+    "the target's image has no interpreter at {image_interpreter}, and the seed "
+    "copies one onto the claim: a rebuilt venv's console scripts carry an "
+    "absolute shebang, so an interpreter left behind in the image is one the "
+    "next restart takes away. `--image-interpreter PATH` names the layout this "
+    "image has."
+)
+"""Said when the interpreter half of :func:`seed_source` is not where it looked.
+
+``init`` refuses a missing project in its own words and a missing interpreter in
+nobody's: the copy is a ``cp -a`` that simply fails, ~50s into the seed and in
+kubectl's sentence rather than podbench's. That is the round trip this verb
+exists to save, so the second path is asked in the same breath as the first.
+"""
+
+NON_EXEC_PROBE_BLOCKS_THE_HOLD = (
+    "a {kind} livenessProbe cannot be short-circuited by the hold - only an exec "
+    "probe can - so the kubelet will restart the pod out from under the seat at "
+    "failureThreshold x periodSeconds. Deal with that before `hotfix apply` "
+    "holds this pod."
+)
+"""Said when the target's probe is real, readable, and of no use to hold mode.
+
+A ``WARN`` and not a ``FAIL`` because ``init`` accepts such a target: what this
+breaks is ``apply``'s hold, later, and the exit code is reserved for what stops
+the next command.
+
+Separate from :data:`NON_EXEC_PROBE_WARNING`, which says the same finding to
+somebody reading an emitted snippet and carries a second half about the block
+not being emitted. There is no block here, and a reader of this report has not
+asked for one.
+"""
+
+CLAIM_ALREADY_SEEDED = (
+    "{container} mounts {volume} at {checkout}, and it already carries a "
+    "project: `hotfix init` seeds nothing over one, so the target root, the "
+    "project and the interpreter are not asked."
+)
+"""Why three rows are not measured on a claim that has already been seeded.
+
+``init`` short-circuits its entire seed on ``{checkout}/pyproject.toml``, which
+makes the target root, the image's project and the image's interpreter moot -
+so a ``check`` that measured them anyway would refuse a target ``init``
+accepts, which is the second half of #205 item 3's falsification.
+
+Said once, here, on the row that measured it; the three rows beneath carry the
+short form. The mechanism belongs to the fact and not to each of its
+consequences - three copies of this sentence is fifteen lines of identical
+prose in the middle of a nine-line report.
+"""
+
+SEAT_NOT_RUNNING = (
+    "--seat {seat} names no running container in {pod}: every claim read hotfix "
+    "mode makes goes through it, so the next command would fail on kubectl's "
+    "refusal to exec into it. Drop the flag to use the seat podbench finds, or "
+    "name one that is running."
+)
+"""Said when ``--seat`` names something the pod's statuses do not.
+
+Corroborated rather than restated. ``--seat`` is taken at its word by
+:func:`seat_container` - which is what it is for - but a report that answered
+``[ok] {seat} is running`` for a name nobody landed would be restating the
+request as a measurement, and the row it then breaks is ``target root``: a seat
+that is not there cannot list ``/proc/1/root``, so the reader is sent to
+CAP_SYS_PTRACE and ``doctor`` for a typo. #178's false trail, reached by a new
+route.
+"""
+
+_TEST_SAID_NO = 1
+"""``test``'s exit code for a predicate that is false.
+
+Distinguished from 126 and 127 - ``test`` itself not running, which on a
+distroless application container is a real possibility - because those are not
+an answer about the image's layout and must not be reported as one.
+"""
+
+
+def _target_check(target: HotfixTarget) -> PreflightCheck:
+    where = f"{target.pod.name}, container {target.container}"
+    return PreflightCheck(
+        "target",
+        CheckStatus.OK,
+        f"{where}, {target.workload}" if target.workload else where,
+    )
+
+
+def _claim_check(target: HotfixTarget, seeded: bool) -> PreflightCheck:
+    if target.claim_mount == HOTFIX_APP_PATH:
+        mounts = f"{target.container} mounts {HOTFIX_CLAIM_VOLUME} at {HOTFIX_APP_PATH}"
+        if seeded:
+            mounts = CLAIM_ALREADY_SEEDED.format(
+                container=target.container,
+                volume=HOTFIX_CLAIM_VOLUME,
+                checkout=HOTFIX_APP_PATH,
+            )
+        return PreflightCheck("claim", CheckStatus.OK, mounts)
+    if not target.claim_mount:
+        return PreflightCheck(
+            "claim",
+            CheckStatus.FAIL,
+            CLAIM_NOT_MOUNTED.format(checkout=checkout_path()),
+        )
+    # A claim mounted elsewhere is a refusal and not a note, because everything
+    # the seed writes names the default path - see VENV_INVISIBLE_TO_STATUS,
+    # whose last sentence is the one that applies here.
+    return PreflightCheck(
+        "claim",
+        CheckStatus.FAIL,
+        VENV_INVISIBLE_TO_STATUS.format(
+            venv=target.claim_mount, default=HOTFIX_APP_PATH
+        ),
+    )
+
+
+def _claim_seeded(kube: Kubectl, target: HotfixTarget) -> bool:
+    """Whether the claim already carries a project, asked where ``init`` asks.
+
+    Exactly :func:`init`'s own predicate — ``{checkout}/pyproject.toml`` — and
+    it is the one that decides how much of the seed happens at all. See
+    :data:`CLAIM_ALREADY_SEEDED` for why measuring the three rows underneath it
+    anyway makes ``check`` refuse targets ``init`` accepts.
+
+    A claim mounted anywhere else is already a blocker, and its rows are read
+    against the default path, so it is not asked there.
+    """
+    if target.claim_mount != HOTFIX_APP_PATH:
+        return False
+    probe = kube.exec_(
+        target.pod.name,
+        ["test", "-e", f"{checkout_path()}/pyproject.toml"],
+        container=target.container,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+def _supervisor_check(kube: Kubectl, target: HotfixTarget) -> PreflightCheck:
+    try:
+        require_supervisor(kube, target)
+    except HotfixError as error:
+        return PreflightCheck("supervisor", CheckStatus.FAIL, str(error))
+    return PreflightCheck(
+        "supervisor",
+        CheckStatus.OK,
+        f"{target.container} is running it: {HOTFIX_CHILD_PID_PATH} exists",
+    )
+
+
+def _image_path_check(
+    kube: Kubectl, target: HotfixTarget, name: str, path: str, absent: str
+) -> PreflightCheck:
+    """Whether the image keeps something at *path*, asked in the target itself.
+
+    ``test -d`` in the application container rather than ``ls`` through the
+    seat's ``/proc/1/root``, because this is a question about the *image* and
+    the two are different questions - which is the whole of #178. It also needs
+    no seat, so the layout refusal that costs an attach and a round trip is the
+    one this verb can answer before either.
+    """
+    probe = kube.exec_(
+        target.pod.name, ["test", "-d", path], container=target.container, check=False
+    )
+    if probe.returncode == 0:
+        return PreflightCheck(name, CheckStatus.OK, f"the image keeps one at {path}")
+    if probe.returncode == _TEST_SAID_NO:
+        return PreflightCheck(name, CheckStatus.FAIL, absent)
+    return PreflightCheck(
+        name,
+        CheckStatus.WARN,
+        f"not measured: `test -d {path}` in {target.container} exited "
+        f"{probe.returncode}, which is `test` not running rather than an answer "
+        "about the image.",
+    )
+
+
+def _running_containers(pod_json: Mapping[str, Any]) -> set[str]:
+    """Every container of the pod that is running now, ephemeral ones included.
+
+    Ephemeral statuses are where a seat appears, and the ordinary ones are here
+    because ``--seat`` may legitimately name a sidecar that mounts the claim.
+    """
+    status = as_dict(pod_json.get("status"))
+    return {
+        name
+        for key in (
+            "containerStatuses",
+            "initContainerStatuses",
+            "ephemeralContainerStatuses",
+        )
+        for entry in _as_list(status.get(key))
+        if (name := _as_str(as_dict(entry).get("name")))
+        and "running" in as_dict(as_dict(entry).get("state"))
+    }
+
+
+def _seat_check(
+    target: HotfixTarget, seat: str | None, running: Collection[str]
+) -> PreflightCheck:
+    if seat is None:
+        return PreflightCheck(
+            "seat",
+            CheckStatus.WARN,
+            f"no podbench container is running in {target.pod.name}. Not a "
+            "blocker - `hotfix init` lands one itself - but it is why `target "
+            "root` below is unmeasured.",
+        )
+    if seat in running:
+        return PreflightCheck("seat", CheckStatus.OK, f"{seat} is running")
+    return PreflightCheck(
+        "seat",
+        CheckStatus.FAIL,
+        SEAT_NOT_RUNNING.format(seat=seat, pod=target.pod.name),
+    )
+
+
+def _target_root_check(
+    kube: Kubectl, target: HotfixTarget, seat: str | None, container_root: str
+) -> PreflightCheck:
+    if seat is None:
+        return PreflightCheck(
+            "target root",
+            CheckStatus.WARN,
+            f"not measured: listing {container_root} is a property of the seat's "
+            "ptrace rung, and this check has no running seat to ask. `podbench "
+            f"attach {target.pod.name}` lands one, or let `hotfix init` land it "
+            "and answer this on its own.",
+        )
+    store = PodStore(kube=kube, pod=target.pod.name, container=seat)
+    if target_root_readable(store, container_root):
+        return PreflightCheck(
+            "target root",
+            CheckStatus.OK,
+            f"{seat} can list {container_root}, so the seed can read the target",
+        )
+    return PreflightCheck(
+        "target root",
+        CheckStatus.FAIL,
+        TARGET_ROOT_UNREADABLE.format(root=container_root),
+    )
+
+
+def _liveness_check(pod_json: Mapping[str, Any], container: str) -> PreflightCheck:
+    absent: dict[str, Any] = {}
+    spec = next(
+        (
+            as_dict(entry)
+            for entry in _as_list(as_dict(pod_json.get("spec")).get("containers"))
+            if _as_str(as_dict(entry).get("name")) == container
+        ),
+        absent,
+    )
+    declared = as_dict(spec.get("livenessProbe"))
+    if not declared:
+        # Never a fault: the canonical fastcs target declares no probe, and 7 of
+        # 18 containers on a real beamline do.
+        return PreflightCheck(
+            "liveness", CheckStatus.OK, "no livenessProbe, so nothing cuts a hold short"
+        )
+    if probe_exec_command(declared):
+        return PreflightCheck(
+            "liveness",
+            CheckStatus.OK,
+            "an exec probe, which `hotfix values` wraps to honour the hold",
+        )
+    kind = next(
+        (k for k in ("httpGet", "tcpSocket", "grpc") if k in declared), "non-exec"
+    )
+    return PreflightCheck(
+        "liveness", CheckStatus.WARN, NON_EXEC_PROBE_BLOCKS_THE_HOLD.format(kind=kind)
+    )
+
+
+def _source_check(target: HotfixTarget, repo: str | None) -> PreflightCheck:
+    """Whether anything names the repository ``init`` is going to clone.
+
+    A blocker, and ``--repo`` is asked here because ``init`` asks it: that verb
+    refuses outright when neither the flag nor the image's label names one
+    (:data:`NO_SOURCE_REPO`), and it refuses *before* the seed, so a ``check``
+    that passed the state would be sending the reader into precisely the second
+    attempt this verb exists to remove. Hearing the flag is the other half:
+    without it this row would refuse a target ``init --repo URL`` accepts.
+
+    The registry is not read at all when the flag answers it - a round trip on
+    the way into an emergency, for a value already in hand, which is the
+    ordering ``init`` uses too.
+
+    **A bare non-empty label is not an answer** (measured 2026-08-23, evidence
+    ``phase7-the-contradiction.md`` §6/§7.1). OCI labels are inherited, and the
+    target this mode was proved against advertises its base image's repository,
+    revision and title throughout, so an ``[ok]`` on the label alone green-lit
+    cloning another project entirely. Four states, and the row says which one
+    it is in:
+
+    * ``--repo`` was given - independent of the image by construction, ``OK``;
+    * no label and no flag - ``init`` refuses, ``FAIL``;
+    * a label the image's own name corroborates
+      (:func:`image_name_agrees`) - ``OK``, naming what corroborated it;
+    * a label nothing corroborates - ``WARN``, because ``init`` proceeds.
+
+    The two corroborators it does **not** take are named here so the row cannot
+    be read as having taken them: the seeded checkout's ``origin``, which
+    :func:`init` reads and ``check`` cannot without a seat, and the manifest's
+    own ``repo``, which exists only once ``init`` has run. Neither is available
+    in the state this verb is written for - an unseeded claim, before starting.
+    """
+    named = (repo or "").strip()
+    if named:
+        return PreflightCheck("source", CheckStatus.OK, f"--repo names {named}")
+    reference = target.image_digest or target.image
+    labels = read_image_labels(reference) or {}
+    source = (labels.get(SOURCE_LABEL) or "").strip()
+    if not source:
+        return PreflightCheck(
+            "source", CheckStatus.FAIL, NO_SOURCE_REPO.format(label=SOURCE_LABEL)
+        )
+    ref = parse_reference(reference)
+    # The repository without its tag or digest: that is what the label is
+    # compared against, and naming the whole reference spends two lines of the
+    # row on a version nothing here read.
+    named_image = f"{ref.registry}/{ref.repository}" if ref is not None else reference
+    if image_name_agrees(reference, source):
+        # What corresponds, and not "so the label is this image's own": the
+        # naming is a corroborator with a hole in it (:func:`image_name_agrees`),
+        # and this row speaks for the repository `init` will clone - not for the
+        # revision label, which `init` still gates on `corroborate_source` and
+        # still records as ASSUMED here.
+        return PreflightCheck(
+            "source",
+            CheckStatus.OK,
+            f"the image names {source}, which its own repository "
+            f"{named_image} corresponds to",
+        )
+    return PreflightCheck(
+        "source",
+        CheckStatus.WARN,
+        SOURCE_LABEL_UNCORROBORATED.format(image=named_image, source=source),
+    )
+
+
+def preflight(
+    kube: Kubectl,
+    reference: str,
+    *,
+    container: str | None = None,
+    seat: str | None = None,
+    repo: str | None = None,
+    image_project: str = IMAGE_PROJECT_PATH,
+    image_interpreter: str = IMAGE_INTERPRETER_PATH,
+    container_root: str = "/proc/1/root",
+) -> list[PreflightCheck]:
+    """Every prerequisite hotfix mode has, asked in one pass instead of six.
+
+    Each was discovered serially and at the moment it bit: no supervisor, no
+    claim, a second replica, a root the seat cannot read, no project where
+    podbench looked, a probe the hold cannot short-circuit. Every one of those
+    costs a chart change and a redeploy, in an emergency, one per attempt
+    (#205 item 3). Nothing here is a new measurement - each row is the function
+    that already enforces it, asked early and caught rather than raised.
+
+    It asks ``init``'s own questions in ``init``'s own order of relevance, which
+    is why it takes ``--repo`` and why it asks whether the claim is seeded
+    before anything about the image: both are conditions ``init`` evaluates, and
+    a row measured where ``init`` does not look is a row that can disagree with
+    it. See :data:`CLAIM_ALREADY_SEEDED` and :func:`_source_check`.
+
+    One thing it deliberately does not decide, because it is not a fact about
+    the target: the **seat's view of the target root**, when no seat is running.
+    Whether one will be able to list ``/proc/1/root`` is a property of a
+    container that does not exist yet, so it is reported *unmeasured* rather
+    than guessed at either way - and the verdict says "nothing measured here"
+    for exactly that reason.
+
+    What is left to ``init`` is what only performing the seed can find: an
+    ``attach`` the cluster refuses, or an interpreter directory the copy lands
+    and :func:`seeded_python` then finds nothing usable inside. A pre-flight
+    that claimed those would be claiming to have run the seed.
+    """
+    try:
+        target, pod_json = _resolve_target(kube, reference, container=container)
+    except HotfixError as error:
+        # The whole report rather than its first row: nothing below can be
+        # measured without a pod, and eight "not measured" lines under one real
+        # refusal would bury it.
+        return [PreflightCheck("target", CheckStatus.FAIL, str(error))]
+    found = running_seat(pod_json)
+    running = _running_containers(pod_json)
+    named = seat if seat is not None else (None if found is None else found.name)
+    # A seat that is not running is no seat to measure through: exec'ing into it
+    # would fail, and TARGET_ROOT_UNREADABLE is the ptrace false trail this
+    # report must not lay for what is a mistyped --seat.
+    usable_seat = named if named in running else None
+    seeded = _claim_seeded(kube, target)
+    return [
+        _target_check(target),
+        _claim_check(target, seeded),
+        _supervisor_check(kube, target),
+        _seat_check(target, named, running),
+        *_seed_checks(
+            kube,
+            target,
+            seeded=seeded,
+            seat=usable_seat,
+            container_root=container_root,
+            image_project=image_project,
+            image_interpreter=image_interpreter,
+        ),
+        _liveness_check(pod_json, target.container),
+        _source_check(target, repo),
+    ]
+
+
+def _seed_checks(
+    kube: Kubectl,
+    target: HotfixTarget,
+    *,
+    seeded: bool,
+    seat: str | None,
+    container_root: str,
+    image_project: str,
+    image_interpreter: str,
+) -> list[PreflightCheck]:
+    """The three rows that only a seed reads, and which a seeded claim retires.
+
+    ``init`` short-circuits the whole seed on a claim that already carries a
+    project, so on an already-hotfixed pod - the state ``check`` is most likely
+    to be run in a second time - these three are not measured at all rather
+    than measured and reported as blockers ``init`` would never raise.
+    """
+    if seeded:
+        # Short, because the `claim` row above says why (CLAIM_ALREADY_SEEDED)
+        # and a mechanism is said once.
+        moot = f"not asked: {checkout_path()} is already seeded"
+        return [
+            PreflightCheck(name, CheckStatus.OK, moot)
+            for name in ("target root", "project", "interpreter")
+        ]
+    return [
+        _target_root_check(kube, target, seat, container_root),
+        _image_path_check(
+            kube,
+            target,
+            "project",
+            f"/{image_project.strip('/')}",
+            IMAGE_HAS_NO_PROJECT.format(image_project=f"/{image_project.strip('/')}"),
+        ),
+        _image_path_check(
+            kube,
+            target,
+            "interpreter",
+            f"/{image_interpreter.strip('/')}",
+            IMAGE_HAS_NO_INTERPRETER.format(
+                image_interpreter=f"/{image_interpreter.strip('/')}"
+            ),
+        ),
+    ]
+
+
+_CHECK_NAMES = 14
+"""Width of the name column, which is ``doctor._NAMES`` because the two reports
+are the same shape and are read the same way. Every name is well short of it, so
+the two spaces that make a row a row are never spent down to one - which is what
+would leave half the names bold and half plain."""
+
+
+def format_preflight(checks: Sequence[PreflightCheck]) -> str:
+    """The pre-flight report: one line per check, then the verdict.
+
+    Shaped like ``doctor``'s, down to the column: the facts first so a reader
+    can see what was measured, then a verdict that names the blockers rather
+    than summarising them away. Only the detail is wrapped, and it hangs under
+    itself rather than under the name, so a wrapped one cannot be read as the
+    next check's.
+    """
+    lines: list[str] = []
+    for check in checks:
+        lead = (
+            f"  [{check.status.value}]".ljust(_FLAG) + f"{check.name:<{_CHECK_NAMES}} "
+        )
+        lines.extend(paragraph(check.detail, first=lead, indent=" " * len(lead)))
+    lines.append(rule(char="-"))
+    blockers = [check.name for check in checks if check.blocks]
+    if blockers:
+        count = len(blockers)
+        lines.append(
+            f"VERDICT: {count} blocker{'' if count == 1 else 's'} before "
+            "`podbench hotfix init` can work (exit 1)"
+        )
+        lines.extend(paragraph(", ".join(blockers), first="BLOCKERS: "))
+    else:
+        lines.append(
+            "VERDICT: nothing measured here blocks `podbench hotfix init` (exit 0)"
+        )
+    return "\n".join(lines)
+
+
+# -- retirement -------------------------------------------------------------
+
+
+HOTFIX_TARGET_LABEL = "podbench.dev/hotfix-target"
+"""The label both claim charts put the application's name in.
+
+``Charts/podbench-hotfix-claim/templates/pvc.yaml`` sets it from the release
+name and ``Charts/podbench/templates/pvc-hotfix-project.yaml`` from the claim
+entry, so it is the one thing a claim carries that says what it is *for*. It is
+how :func:`retire` finds the claim once the pod has been unwired: a pod that no
+longer declares the volume no longer names the claim either, and deriving
+``<app>-podbench-project`` from a container name would be a guess about somebody
+else's values file.
+"""
+
+
+class RetirementStep(Enum):
+    """What retiring a hotfix consists of, in the order the steps happen.
+
+    Four rather than :func:`_retirement_checklist`'s five, because these are
+    the four a cluster can be *asked* about. Opening the PR and merging it
+    leave no trace podbench can read; rolling the image, unwiring the pod and
+    deleting the claim each do.
+    """
+
+    BRANCH = "branch"
+    """The fix is on a branch, so the claim is no longer its only copy."""
+
+    IMAGE = "image"
+    """The deployed image has moved on from the one the hotfix was made against."""
+
+    WIRING = "wiring"
+    """The pod no longer carries the volume, the mount and the supervisor."""
+
+    CLAIM = "claim"
+    """The claim itself is gone."""
+
+
+@dataclass(frozen=True)
+class RetirementCheck:
+    """One step of retirement, and what was measured for it."""
+
+    step: RetirementStep
+    done: bool | None
+    """``True`` measured done, ``False`` measured outstanding, ``None``
+    unmeasured — which is never "done" (#205 item 4's falsification: a
+    retirement that lies is worse than the checklist it replaces)."""
+
+    detail: str
+
+    @property
+    def flag(self) -> str:
+        """``[x]`` only for a step that was measured done.
+
+        ``attach``'s two tokens rather than a third spelling for unmeasured:
+        :mod:`podbench.console` colours the ones it has been taught and leaves
+        an invented one plain, and the distinction this report must not blur is
+        *ticked or not* — an unmeasured step is not ticked, and its detail says
+        why.
+
+        >>> RetirementCheck(RetirementStep.CLAIM, None, "").flag
+        '[ ]'
+        >>> RetirementCheck(RetirementStep.CLAIM, True, "").flag
+        '[x]'
+        """
+        return "[x]" if self.done else "[ ]"
+
+    @property
+    def remaining(self) -> bool:
+        """Whether this step was measured and is not done.
+
+        The exit code is this and not ``not done``: an unmeasured step is not
+        an assertion in either direction, and a ``retire`` that exited 1 for
+        something it never looked at would be unusable in the shutdown
+        checklist ``status`` already serves.
+
+        >>> RetirementCheck(RetirementStep.CLAIM, None, "").remaining
+        False
+        >>> RetirementCheck(RetirementStep.CLAIM, False, "").remaining
+        True
+        """
+        return self.done is False
+
+
+WIRING_IS_THE_APPLICATIONS_OWN = (
+    "{pod} still carries {what}. Those are fields in the application's own pod "
+    "template, not in the claim's chart, so turning the claim off does not "
+    "remove them: take those entries - and not the whole `volumes` and "
+    "`volumeMounts` keys, which carry the service's own - back out of the "
+    "application's values and redeploy."
+)
+"""Said when the pod is still wired for hotfix mode.
+
+Measured, and it is the state this verb exists for (p47-beamline, 2026-08-23):
+`p47-services` carried ``podbench-hotfix-claim.enabled: false``, every pod in
+the namespace was deleted, and ``bl47p-ea-fastcs-01-0`` came back still mounting
+the claim and still running the supervisor loop. The boolean disables the
+*subchart* — the PVC — while ``volumes``, ``volumeMounts``, ``args`` and
+``podSecurityContext`` live in the target's own ``ioc-instance`` values and are
+untouched. Somebody who believes they turned hotfix mode off has done step 5 and
+not step 4, and nothing until now said so.
+
+The closing clause used to read "take them back out of the values `podbench
+hotfix values` emitted". Re-measured 2026-08-24, that is hazardous rather than
+merely loose: ``values --from-pod`` emits podbench's own ``volumes`` and
+``volumeMounts`` entries only, while the deployed values carry ``beamline-data``
+in both keys - repeated there on purpose, because a helm list *replaces* across
+the parent/child merge. Somebody who deleted the two keys wholesale would
+unmount the beamline directory. :data:`EXISTING_MOUNTS_WARNING` says exactly
+this on the way in, and nothing said it on the way out.
+
+What survives onto the terminal is the instruction — *the entries, not the
+keys* — and the fact that the keys carry the service's own entries too. The
+helm merge rule behind it is the mechanism, and it is written out once in
+``docs/how-to/hotfix-a-running-pod.md`` directly under this report's own
+sample.
+"""
+
+SEAT_HOME_IS_THE_SEATS = (
+    "{volume} is declared as well, and it is the seat's rather than the "
+    "hotfix's: `attach` and `vscode` use it, so take it out only if no seat is "
+    "wanted on this pod again."
+)
+"""The sixth value hotfix mode wires, and the second one it must not count.
+
+``hotfix values`` emits :data:`~podbench.model.SEAT_HOME_VOLUME` beside the
+claim, so a reader working from the pod's *mounts* would leave it behind -
+nothing mounts it - and the ``wiring`` row has to name it (evidence §7.3). It
+must not be *counted*, for :data:`FSGROUP_NOT_ATTRIBUTED`'s reason and one
+worse: the volume is not hotfix-specific.
+:func:`podbench.launcher.seat_identity_mounts` gives any seat a home from it,
+and a facility that wants ``attach`` to keep
+working keeps it after the hotfix is retired. Counted, that pod reports a step
+outstanding that nothing can close, and ``retire`` - the verb whose whole value
+is a count somebody can trust - could never print "retirement is complete".
+"""
+
+FSGROUP_NOT_ATTRIBUTED = (
+    "podSecurityContext.fsGroup is {gid}, which `hotfix values` emits too; "
+    "whether this pod had one before the hotfix is not measured here, so check "
+    "it against the values before taking it out."
+)
+"""The fifth value hotfix mode wires, and the one the pod cannot attribute.
+
+The ``wiring`` row named three things and six values were wired (evidence
+§7.3). Four of them are podbench's by construction and are read off the pod:
+the two volumes, the mount and the supervisor's ``command``/``args``. An
+``fsGroup`` is not - an application may perfectly well have declared its own -
+so it is *named* rather than counted, which is the difference between finishing
+somebody's checklist and inventing an item for it.
+"""
+
+CLAIM_OUTLIVES_THE_FLIP = (
+    "{claim} still exists. It is annotated Prune=false,Delete=false so that a "
+    "hotfix survives somebody reverting a repoint mid-beamtime, which means "
+    "turning the claim off leaves the object standing: deleting it is a "
+    "separate, deliberate act (`podbench hotfix retire {reference} "
+    "--delete-claim`)."
+)
+"""Said when the claim is still there.
+
+The annotation is not decoration and the sentence must keep saying so: a claim
+carrying Helm's ``keep`` alone was pruned about three minutes after it left the
+desired state, and its ``Delete``-reclaim PV went with it (#190,
+`.claude/evidence/phase1-prune-on-sync.md`). The pair is what makes retirement
+an act rather than a side effect of a sync — and therefore a step somebody has
+to take.
+"""
+
+CLAIM_STILL_MOUNTED = (
+    "still mounted by {pods}, so it was not deleted. A claim deleted out from "
+    "under a running pod stays Terminating while that pod holds it and then "
+    "fails to bind on the next reschedule, so the wiring comes out of the "
+    "application's values first."
+)
+"""Why ``--delete-claim`` declines on a claim something still mounts.
+
+The refusal is reported on the claim's own row rather than raised, because the
+report is the point of the verb: the reader needs to see which step they are
+actually on, not an error about the one they asked for.
+"""
+
+CLAIM_MOUNTERS_UNREADABLE = (
+    "not deleted: this namespace's pods could not be listed, so whether "
+    "anything still mounts the claim is unmeasured - and that is the one thing "
+    "that makes deleting it safe."
+)
+"""Why ``--delete-claim`` declines when it could not ask who holds the claim.
+
+Unmeasured, and therefore no. The deletion is irreversible and its only
+precondition is a *negative* one, which is the shape that a failed read turns
+into a false yes if the caller treats "found no mounters" and "could not look"
+as the same answer.
+"""
+
+CLAIM_GONE_BUT_STILL_WIRED = (
+    "{pod} mounts {claim} and no such claim exists. The pod is running only "
+    "because it was scheduled while the claim was still there; the next "
+    "reschedule will not bind. Take the wiring out of the application's values, "
+    "or put the claim back."
+)
+"""The half-retired state that is worse than either end of the checklist.
+
+Named as its own condition because it is silent until a reschedule, and because
+it is what "delete the claim" does when it is done *before* the values change
+rather than after. Reported on the ``wiring`` row: the claim being gone is not
+the fault, the pod still asking for it is.
+"""
+
+CLAIM_CONTENTS_UNVERIFIED = (
+    "deleted. Nothing mounted it, so its manifest could not be read first and "
+    "what was on it is unverified. If the chart still declares the claim - "
+    "`{key}.enabled: false` is what stops that - the next sync recreates it."
+)
+"""Said on the path that deletes, about the deletion it just made.
+
+Both halves are caveats about a mutation, which is why they are here rather
+than in the help: once the pod is unwired nothing can read the claim, so
+provenance is unmeasurable exactly when the deletion becomes safe; and a claim
+deleted while its chart still renders it comes straight back, which would
+otherwise read as podbench's delete having failed.
+"""
+
+STATUS_DOES_NOT_READ_CLAIMS = (
+    "not measured: `hotfix status` reads pods, and asking every namespace for "
+    "its claims as well is a call per row. `podbench hotfix retire` reads it."
+)
+"""Why ``status``'s retirement summary leaves the claim unmeasured.
+
+Not "the claim is there". The pod in front of it names a claim, but a pod goes
+on running perfectly well after its claim is deleted - see
+:data:`CLAIM_GONE_BUT_STILL_WIRED` - so a listing that inferred the claim from
+the mount would report the one state that most needs finding as normal.
+"""
+
+CLAIM_NOT_LABELLED_FOR_THIS_TARGET = (
+    "not measured: no claim in {namespace} carries {label} for {names}, and "
+    "this pod declares none. The label is set from "
+    "`hotfixProject.claims[].name`, which nothing requires to match the "
+    "container, the workload or the pod, so that is an answer about labels and "
+    "not about the claim: `kubectl -n {namespace} get pvc` is the read podbench "
+    "cannot narrow."
+)
+"""Why an empty label listing leaves the claim unmeasured rather than gone.
+
+The one step of retirement that cannot be undone, so it is ticked only off a
+measurement of the claim. ``Charts/podbench/templates/pvc-hotfix-project.yaml``
+labels the claim with the ``hotfixProject.claims[]`` entry's own ``name``, which
+nothing requires to equal the container, the workload or the pod - the subchart
+route usually does match, since it labels from the release name, which is
+exactly what would make this silent. An empty listing is therefore evidence
+about labels, and reading it as "the claim is gone" would report a standing
+claim as a completed retirement.
+"""
+
+
+def pod_claim_name(pod_json: Mapping[str, Any]) -> str | None:
+    """The claim the pod's hotfix volume names, or ``None`` if it declares none.
+
+    Read from the volume rather than derived from the application's name: the
+    name is a value somebody can override (``claimName`` in the subchart), so
+    the pod's own spec is the only place it is a measurement.
+
+    >>> pod_claim_name({"spec": {"volumes": [{"name": "podbench-app",
+    ...     "persistentVolumeClaim": {"claimName": "api-podbench-project"}}]}})
+    'api-podbench-project'
+    >>> pod_claim_name({"spec": {"volumes": []}}) is None
+    True
+    """
+    spec = as_dict(pod_json.get("spec"))
+    for entry in _as_list(spec.get("volumes")):
+        volume = as_dict(entry)
+        if _as_str(volume.get("name")) != HOTFIX_CLAIM_VOLUME:
+            continue
+        return _as_str(as_dict(volume.get("persistentVolumeClaim")).get("claimName"))
+    return None
+
+
+def hotfix_wiring(pod_json: Mapping[str, Any]) -> tuple[str, ...]:
+    """Which parts of the hotfix wiring this pod still carries, named.
+
+    Every one of them, and not :func:`podbench.launcher.is_hotfixed`'s single
+    verdict: retirement is somebody editing a values file, and a report that
+    said "still wired" without saying *which keys* leaves them to diff the pod
+    against the snippet by eye.
+
+    Only what is hotfix-specific: this tuple is what
+    :data:`RetirementStep.WIRING` is ticked off, so an entry here is a step
+    somebody has to close. The seat's home volume is emitted by
+    :func:`values_snippet` too and is *named* by the row rather than counted
+    (:data:`SEAT_HOME_IS_THE_SEATS`) - it belongs to ``attach`` as much as to
+    hotfix mode, and a pod that keeps it has still finished its retirement.
+
+    ``command`` is named only where the pod actually carries podbench's, since
+    the loop is shell text and a chart that supplied its own ``bash -c`` would
+    have it either way.
+
+    >>> hotfix_wiring({"spec": {"volumes": [{"name": "podbench-app"}],
+    ...     "containers": [{"name": "app"}]}})
+    ('the podbench-app volume',)
+    >>> hotfix_wiring({"spec": {"volumes": [{"name": "podbench-home"}],
+    ...     "containers": []}})
+    ()
+    """
+    spec = as_dict(pod_json.get("spec"))
+    declared = declared_volumes(pod_json)
+    carried: list[str] = []
+    if HOTFIX_CLAIM_VOLUME in declared:
+        carried.append(f"the {HOTFIX_CLAIM_VOLUME} volume")
+    if claim_container(pod_json) is not None:
+        carried.append(f"a volumeMount at {HOTFIX_APP_PATH}")
+    for entry in _as_list(spec.get("containers")):
+        container = as_dict(entry)
+        if not runs_hotfix_supervisor(container):
+            continue
+        command = [word for word in _as_list(container.get("command")) if _as_str(word)]
+        carried.append(
+            "the supervisor loop in command and args"
+            if command == ["bash", "-c"]
+            else "the supervisor loop in args"
+        )
+        break
+    return tuple(carried)
+
+
+def pod_fs_group(pod_json: Mapping[str, Any]) -> int | None:
+    """The pod's ``securityContext.fsGroup``, or ``None`` where it declares none.
+
+    >>> pod_fs_group({"spec": {"securityContext": {"fsGroup": 37887}}})
+    37887
+    >>> pod_fs_group({"spec": {}}) is None
+    True
+    """
+    value = as_dict(as_dict(pod_json.get("spec")).get("securityContext")).get("fsGroup")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+@dataclass(frozen=True)
+class ClaimState:
+    """What was found out about the claim itself, ahead of the report.
+
+    A value and not three arguments because the two callers know different
+    amounts: ``retire`` reads the object, ``status`` deliberately does not
+    (:data:`STATUS_DOES_NOT_READ_CLAIMS`), and a deletion this run performed is
+    a third answer again. Keeping them one shape is what stops the row that
+    says "gone" from ever being authored by a caller that did not look.
+    """
+
+    name: str | None = None
+    """The claim's name, where anything names it."""
+
+    present: bool | None = None
+    """``None`` is unmeasured, never absent — an RBAC refusal and a 404 differ
+    only in kubectl's text."""
+
+    detail: str = ""
+    """Said instead of the default for this state: why it is unmeasured, or why
+    a ``--delete-claim`` that was asked for did not happen."""
+
+    deleted: bool = False
+    """Whether *this run* deleted it, which is the only path that may say so."""
+
+
+CLAIM_UNMEASURED = ClaimState()
+"""The claim as a caller that has not looked at one describes it.
+
+A module-level singleton because a frozen default has to be one, and named
+rather than spelled inline so that "nobody asked about the claim" reads as a
+deliberate state rather than as an omission.
+"""
+
+
+def retirement(
+    pod_json: Mapping[str, Any],
+    manifest: HotfixManifest | None,
+    *,
+    claim: ClaimState = CLAIM_UNMEASURED,
+    current_digest: str = "",
+    reference: str = "",
+) -> list[RetirementCheck]:
+    """Where this pod is in its retirement, measured rather than remembered.
+
+    Pure, for :func:`values_snippet`'s reason: every shape of this report has to
+    be exercisable against fixture pod JSON, and the shape that matters most -
+    a pod wired to a claim whose chart no longer declares it - is one no test
+    cluster is going to be left in by accident.
+
+    Nothing here infers one step from another. The branch and the image are
+    read from the manifest, and the manifest can only be read while something
+    mounts the claim, so both go *unmeasured* the moment the pod is unwired -
+    which is the point at which the earlier steps stop being answerable and
+    must stop being answered.
+    """
+    carried = hotfix_wiring(pod_json)
+    fs_group = pod_fs_group(pod_json)
+    home = SEAT_HOME_VOLUME in declared_volumes(pod_json)
+    pod = _as_str(as_dict(pod_json.get("metadata")).get("name")) or "this pod"
+    if not carried and claim.present is False:
+        # Said once, on the two rows it makes moot, in `_seed_checks`' words and
+        # for its reason: the mechanism belongs to the fact - stated on the
+        # `claim` row below - and not to each of its consequences.
+        moot = "not asked: the claim is gone, and its manifest with it"
+        return [
+            RetirementCheck(RetirementStep.BRANCH, None, moot),
+            RetirementCheck(RetirementStep.IMAGE, None, moot),
+            _wiring_check(carried, pod=pod, claim=claim, fs_group=fs_group, home=home),
+            _claim_check_row(claim, reference=reference),
+        ]
+    return [
+        _branch_check(manifest, wired=bool(carried), reference=reference),
+        _image_check(manifest, current_digest=current_digest),
+        _wiring_check(carried, pod=pod, claim=claim, fs_group=fs_group, home=home),
+        _claim_check_row(claim, reference=reference),
+    ]
+
+
+def _branch_check(
+    manifest: HotfixManifest | None, *, wired: bool, reference: str
+) -> RetirementCheck:
+    step = RetirementStep.BRANCH
+    if manifest is None:
+        return RetirementCheck(
+            step,
+            None,
+            "not measured: nothing mounts the claim, so its manifest cannot be read"
+            if not wired
+            # "was read", not "is there": the read is an exec, and a refused one
+            # must not come back as a claim that carries no fix.
+            else "no manifest was read from the claim, so nothing here records "
+            "a hotfix to consolidate",
+        )
+    if manifest.consolidated_branch is not None:
+        return RetirementCheck(
+            step,
+            True,
+            f"consolidated onto {manifest.consolidated_branch}, so the claim is "
+            "no longer the only copy of this fix",
+        )
+    if manifest.ahead == 0:
+        # Measured on the live target (evidence §7.2): with no commits this row
+        # counted a step with nothing in it and offered `consolidate`, which
+        # refuses that exact claim - "there is no hotfix to consolidate ...
+        # retire the claim instead". Two verbs pointing at each other about one
+        # claim, in a report whose whole value is that its count is right.
+        #
+        # Hedged to what was measured, and only that: `ahead` is a *recorded*
+        # field, written by `init` and `apply`, while `consolidate` recounts
+        # from `git log` in the checkout. Somebody who committed in the seat by
+        # hand without running `apply` has commits this row cannot see, and
+        # `--delete-claim` is the destructive direction to be wrong in.
+        return RetirementCheck(
+            step,
+            True,
+            "this claim records no commits of its own, so nothing it records "
+            "would be discarded by retiring it.",
+        )
+    return RetirementCheck(
+        step,
+        False,
+        f"{manifest.ahead} commit(s) on this claim are on no branch: "
+        f"`podbench hotfix consolidate {reference} --branch NAME` first, or "
+        "retiring the claim discards them.",
+    )
+
+
+def _image_check(
+    manifest: HotfixManifest | None, *, current_digest: str
+) -> RetirementCheck:
+    step = RetirementStep.IMAGE
+    if manifest is None:
+        return RetirementCheck(
+            step,
+            None,
+            "not measured: nothing here records which image this hotfix was "
+            "made against",
+        )
+    if not manifest.base_image_digest or not current_digest:
+        return RetirementCheck(
+            step,
+            None,
+            "not measured: one of the two digests could not be read, and a "
+            "comparison against a digest nobody read is not one",
+        )
+    was = manifest.base_image_digest.split("@")[-1][:19]
+    now = current_digest.split("@")[-1][:19]
+    if manifest.base_image_digest == current_digest:
+        return RetirementCheck(
+            step,
+            False,
+            f"the deployed image is still {was}, the one this hotfix was made "
+            "against: the fix is not in a released image yet.",
+        )
+    return RetirementCheck(
+        step,
+        True,
+        f"the deployed image is {now}, and the hotfix was made against {was}. "
+        "Whether the rebuild included the fix is *not* measured - podbench "
+        "compares digests, not contents.",
+    )
+
+
+def _wiring_check(
+    carried: Sequence[str],
+    *,
+    pod: str,
+    claim: ClaimState,
+    fs_group: int | None = None,
+    home: bool = False,
+) -> RetirementCheck:
+    """The ``wiring`` row: what is counted, and what is only named.
+
+    The two named values are on the *done* arm as well as the wired one, and
+    that is the point of them. "Carries none of the hotfix wiring" reads as an
+    all-clear over the whole values file, and the reader taking it as one is
+    exactly the reader still holding an ``fsGroup`` this run cannot attribute
+    (:data:`FSGROUP_NOT_ATTRIBUTED`) and a home volume that is the seat's
+    (:data:`SEAT_HOME_IS_THE_SEATS`). Naming them only while something else is
+    outstanding would drop them at the moment the last edit is being made.
+    """
+    step = RetirementStep.WIRING
+    named: list[str] = []
+    if home:
+        named.append(SEAT_HOME_IS_THE_SEATS.format(volume=SEAT_HOME_VOLUME))
+    if fs_group is not None:
+        named.append(FSGROUP_NOT_ATTRIBUTED.format(gid=fs_group))
+    aside = "".join(f" {sentence}" for sentence in named)
+    if not carried:
+        return RetirementCheck(
+            step,
+            True,
+            f"{pod} carries none of the hotfix wiring: no {HOTFIX_CLAIM_VOLUME} "
+            f"volume, no mount at {HOTFIX_APP_PATH}, no supervisor loop." + aside,
+        )
+    if claim.present is False and claim.name is not None and not claim.deleted:
+        # No aside: this arm is the loud one, and a pod whose claim has gone
+        # while it is still mounting it has a reschedule to survive before
+        # anybody edits a values file.
+        return RetirementCheck(
+            step,
+            False,
+            CLAIM_GONE_BUT_STILL_WIRED.format(pod=pod, claim=claim.name),
+        )
+    detail = WIRING_IS_THE_APPLICATIONS_OWN.format(
+        pod=pod, what=and_list(list(carried))
+    )
+    return RetirementCheck(step, False, detail + aside)
+
+
+def _claim_check_row(claim: ClaimState, *, reference: str) -> RetirementCheck:
+    """The ``claim`` row. ``_row`` because ``_claim_check`` is the pre-flight's,
+    which asks a different question - whether the claim is *mounted* - of the
+    same object."""
+    step = RetirementStep.CLAIM
+    named = claim.name or "the claim"
+    if claim.deleted:
+        return RetirementCheck(
+            step,
+            True,
+            f"{named}: " + CLAIM_CONTENTS_UNVERIFIED.format(key=SUBCHART_VALUES_KEY),
+        )
+    if claim.present is None:
+        return RetirementCheck(step, None, claim.detail or "not measured")
+    if not claim.present:
+        return RetirementCheck(
+            step, True, claim.detail or f"there is no {named} in this namespace"
+        )
+    if claim.detail:
+        # A `--delete-claim` that declined is the only thing that sets this, and
+        # it is the answer to what the reader just asked. The offer below is
+        # what they already took, so repeating it under a refusal of it would
+        # be the report arguing with itself.
+        return RetirementCheck(step, False, f"{named}: {claim.detail}")
+    return RetirementCheck(
+        step, False, CLAIM_OUTLIVES_THE_FLIP.format(claim=named, reference=reference)
+    )
+
+
+def retirement_summary(
+    checks: Sequence[RetirementCheck], *, reference: str = ""
+) -> str:
+    """One line naming what is left, for a listing that has no room for four.
+
+    ``reference`` is how to name this target on a command line - flags
+    included, since ``status`` lists pods from namespaces other than the one
+    its own flags selected - and an empty one leaves the offer off entirely.
+
+    Shared with :func:`format_retirement` rather than phrased again, because
+    ``status`` saying a different number from ``retire`` about the same pod is
+    the failure #205 item 4 describes wearing a new hat.
+    """
+    remaining = [check.step.value for check in checks if check.remaining]
+    unmeasured = [check.step.value for check in checks if check.done is None]
+    if not remaining and _retired(checks):
+        return "complete: nothing is wired and the claim is gone"
+    parts: list[str] = []
+    if remaining:
+        parts.append(
+            f"{len(remaining)} of {len(checks)} steps remain ({and_list(remaining)})"
+        )
+    if unmeasured:
+        parts.append(f"{and_list(unmeasured)} not measured here")
+    said = "; ".join(parts)
+    if not reference:
+        return said
+    return f"{said} — `podbench hotfix retire {reference}` measures the rest"
+
+
+def _retired(checks: Sequence[RetirementCheck]) -> bool:
+    """Whether the two steps that actually end a retirement are both ticked.
+
+    >>> _retired([RetirementCheck(RetirementStep.WIRING, True, "")])
+    False
+    """
+    ticked = {check.step for check in checks if check.done is True}
+    return {RetirementStep.WIRING, RetirementStep.CLAIM} <= ticked
+
+
+def format_retirement(checks: Sequence[RetirementCheck]) -> str:
+    """The retirement report: one line per step, then the verdict.
+
+    ``check``'s shape, down to the column, because it is read the same way and
+    by the same person on the same day. The verdict counts only what was
+    *measured* outstanding, and a step nobody could measure is named rather
+    than absorbed into either answer.
+    """
+    lines: list[str] = []
+    for check in checks:
+        lead = f"  {check.flag}".ljust(_FLAG) + f"{check.step.value:<{_CHECK_NAMES}} "
+        lines.extend(paragraph(check.detail, first=lead, indent=" " * len(lead)))
+    lines.append(rule(char="-"))
+    remaining = [check.step.value for check in checks if check.remaining]
+    unmeasured = [check.step.value for check in checks if check.done is None]
+    if remaining:
+        lines.append(
+            f"VERDICT: {len(remaining)} of {len(checks)} steps of retirement "
+            "remain (exit 1)"
+        )
+        lines.extend(paragraph(", ".join(remaining), first="REMAINING: "))
+    elif _retired(checks):
+        # The two steps that end it, and only those: the branch and the image
+        # are moot once the claim is gone, so waiting for four ticks would be
+        # waiting for two nobody can ever take.
+        lines.append("VERDICT: retirement is complete (exit 0)")
+    else:
+        lines.append("VERDICT: nothing measured here is outstanding (exit 0)")
+    if unmeasured:
+        lines.extend(paragraph(", ".join(unmeasured), first="NOT MEASURED: "))
+    return "\n".join(lines)
+
+
+def claim_state(
+    kube: Kubectl, target: HotfixTarget, pod_json: Mapping[str, Any]
+) -> ClaimState:
+    """Find the claim and ask whether it is still there.
+
+    Two routes, because the pod stops naming the claim at exactly the step
+    before the one that deletes it. While it is wired the pod's own volume is
+    the measurement; once it is not, the only thing left pointing at the claim
+    is :data:`HOTFIX_TARGET_LABEL`, which both claim charts set.
+
+    Every failure to read is :attr:`ClaimState.present` ``None`` and never
+    ``False``: kubectl distinguishes a 404 from a 403 in its text alone, and a
+    report that read a refusal as "the claim is gone" would tick the one step
+    of retirement that cannot be undone.
+    """
+    named = pod_claim_name(pod_json)
+    if named is not None:
+        result = kube.run("get", "pvc", named, "-o", "name", check=False)
+        if result.returncode == 0:
+            return ClaimState(named, True)
+        if _is_not_found(result):
+            return ClaimState(named, False)
+        return ClaimState(named, None, _unreadable(result, f"pvc/{named}"))
+    result = kube.run(
+        "get", "pvc", "-l", HOTFIX_TARGET_LABEL, "-o", "json", check=False
+    )
+    if result.returncode != 0:
+        return ClaimState(None, None, _unreadable(result, "the namespace's claims"))
+    wanted = {
+        name
+        for name in (target.container, target.workload_name, target.pod.name)
+        if name
+    }
+    try:
+        items = _as_list(_load_json(result.stdout).get("items"))
+    except json.JSONDecodeError:
+        # rc=0 and unparseable is `_pods_mounting`'s case, and for its reason:
+        # the answer here decides an irreversible step, so anything short of a
+        # listing this code understood is unmeasured.
+        return ClaimState(None, None, _unreadable(result, "the namespace's claims"))
+    found = sorted(
+        name
+        for item in items
+        if (metadata := as_dict(as_dict(item).get("metadata")))
+        and (name := _as_str(metadata.get("name"))) is not None
+        and _as_str(as_dict(metadata.get("labels")).get(HOTFIX_TARGET_LABEL)) in wanted
+    )
+    if len(found) == 1:
+        return ClaimState(found[0], True)
+    if not found:
+        return ClaimState(
+            None,
+            None,
+            CLAIM_NOT_LABELLED_FOR_THIS_TARGET.format(
+                namespace=kube.namespace,
+                label=HOTFIX_TARGET_LABEL,
+                names=and_list(sorted(wanted)),
+            ),
+        )
+    return ClaimState(
+        None,
+        None,
+        f"not measured: {and_list(found)} all carry {HOTFIX_TARGET_LABEL} for "
+        "this target, and this pod names none of them",
+    )
+
+
+def _is_not_found(result: CommandResult) -> bool:
+    """Whether kubectl said the object is absent, as opposed to unreadable.
+
+    >>> _is_not_found(CommandResult((), 1, "", 'pvc "api" not found'))
+    True
+    >>> _is_not_found(CommandResult((), 1, "", "Error: Forbidden"))
+    False
+    """
+    return "not found" in result.stderr.lower()
+
+
+def _unreadable(result: CommandResult, what: str) -> str:
+    said = (result.stderr.strip() or result.stdout.strip()).splitlines()
+    return f"not measured: {what} could not be read" + (
+        f" - {said[-1].strip()}" if said else ""
+    )
+
+
+def retire(
+    kube: Kubectl,
+    reference: str,
+    *,
+    container: str | None = None,
+    delete_claim: bool = False,
+) -> list[RetirementCheck]:
+    """Measure every step of retirement, and perform the one podbench can.
+
+    The one is deleting the claim, and only with ``delete_claim`` and only once
+    nothing mounts it. Everything above it in the checklist is a PR, a merge, a
+    rebuild and a values change - all of them somebody else's system - so this
+    verb's honest job is to say which of them have landed. Reading the claim's
+    manifest costs no seat: it is exec'd out of the application container, the
+    way ``status`` reads it.
+
+    The single-replica refusal is lifted here alone: it guards a write to a
+    ReadWriteOnce claim, and the state this verb exists to confirm is the one
+    after the wiring came out and the team scaled back up.
+    """
+    target, pod_json = _resolve_target(
+        kube, reference, container=container, require_single_replica=False
+    )
+    mounting = claim_container(pod_json)
+    manifest = (
+        read_pod_state(kube, target.pod.name, mounting)[0]
+        if mounting is not None
+        else None
+    )
+    claim = claim_state(kube, target, pod_json)
+    if delete_claim:
+        claim = _delete_claim(kube, claim)
+    return retirement(
+        pod_json,
+        manifest,
+        claim=claim,
+        current_digest=target.image_digest,
+        reference=_pasteable(kube, reference),
+    )
+
+
+def _pasteable(kube: Kubectl, reference: str) -> str:
+    """*reference* with the flags that make the offers under it work.
+
+    ``format_status`` reasons the same way about the same offer and for the
+    same reason: a command a reader pastes out of a report has to reach the
+    object the report was about, and one that silently means the kubeconfig's
+    default namespace instead is worse than a redundant flag. The namespace
+    goes in even when it is the current one, because nothing in the report says
+    which that was.
+
+    >>> _pasteable(Kubectl("demo", context="beam"), "pod/api")
+    'pod/api -n demo --context beam'
+    """
+    said = f"{reference} -n {kube.namespace}"
+    return said if kube.context is None else f"{said} --context {kube.context}"
+
+
+def _delete_claim(kube: Kubectl, claim: ClaimState) -> ClaimState:
+    """Delete the claim, or say why this run did not.
+
+    The question asked first is about the **namespace** and not about the
+    target: what makes the deletion safe is that nothing mounts the claim, and
+    a target-local check would miss the second pod of a rollout still holding
+    it. The delete would then block on that pod's reference and be reported as
+    done, which is exactly the step-it-could-not-verify this verb must not take.
+    """
+    if claim.name is None or claim.present is not True:
+        # Nothing measured to delete. Whatever `claim_state` found already says
+        # what it found, and inventing a second sentence for it here is how the
+        # unmeasured case comes to read as a refusal.
+        return claim
+    holders = _pods_mounting(kube, claim.name)
+    if holders is None:
+        return replace(claim, detail=CLAIM_MOUNTERS_UNREADABLE)
+    if holders:
+        return replace(claim, detail=CLAIM_STILL_MOUNTED.format(pods=and_list(holders)))
+    kube.run("delete", "pvc", claim.name)
+    return replace(claim, present=False, deleted=True, detail="")
+
+
+def _pods_mounting(kube: Kubectl, claim: str) -> list[str] | None:
+    """Which pods in the namespace mount *claim*, or ``None`` if unreadable.
+
+    Every volume, not only :data:`~podbench.model.HOTFIX_CLAIM_VOLUME`: what
+    matters here is who holds the object, and a pod mounting it under a name of
+    its own holds it just as hard.
+    """
+    result = kube.run("get", "pods", "-o", "json", check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        items = _as_list(_load_json(result.stdout).get("items"))
+    except json.JSONDecodeError:
+        return None
+    return sorted(
+        name
+        for item in items
+        if (pod := as_dict(item))
+        and (name := _as_str(as_dict(pod.get("metadata")).get("name"))) is not None
+        and any(
+            _as_str(
+                as_dict(as_dict(volume).get("persistentVolumeClaim")).get("claimName")
+            )
+            == claim
+            for volume in _as_list(as_dict(pod.get("spec")).get("volumes"))
+        )
+    )
 
 
 # -- CLI -------------------------------------------------------------------
@@ -3125,12 +5438,14 @@ _Target = Annotated[
     ),
 ]
 _Venv = Annotated[
-    str,
+    str | None,
     typer.Option(
         "--venv",
         metavar="PATH",
         help="the mountPath the claim is mounted at, beside the application's "
-        "own project and never over it",
+        "own project and never over it (default: read off the pod, and "
+        f"{HOTFIX_APP_PATH} where it mounts no claim yet). A value that "
+        "disagrees with the pod is refused",
     ),
 ]
 _Container = Annotated[
@@ -3159,13 +5474,18 @@ _ImageInterpreter = Annotated[
         f"(default: {IMAGE_INTERPRETER_PATH})",
     ),
 ]
+# Shared by `values` and `init` deliberately: the flag is a contract *between*
+# those two verbs (#209), so two declarations of it are two chances for the
+# sentence describing that contract to drift apart, which is what happened while
+# one copy lived on the root callback.
 _ClaimVenv = Annotated[
     str,
     typer.Option(
         "--claim-venv",
         metavar="NAME",
         help="the venv's directory name on the claim, which the runtime switch "
-        f"looks for and `uv sync` builds (default: {CLAIM_VENV_DIR})",
+        f"looks for and `uv sync` builds (default: {CLAIM_VENV_DIR}). `values` "
+        "and `init` have to be given the same name",
     ),
 ]
 _Seat = Annotated[
@@ -3177,6 +5497,20 @@ _Seat = Annotated[
         f"(default: the running {CONTAINER_BASE}-N)",
     ),
 ]
+_Repo = Annotated[
+    str | None,
+    typer.Option(
+        "--repo",
+        metavar="URL",
+        help=f"git URL to clone (default: the target image's {SOURCE_LABEL} label)",
+    ),
+]
+"""``init``'s flag, and ``check``'s because it is ``check``'s question too.
+
+``init`` refuses a target nothing names a repository for, so the pre-flight has
+to ask the same thing to reach the same answer: a ``check`` that could not hear
+``--repo`` would refuse a target the very next command accepts.
+"""
 _Local = Annotated[
     bool,
     typer.Option(
@@ -3218,18 +5552,40 @@ def _store_for(
 
 
 def _report(actions: Sequence[str]) -> int:
-    emit("\n".join(actions))
+    """What a verb did, one wrapped paragraph per action.
+
+    :func:`_laid_out` and not a bare ``emit``: ``emit`` styles a line but never
+    breaks one, and several of these actions are a sentence rather than a row -
+    ``_install``'s and ``_relaunch``'s carry a whole remedy. The retirement
+    checklist is in here too and is already laid out, which is why the rule is
+    "wrap what was written flush left" rather than "wrap everything": its
+    numbered steps are indented, and step 1 is a command to be pasted.
+    """
+    emit(_laid_out("\n".join(actions)))
     return 0
 
 
+def _warn(message: str) -> None:
+    """One warning, on stderr, in the vocabulary the rest of podbench uses.
+
+    ``WARNING`` and a hung indent rather than a ``podbench:`` prefix, so it can
+    be picked out of a paste and coloured by span the way every other verb's is;
+    stderr because a verb's report is its stdout.
+    """
+    emit(
+        "\n".join(
+            paragraph(message, first=f"{WARNING_LEAD}  ", indent=" " * WARNING_HANG),
+        ),
+        stderr=True,
+    )
+
+
 NON_EXEC_PROBE_WARNING = (
-    "podbench: {pod}'s {container!r} declares a {kind} livenessProbe, which "
-    "cannot be short-circuited by the hold - only an exec probe can, because an "
-    "httpGet or tcpSocket probe answers from the application, and the "
-    "application is exactly what is down while a pod is held. No livenessProbe "
-    "is emitted below, so the chart keeps the one it has and the kubelet will "
-    "restart the pod out from under the seat at failureThreshold x "
-    "periodSeconds. Deal with that before holding this pod."
+    "{pod}'s {container!r} declares a {kind} livenessProbe, which the hold "
+    "cannot short-circuit - only an exec probe can. No livenessProbe is "
+    "emitted below, so the chart keeps this one and the kubelet will restart "
+    "the pod out from under the seat at failureThreshold x periodSeconds. "
+    "Deal with that before holding this pod."
 )
 """Said when the target's probe is real, readable, and of no use to hold mode.
 
@@ -3237,17 +5593,25 @@ Not an error, because the values are still correct and still worth emitting -
 and not silence either, because the emitted block being *absent* looks identical
 to the canonical fastcs case, which genuinely has no probe. The difference is
 the whole of whether a held pod survives.
+
+Printed through :func:`_warn`, which supplies :data:`podbench.console.WARNING_LEAD`
+- so the text opens on the fact rather than on a ``podbench:`` prefix that is
+neither coloured nor findable in a pasted terminal.
+
+*Why* only an exec probe can be short-circuited - an httpGet or tcpSocket probe
+answers from the application, and the application is exactly what is down while
+a pod is held - is in ``docs/how-to/hotfix-a-running-pod.md`` under the
+``--liveness-probe`` bullet. The line says which pod it applies to and what the
+kubelet will do about it.
 """
 
 
 EXISTING_MOUNTS_WARNING = (
-    "podbench: {pod}'s {container!r} already mounts {mounts}. Some of those come "
-    "from your chart and some from the service's own values; podbench cannot "
-    "tell which from here. The `volumes:` and `volumeMounts:` keys below are a "
-    "whole key each, so pasting them over a values file that already sets one "
-    "drops whatever it declared - merge into it rather than replacing it. What "
-    "the chart generates for itself is not affected either way, and must not be "
-    "copied in here."
+    "{pod}'s {container!r} already mounts {mounts}, and podbench cannot tell "
+    "from here which of those the service's own values declared. The "
+    "`volumes:` and `volumeMounts:` keys below are a whole key each, so merge "
+    "them into that file rather than pasting over it - or let `--values` do "
+    "the merge."
 )
 """Said when the target carries volumes that are not podbench's.
 
@@ -3267,16 +5631,36 @@ end up with them declared twice.
 Podbench cannot do the merge itself and must not pretend to: read from a live
 pod, a chart-generated volume and one the service declared are
 indistinguishable. Naming them and saying which key is at risk is the whole of
-what can honestly be done here.
+what can honestly be done here - and beat three is now ``--values``, which is
+the merge, rather than an instruction to do it by hand.
+
+That what the chart renders for itself is unaffected and must not be copied into
+the values file is in ``docs/how-to/hotfix-a-running-pod.md`` and in full in
+``docs/reference/cli.md``: it is the second mistake a reader of this warning
+makes, and it is a paragraph rather than a clause.
+
+Printed through :func:`_warn`, for :data:`NON_EXEC_PROBE_WARNING`'s reason.
 """
 
 
-def _print_values_failure(message: str) -> NoReturn:
-    print(f"podbench: {message}", file=sys.stderr)
+def _values_failure(message: str) -> NoReturn:
+    """``hotfix values`` refusing, on stderr, laid out like everything else.
+
+    Through :func:`_laid_out` and not ``print``: most of these messages end in
+    :data:`FROM_POD_ESCAPE`, which is two paragraphs carrying seven backticked
+    flags, and a terminal wrapping that itself breaks mid-token - which is
+    exactly the pasteable half :data:`podbench.console._TOKEN` exists to keep
+    whole. The two ``--liveness-probe`` refusals carry no escape, because what
+    they are refusing is the flag and not the pod read.
+
+    stderr because stdout is the values snippet and a shell redirects it over a
+    values file (the p47 run did): nothing this verb says may land in there.
+    """
+    emit(_laid_out(f"podbench: {message}"), stderr=True)
     raise typer.Exit(2)
 
 
-def _read_print_values_from_pod(
+def _read_values_from_pod(
     pod: str | None,
     *,
     container: str | None,
@@ -3287,30 +5671,30 @@ def _read_print_values_from_pod(
     entrypoint: str | None,
     gid: str,
     probe: Mapping[str, Any] | None,
-    liveness: str | None,
     warn_mounts: bool = True,
-) -> tuple[str | None, str, Mapping[str, Any] | None]:
-    """Fill the three hand-supplied arguments from the target, or say why not.
+) -> tuple[str, str, Mapping[str, Any] | None]:
+    """Fill the three emitted values from the target, or say why not.
 
-    This is the whole of ``--from-pod``: a thin cluster-reading wrapper that
-    fills :func:`values_snippet`'s existing arguments. The emitter keeps its
+    This is the whole of the cluster read: a thin wrapper that fills
+    :func:`values_snippet`'s existing arguments. The emitter keeps its
     signature and stays testable with no cluster, which is not negotiable - it
     is what lets every shape of the output be asserted in a unit test.
 
-    A flag the user passed always wins over the pod. That is what makes
-    ``--entrypoint`` a usable answer to an image-ENTRYPOINT target without
-    giving up the gid and the probe as well.
+    A flag the user passed always wins over the pod. Since #205 item 6 took the
+    offline route away that is the *only* thing the three flags still do, and it
+    is what makes ``--entrypoint`` a usable answer to an image-ENTRYPOINT target
+    without giving up the gid and the probe as well.
 
-    Every failure here names ``--no-from-pod`` and what it costs
-    (:data:`FROM_POD_ESCAPE`). Making the cluster read the default means each
+    Every failure here says why the read is not optional
+    (:data:`FROM_POD_ESCAPE`). Making the cluster read the only way means each
     of these lands on somebody who did not ask for a cluster, and the one thing
-    they must not be left to work out for themselves is that the way round it
-    is the way #176 happened.
+    they must not be left to work out for themselves is that hand-writing the
+    values instead is the way #176 happened.
     """
     if pod is None:
-        _print_values_failure(
-            "--print-values reads the target by default, so it needs to know "
-            "which pod: pass `--from-pod POD`.\n"
+        _values_failure(
+            "`hotfix values` reads the target, so it needs to know which pod: "
+            "pass `--from-pod POD`.\n"
             "\n" + FROM_POD_ESCAPE
         )
     kube = kubectl_for(namespace, context=context, binary=binary, runner=runner)
@@ -3321,7 +5705,7 @@ def _read_print_values_from_pod(
         # letting it out here is a traceback rather than an answer.
         name = resolve_pod_name(pod)
     except LauncherError as error:
-        _print_values_failure(f"{error}.\n\n{FROM_POD_ESCAPE}")
+        _values_failure(f"{error}.\n\n{FROM_POD_ESCAPE}")
     try:
         pod_json = kube.get_pod(name)
     except KubectlError as error:
@@ -3329,14 +5713,15 @@ def _read_print_values_from_pod(
         # exist and a forbidden `get pods` alike: kubectl tells those apart only
         # in the text of its own message, so podbench relays that verbatim
         # rather than guessing at a category and getting it wrong.
-        _print_values_failure(
-            f"could not read pod {name!r} in {kube.namespace!r}: "
-            f"{error}.\n\n{FROM_POD_ESCAPE}"
+        _values_failure(
+            f"could not read pod {name!r} in {kube.namespace!r}:\n"
+            f"{_relay(str(error))}\n"
+            f"\n{FROM_POD_ESCAPE}"
         )
     try:
         target = _application_container(pod_json, container)
     except HotfixError as error:
-        _print_values_failure(f"{error}.\n\n{FROM_POD_ESCAPE}")
+        _values_failure(f"{error}.\n\n{FROM_POD_ESCAPE}")
     spec = next(
         as_dict(entry)
         for entry in _as_list(as_dict(pod_json.get("spec")).get("containers"))
@@ -3347,7 +5732,7 @@ def _read_print_values_from_pod(
             entrypoint = container_entrypoint(spec)
         except HotfixError as error:
             # Already carries the escape: it has an extra way out of its own.
-            _print_values_failure(str(error))
+            _values_failure(str(error))
     if gid == DEFAULT_GID_PLACEHOLDER:
         gid = pod_gid(pod_json, target) or DEFAULT_GID_PLACEHOLDER
     # `volume` and not `name`: a walrus inside a comprehension binds in the
@@ -3364,13 +5749,12 @@ def _read_print_values_from_pod(
     # done for them, and names volumes the merge deliberately did not copy
     # because the chart renders them.
     if theirs and warn_mounts:
-        print(
+        _warn(
             EXISTING_MOUNTS_WARNING.format(
                 pod=name, container=target, mounts=and_list(theirs)
-            ),
-            file=sys.stderr,
+            )
         )
-    if probe is None and liveness is None:
+    if probe is None:
         declared = as_dict(spec.get("livenessProbe")) or None
         # A target with no livenessProbe is not an error, and must never be
         # reported as one: the canonical fastcs target declares none.
@@ -3382,11 +5766,8 @@ def _read_print_values_from_pod(
                     (k for k in ("httpGet", "tcpSocket", "grpc") if k in declared),
                     "non-exec",
                 )
-                print(
-                    NON_EXEC_PROBE_WARNING.format(
-                        pod=name, container=target, kind=kind
-                    ),
-                    file=sys.stderr,
+                _warn(
+                    NON_EXEC_PROBE_WARNING.format(pod=name, container=target, kind=kind)
                 )
     return entrypoint, gid, probe
 
@@ -3395,21 +5776,25 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     app = new_app()
 
     @app.callback(invoke_without_command=True)
-    def root(
-        ctx: typer.Context,
-        print_values: Annotated[
-            bool,
-            typer.Option(
-                "--print-values",
-                help="emit the helm values an application's chart needs, and exit",
-            ),
-        ] = False,
+    def root(ctx: typer.Context) -> None:
+        """Durable in-place fixes: the project on a claim beside the
+        application, every change a commit, and a status command that will not
+        let a hotfixed pod go unnoticed.
+        """
+        require_subcommand(ctx)
+
+    # `values_command` for symmetry with the two verbs below, whose suffix is
+    # forced. Nothing forces it here - `values` is not a module-level name - so
+    # do not read a hazard into it.
+    @app.command(
+        name="values",
+        help="emit the helm values an application's chart needs",
+    )
+    def values_command(
         app_name: Annotated[
-            str | None,
-            typer.Option(
-                "--app", metavar="NAME", help="application name, for --print-values"
-            ),
-        ] = None,
+            str,
+            typer.Option("--app", metavar="NAME", help="application name"),
+        ],
         entrypoint: Annotated[
             str | None,
             typer.Option(
@@ -3417,20 +5802,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 metavar="CMD",
                 help=(
                     "the command the container runs today, which the supervisor "
-                    "wraps, for --print-values"
-                ),
-            ),
-        ] = None,
-        liveness: Annotated[
-            str | None,
-            typer.Option(
-                "--liveness",
-                metavar="CMD",
-                help=(
-                    "the target's existing exec livenessProbe command, for "
-                    "--no-from-pod; emitted wrapped to honour the hold. Carries "
-                    "no timings, so prefer --liveness-probe - or --from-pod, "
-                    "which carries them without being asked"
+                    "wraps (default: read from the target)"
                 ),
             ),
         ] = None,
@@ -3440,21 +5812,17 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "--liveness-probe",
                 metavar="JSON",
                 help=(
-                    "the target's whole livenessProbe as json, for "
-                    "--no-from-pod. --from-pod reads it off the target itself, "
-                    "which is what this flag existed to make you do by hand: "
-                    "`kubectl get pod POD -o jsonpath='{.spec.containers[0]"
-                    ".livenessProbe}'`. Its exec command is wrapped and its "
-                    "timings are carried over; a chart renders a supplied probe "
-                    "wholesale, so a timing left out becomes the k8s default"
+                    "the target's whole livenessProbe as json, overriding the "
+                    "one read off the target. Its exec command is wrapped and "
+                    "its timings are carried over; a chart renders a supplied "
+                    "probe wholesale, so a timing left out becomes the k8s "
+                    "default"
                 ),
             ),
         ] = None,
         size: Annotated[
             str,
-            typer.Option(
-                "--size", metavar="SIZE", help="claim size, for --print-values"
-            ),
+            typer.Option("--size", metavar="SIZE", help="claim size"),
         ] = "2Gi",
         # Left as a placeholder when unset, so that a snippet pasted without
         # reading it fails at `helm install` rather than deploying an fsGroup
@@ -3465,8 +5833,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             typer.Option(
                 "--gid",
                 metavar="GID",
-                help="the application container's gid, for --print-values "
-                "(default: read from the target)",
+                help="the application container's gid (default: read from the target)",
             ),
         ] = DEFAULT_GID_PLACEHOLDER,
         from_pod: Annotated[
@@ -3475,18 +5842,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "--from-pod",
                 metavar="POD",
                 help="read the entrypoint, livenessProbe and gid off this pod, "
-                "so the emitted values need no hand-editing (the default; "
-                "--no-from-pod turns it off)",
+                "so the emitted values need no hand-editing",
             ),
         ] = None,
-        no_from_pod: Annotated[
-            bool,
-            typer.Option(
-                "--no-from-pod",
-                help="do not read any pod: emit from the flags alone, for CI, an "
-                "offline machine, or a pod that does not exist yet",
-            ),
-        ] = False,
         values: Annotated[
             str | None,
             typer.Option(
@@ -3526,99 +5884,102 @@ def _build_app(runner: Runner | None) -> typer.Typer:
                 "entry instead of the podbench-hotfix-claim chart dependency",
             ),
         ] = False,
-        claim_venv: Annotated[
-            str,
-            typer.Option(
-                "--claim-venv",
-                metavar="NAME",
-                help="the venv's directory name on the claim, which the emitted "
-                f"runtime switch looks for (default: {CLAIM_VENV_DIR}). Must "
-                "match `hotfix init --claim-venv`",
-            ),
-        ] = CLAIM_VENV_DIR,
+        claim_venv: _ClaimVenv = CLAIM_VENV_DIR,
         container: _Container = None,
         namespace: _Namespace = None,
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
     ) -> None:
-        """Durable in-place fixes: the project on a claim beside the
-        application, every change a commit, and a status command that will not
-        let a hotfixed pod go unnoticed.
-        """
-        if print_values:
-            if app_name is None:
-                print("podbench: --print-values needs --app NAME", file=sys.stderr)
-                raise typer.Exit(2)
-            parsed_probe: Mapping[str, Any] | None = None
-            if liveness_probe is not None:
-                try:
-                    parsed_probe = _load_json(liveness_probe)
-                except json.JSONDecodeError as exc:
-                    print(
-                        f"podbench: --liveness-probe is not valid json: {exc}",
-                        file=sys.stderr,
-                    )
-                    raise typer.Exit(2) from exc
-                if not probe_exec_command(parsed_probe):
-                    print(
-                        "podbench: --liveness-probe has no exec.command. Only an "
-                        "exec probe can be short-circuited by the hold - an "
-                        "httpGet or tcpSocket probe answers from the application, "
-                        "which is exactly what is down while a pod is held.",
-                        file=sys.stderr,
-                    )
-                    raise typer.Exit(2)
-            if not no_from_pod:
-                entrypoint, gid, parsed_probe = _read_print_values_from_pod(
-                    from_pod,
-                    container=container,
-                    namespace=namespace,
-                    context=context,
-                    binary=kubectl,
-                    runner=runner,
-                    entrypoint=entrypoint,
-                    gid=gid,
-                    probe=parsed_probe,
-                    liveness=liveness,
-                    warn_mounts=values is None,
+        parsed_probe: Mapping[str, Any] | None = None
+        if liveness_probe is not None:
+            try:
+                parsed_probe = _load_json(liveness_probe)
+            except json.JSONDecodeError as exc:
+                # `_values_failure` and not a `print` of its own: this is the
+                # same verb refusing the same way, and two spellings of that is
+                # how one of them stops being wrapped.
+                _values_failure(f"--liveness-probe is not valid json: {exc}")
+            if not probe_exec_command(parsed_probe):
+                _values_failure(
+                    "--liveness-probe has no exec.command. Only an exec probe "
+                    "can be short-circuited by the hold - an httpGet or "
+                    "tcpSocket probe answers from the application, which is "
+                    "exactly what is down while a pod is held."
                 )
-            if entrypoint is None:
-                print(
-                    "podbench: --print-values needs --entrypoint CMD when the "
-                    "target is not read. Pass --from-pod POD to read it, or "
-                    "--entrypoint CMD to state it.",
-                    file=sys.stderr,
-                )
-                raise typer.Exit(2)
-            snippet = values_snippet(
-                app_name,
-                entrypoint,
-                size=size,
-                gid=gid,
-                venv=claim_venv,
-                liveness_exec=shlex.split(liveness) if liveness else None,
-                liveness_probe=parsed_probe,
-                central_claim=central_claim,
+        # Unconditional since #205 item 6: `--no-from-pod` emitted from the
+        # flags alone, and every field it left to be typed is one #176 says
+        # costs a restart ladder to get wrong.
+        entrypoint, gid, parsed_probe = _read_values_from_pod(
+            from_pod,
+            container=container,
+            namespace=namespace,
+            context=context,
+            binary=kubectl,
+            runner=runner,
+            entrypoint=entrypoint,
+            gid=gid,
+            probe=parsed_probe,
+            warn_mounts=values is None,
+        )
+        snippet = values_snippet(
+            app_name,
+            entrypoint,
+            size=size,
+            gid=gid,
+            venv=claim_venv,
+            liveness_probe=parsed_probe,
+            central_claim=central_claim,
+        )
+        if values is not None:
+            snippet = _merge_values_into_file(
+                snippet,
+                values=values,
+                parent_values=parent_values,
+                values_under=values_under,
+                claim_key=SUBCHART_VALUES_KEY,
             )
-            if values is not None:
-                snippet = _merge_print_values_into_file(
-                    snippet,
-                    values=values,
-                    parent_values=parent_values,
-                    values_under=values_under,
-                    claim_key=SUBCHART_VALUES_KEY,
-                )
-            elif parent_values is not None or values_under is not None:
-                _print_values_failure(
-                    "--parent-values and --values-under are what --values does "
-                    "with the file it is given, so neither means anything "
-                    "without it."
-                )
-            print(snippet, end="" if values is not None else "\n")
-            raise typer.Exit(0)
-        # `hotfix --print-values` is a legitimate whole command line, so the
-        # subcommand is only required once that flag has been ruled out.
-        require_subcommand(ctx)
+        elif parent_values is not None or values_under is not None:
+            _values_failure(
+                "--parent-values and --values-under are what --values does "
+                "with the file it is given, so neither means anything "
+                "without it."
+            )
+        print(snippet, end="" if values is not None else "\n")
+        raise typer.Exit(0)
+
+    @app.command(
+        name="check",
+        help="say what would stop a hotfix on this target, before starting one",
+    )
+    def check_command(
+        target: _Target,
+        repo: _Repo = None,
+        image_project: _ImageProject = IMAGE_PROJECT_PATH,
+        image_interpreter: _ImageInterpreter = IMAGE_INTERPRETER_PATH,
+        container: _Container = None,
+        seat: _Seat = None,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+    ) -> None:
+        """Read-only, so it can be run on the way in and run again after a fix.
+
+        It writes nothing and lands nothing - notably not a seat, which ``init``
+        does: an ephemeral container cannot be taken back off a pod, and a verb
+        somebody runs to *ask a question* must not spend one.
+        """
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
+        checks = preflight(
+            kube,
+            target,
+            container=container,
+            seat=seat,
+            repo=repo,
+            image_project=image_project,
+            image_interpreter=image_interpreter,
+        )
+        emit(format_preflight(checks))
+        raise typer.Exit(1 if any(check.blocks for check in checks) else 0)
 
     # `init_command`/`consolidate_command`, not `init`/`consolidate`: the
     # module-level functions of those names are what they call, and a same-named
@@ -3630,10 +5991,8 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     )
     def init_command(
         target: _Target,
-        repo: Annotated[
-            str, typer.Option("--repo", metavar="URL", help="git URL to clone")
-        ],
-        venv: _Venv,
+        repo: _Repo = None,
+        venv: _Venv = None,
         ref: Annotated[
             str | None,
             typer.Option("--ref", metavar="REF", help="branch or tag to clone"),
@@ -3643,8 +6002,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             typer.Option(
                 "--base-commit",
                 metavar="SHA",
-                help="the commit the released image was built from "
-                "(default: cloned HEAD)",
+                help="the commit the released image was built from (default: "
+                f"the image's {REVISION_LABEL} label; failing that the clone's "
+                "HEAD, recorded as an assumed base and reported as one)",
             ),
         ] = None,
         no_install: Annotated[
@@ -3667,6 +6027,17 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
+        mount, note = resolve_venv(resolved, venv)
+        if note is not None:
+            _warn(note)
+        # Only when something is still missing, because it is a registry round
+        # trip on the way into an emergency. The digest is preferred over the
+        # tag: it is what is actually running, and a tag can have moved since.
+        labels = (
+            read_image_labels(resolved.image_digest or resolved.image)
+            if repo is None or base_commit is None
+            else None
+        )
         # The one verb that lands its own seat when none is running. See
         # `seat_container`: `init` is where the seat first has to exist, so it
         # is where podbench should be the one to arrange it.
@@ -3677,8 +6048,9 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             kube,
             store,
             resolved,
-            venv=venv,
+            venv=mount,
             repo=repo,
+            image_labels=labels,
             ref=ref,
             base_commit=base_commit,
             author=author,
@@ -3696,7 +6068,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             str,
             typer.Option("-m", "--message", metavar="TEXT", help="commit message"),
         ],
-        venv: _Venv,
+        venv: _Venv = None,
         no_bounce: Annotated[
             bool,
             typer.Option(
@@ -3715,12 +6087,15 @@ def _build_app(runner: Runner | None) -> typer.Typer:
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
+        mount, note = resolve_venv(resolved, venv)
+        if note is not None:
+            _warn(note)
         store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
         _, actions = apply_hotfix(
             kube,
             store,
             resolved,
-            venv=venv,
+            venv=mount,
             message=message,
             author=author,
             bounce=not no_bounce,
@@ -3740,13 +6115,24 @@ def _build_app(runner: Runner | None) -> typer.Typer:
             str,
             typer.Option("--python", metavar="BIN", help="interpreter to measure"),
         ] = DEFAULT_PYTHON,
+        all_namespaces: Annotated[
+            bool,
+            typer.Option(
+                "-A",
+                "--all-namespaces",
+                help="every namespace in the cluster, with the same exit code — "
+                "the facility-wide shutdown assertion, as one command",
+            ),
+        ] = False,
         namespace: _Namespace = None,
         context: _Context = None,
         kubectl: _KubectlBinary = "kubectl",
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
-        rows = status_rows(kube, probe=not no_probe, python=python)
-        emit(format_status(rows))
+        rows = status_rows(
+            kube, probe=not no_probe, python=python, all_namespaces=all_namespaces
+        )
+        emit(format_status(rows, all_namespaces=all_namespaces))
         raise typer.Exit(0 if all(row.ok for row in rows) else 1)
 
     @app.command(
@@ -3758,7 +6144,7 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         branch: Annotated[
             str, typer.Option("--branch", metavar="NAME", help="branch to push")
         ],
-        venv: _Venv,
+        venv: _Venv = None,
         remote: Annotated[
             str, typer.Option("--remote", metavar="NAME", help="git remote to push to")
         ] = "origin",
@@ -3779,17 +6165,55 @@ def _build_app(runner: Runner | None) -> typer.Typer:
         del author  # accepted for symmetry; this verb writes no commit
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         resolved = resolve_target(kube, target, container=container)
+        mount, note = resolve_venv(resolved, venv)
+        if note is not None:
+            _warn(note)
         store = _store_for(kube, resolved.pod.name, seat=seat, local=local)
         _, actions = consolidate(
             kube,
             store,
             resolved,
-            venv=venv,
+            venv=mount,
             branch=branch,
             remote=remote,
             push=not dry_run,
         )
         raise typer.Exit(_report(actions))
+
+    # `retire_command`, for `init_command`'s reason: `retire` is the
+    # module-level function this calls, and a same-named closure would shadow
+    # it into a recursion.
+    @app.command(
+        name="retire",
+        help="what is left of retiring this hotfix, and the one step podbench can take",
+    )
+    def retire_command(
+        target: _Target,
+        delete_claim: Annotated[
+            bool,
+            typer.Option(
+                "--delete-claim",
+                help="delete the claim, once nothing mounts it. Irreversible: "
+                "an unmounted claim cannot be read first, so what is on it goes "
+                "unverified",
+            ),
+        ] = False,
+        container: _Container = None,
+        namespace: _Namespace = None,
+        context: _Context = None,
+        kubectl: _KubectlBinary = "kubectl",
+    ) -> None:
+        """Read-only without ``--delete-claim``, and it lands no seat.
+
+        The claim's manifest is read through the *application* container, the
+        way ``status`` reads it, so asking where a retirement has got to costs
+        no ephemeral container — the same rule ``check`` follows, and for the
+        same reason: one cannot be taken back off a pod.
+        """
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
+        checks = retire(kube, target, container=container, delete_claim=delete_claim)
+        emit(format_retirement(checks))
+        raise typer.Exit(1 if any(check.remaining for check in checks) else 0)
 
     return app
 
@@ -3798,8 +6222,32 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
     """Entry point for ``podbench hotfix <subcommand>``.
 
     ``status`` exits non-zero when any pod needs attention, so that it is usable
-    as a shutdown-checklist assertion — "no pod is still carrying an unretired
-    hotfix" is a thing a facility wants to be able to test, not read.
+    as a shutdown-checklist assertion — "no hotfix in this namespace needs
+    somebody today" is a thing a facility wants to be able to test, not read.
+    With ``--all-namespaces`` that assertion covers the cluster, which is what
+    makes it a command rather than a shell loop somebody has to keep correct.
+
+    It is deliberately **not** the assertion "nothing here is still to be
+    retired", and the wording above used to say it was. A consolidated fix whose
+    image has not moved yet is a live hotfix doing its job, so retirement is not
+    part of :attr:`HotfixRow.ok` (see the attribute, which states the reasoning)
+    and ``status`` exits 0 on a pod ``retire`` reports three steps short. Two
+    verbs, two assertions: ``retire`` is the one that goes red until a
+    retirement is finished. Whether the shutdown gate should be the stricter of
+    the two is an open contract question and not a wording one, so nothing here
+    decides it - it is recorded so that the two docstrings stop disagreeing
+    about which assertion is being made.
+
+    ``retire`` exits **1** while any step of a retirement it measured is
+    outstanding, and **0** when the pod is unwired and the claim is gone. A step
+    it could not measure moves neither: an unmeasured step is not an assertion
+    in either direction, and ticking one would be the lie that verb exists to
+    stop.
+
+    ``check`` exits **1** the same way, and for the same reason: it is the
+    assertion "nothing on this target stands between here and ``hotfix init``".
+    Exit 2 stays what it has always been — podbench refusing the command it was
+    given — so a blocked target and a mistyped one are not the same answer.
     """
     argv = list(sys.argv[1:] if args is None else args)
     # The central dispatcher keeps the verb in argv; this app's subcommands are
@@ -3808,13 +6256,26 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
         argv = argv[1:]
     try:
         return run(_build_app(runner), argv, prog="podbench hotfix")
+    except KubectlError as error:
+        # Its own arm because it is not podbench's prose: `KubectlError._message`
+        # inlines `result.stderr` behind an argv and an exit code, so there is no
+        # flush-left half to wrap, and laying it out would put podbench's line
+        # breaks through somebody else's error - the paste then stops matching
+        # the terminal it came from, which is the whole of `_relay`'s reason.
+        emit(_verbatim(f"podbench: {error}"), stderr=True)
+        return 2
     # `LauncherError` is here because `hotfix init` lands its own seat now
     # (#177): the landing goes through `launcher.attach`, which refuses in its
     # own currency - an unknown --mount, a pod with no containers, a target
     # container that is not there. Those are all things the user has to fix, and
     # exit 2 with the sentence is the answer; a traceback is not.
-    except (HotfixError, KubectlError, LauncherError, ValueError) as error:
-        print(f"podbench: {error}", file=sys.stderr)
+    except (HotfixError, LauncherError, ValueError) as error:
+        # Through `_laid_out` rather than `print`: `TARGET_HAS_NO_PROJECT` is
+        # three paragraphs and 728 characters, and the terminal's own wrap puts
+        # a break through the middle of `--image-project PATH`. The relayed
+        # halves of the messages that carry kubectl's or uv's stderr are
+        # indented by `_relay`, so they come out exactly as they arrived.
+        emit(_laid_out(f"podbench: {error}"), stderr=True)
         return 2
 
 

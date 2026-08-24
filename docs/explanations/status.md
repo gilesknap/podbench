@@ -116,7 +116,7 @@ resize and provisioning. The headroom it sizes from is read with
 undemonstrated.** On 2026-08-22 an edit reached the running code of a live IOC
 on a real beamline with `restartCount` unchanged and both seats alive: the
 recorded child pid moved, and the running process's interpreter resolved to the
-claim's rather than the image's. `--print-values --from-pod` was measured
+claim's rather than the image's. `hotfix values --from-pod` was measured
 against the same two pods.
 
 What it also found is the seed blaming the wrong thing. On `bl47p-mo-ioc-01` —

@@ -6,7 +6,7 @@ product, and it costs one resolve of four small pure-Python wheels on a machine
 whose only promised tools are uv, helm, kubectl and VS Code.
 
 ``ruamel.yaml`` is the second, and it was argued for here before it shipped
-(#192). ``hotfix --print-values --values`` reads a service's own values file and
+(#192). ``hotfix values --values`` reads a service's own values file and
 emits it back **whole**, and a values file is mostly comments explaining why each
 key is there. A parse-and-redump hands the user a file that is no longer
 recognisably theirs; splicing YAML *text* puts a block editor - flow style,

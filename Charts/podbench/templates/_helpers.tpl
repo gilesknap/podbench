@@ -46,7 +46,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 The name of one application's seat-identity ConfigMap. Derived from the
 application's name rather than the release's: the volume that references it
 lives in the *application's* pod spec, so the name is something a second chart
-has to be told, and `podbench hotfix --print-values` derives it the same way.
+has to be told, and `podbench hotfix values` derives it the same way.
 Call with one entry of .Values.seatIdentity.apps as the context.
 */}}
 {{- define "podbench.seatIdentityName" -}}

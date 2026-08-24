@@ -119,10 +119,10 @@ def test_one_boolean_is_the_whole_of_what_a_service_has_to_say(
     assert claim["metadata"]["name"] == hotfix_claim(APP)
 
 
-def test_the_claim_is_named_what_print_values_tells_the_pod_to_mount() -> None:
+def test_the_claim_is_named_what_hotfix_values_tells_the_pod_to_mount() -> None:
     """The two have to agree or the workload mounts a claim that is not there.
 
-    ``--print-values`` writes ``claimName`` into the target's ``volumes:`` entry
+    ``hotfix values`` writes ``claimName`` into the target's ``volumes:`` entry
     from :func:`podbench.hotfix.hotfix_claim`, and the chart derives the same
     name from the release. Nothing enforces that but this.
     """

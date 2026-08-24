@@ -553,7 +553,9 @@ class Kubectl:
 
     # -- plumbing ---------------------------------------------------------
 
-    def base_argv(self, *, request_timeout: float | None = None) -> list[str]:
+    def base_argv(
+        self, *, request_timeout: float | None = None, cluster_wide: bool = False
+    ) -> list[str]:
         """The prefix every invocation shares.
 
         ``--kubeconfig`` and ``--context`` are selected here rather than left to
@@ -571,16 +573,55 @@ class Kubectl:
         than anything a killed process can leave behind. ``None`` emits no flag
         at all — the calls that must not carry one are
         :data:`STREAMED_SUBCOMMANDS`.
+
+        ``cluster_wide`` leaves the ``-n`` off, for the one read that spans
+        namespaces. kubectl resolves ``-n X --all-namespaces`` in favour of the
+        latter, so this changes no behaviour — it changes what podbench can be
+        quoted as having asked. The argv is relayed verbatim when the call
+        fails, and an RBAC refusal that arrives naming both a namespace and
+        every namespace reads as podbench having asked for two contradictory
+        things (measured 2026-08-23 against ``p47-beamline``).
         """
         argv = [self.binary]
         if self.kubeconfig is not None:
             argv += ["--kubeconfig", self.kubeconfig]
         if self.context is not None:
             argv += ["--context", self.context]
-        argv += ["-n", self.namespace]
+        if not cluster_wide:
+            argv += ["-n", self.namespace]
         if request_timeout is not None and request_timeout > 0:
             argv.append(f"--request-timeout={request_timeout:g}s")
         return argv
+
+    def for_namespace(self, namespace: str) -> Kubectl:
+        """The same client, bound to another namespace.
+
+        For the one listing that spans them: ``podbench hotfix status
+        --all-namespaces`` finds its pods in one cluster-wide ``get pods`` and
+        then has to ``exec`` into each, and an exec carrying the *caller's*
+        namespace reads a different pod - or none. Everything else about the
+        client is carried over deliberately, kubeconfig, context, binary and
+        the injected runner included: a second client built from defaults would
+        be a second set of credentials pointed at a second cluster.
+
+        Returns ``self`` where the namespace is already this one, so the
+        namespace-scoped caller's argv is unchanged.
+
+        >>> here = Kubectl("demo")
+        >>> here.for_namespace("demo") is here
+        True
+        >>> here.for_namespace("other").namespace
+        'other'
+        """
+        if namespace == self.namespace:
+            return self
+        return Kubectl(
+            namespace,
+            context=self.context,
+            kubeconfig=self.kubeconfig,
+            binary=self.binary,
+            runner=self._runner,
+        )
 
     def run(
         self,
@@ -589,6 +630,7 @@ class Kubectl:
         check: bool = True,
         capture: bool = True,
         timeout: float | None = DEFAULT_CALL_TIMEOUT,
+        cluster_wide: bool = False,
     ) -> CommandResult:
         """Run ``kubectl`` with this instance's context and namespace.
 
@@ -602,12 +644,15 @@ class Kubectl:
         (:meth:`base_argv`) ``kubectl`` gives up first and says so in its own
         words. The kill is the backstop for a ``kubectl`` that has stopped
         listening to anything, including its own deadline.
+
+        ``cluster_wide`` is for a call that carries ``--all-namespaces`` and
+        must not also carry a ``-n``; see :meth:`base_argv`.
         """
         streamed = bool(args) and args[0] in STREAMED_SUBCOMMANDS
         request = (
             None if streamed or timeout is None else timeout - REQUEST_TIMEOUT_HEADROOM
         )
-        argv = self.base_argv(request_timeout=request)
+        argv = self.base_argv(request_timeout=request, cluster_wide=cluster_wide)
         argv += list(args)
         result = self._runner(argv, stdin=stdin, capture=capture, timeout=timeout)
         if check and result.returncode != 0:

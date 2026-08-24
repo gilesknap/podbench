@@ -85,8 +85,8 @@ scratchPvc:
 # Durable-across-restart code has to sit on a volume that was present in the pod
 # spec at creation: pod volumes are immutable and a container's rootfs is reset on
 # every restart. This chart creates the PVC; the application's own chart must
-# mount it *beside* its project, at /podbench/app. `podbench hotfix
-# --print-values` emits the snippet.
+# mount it *beside* its project, at /podbench/app. `podbench hotfix values`
+# emits the snippet.
 #
 # Beside, not over. Mounting over the venv hid the image's own copy behind the
 # mount, so seeding needed an initContainer at a staging path that ioc-instance
@@ -130,7 +130,7 @@ hotfixProject:
 #
 # This chart emits the ConfigMap. It cannot put it into anybody's pod — the
 # application's own chart must declare the volume, the same cooperation
-# hotfixProject already needs; `podbench hotfix --print-values` emits it.
+# hotfixProject already needs; `podbench hotfix values` emits it.
 # Enabling this on its own therefore changes nothing about any running pod: it
 # creates a ConfigMap that nothing yet mounts.
 seatIdentity:

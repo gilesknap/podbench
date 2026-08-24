@@ -320,21 +320,18 @@ the argv.
 """
 
 _SEAT_INSTALL_RELOAD_NOTE = (
-    f"{WARN} the window has noticed these but not registered them: a debug "
-    "adapter is "
-    "contributed when the extension host starts, and that already happened. "
-    "Command Palette -> Developer: Reload Window, or the Run and Debug list has "
-    "no podbench entry and F5 says `could not find a debug adapter descriptor`"
+    f"{WARN} the window has noticed these but not registered them: Command "
+    "Palette -> Developer: Reload Window, or F5 says `could not find a debug "
+    "adapter descriptor`"
 )
 """Said whenever the seat-side install ran, because it is always true of it.
 
-Longer than the one-line rule the rest of this block keeps, deliberately. The
-rule exists so the mechanism lives in ``docs/how-to/`` and the step names the
-fact and the action - but the mechanism for *this* one is in the
-``vscode-in-a-seat`` skill and in the docstring below, not on a page a reader
-meets, and it is the fix for a live failure measured at Diamond the day before
-(#152). Shortening it here to satisfy the rule would be trading a working
-explanation for a tidy one; the page it belongs on is the thing to add.
+One line, like every other step in this block. It was the one exception, on the
+grounds that the mechanism had nowhere to live - and
+``docs/how-to/vscode-remote-ssh.md`` now carries it under "Re-running it on a
+window that is already connected? Reload it", which is the page a reader of this
+step meets. What is left here is the symptom the reader will actually see and
+the action that fixes it (#152, measured at Diamond 2026-08-21).
 
 VS Code distinguishes the two paths in its own log, and the wording is the whole
 explanation (measured on a Diamond seat, 2026-08-21)::

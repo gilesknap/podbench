@@ -16,15 +16,17 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
 import pytest
 import yaml
+from rich.text import Text
 
-from podbench import hotfix, model
+from podbench import console, hotfix, model, oci
 from podbench.kubectl import DEFAULT_CALL_TIMEOUT, CommandResult, Kubectl
 from podbench.launcher import Session
 from podbench.model import ContainerRef, PodRef, Rung
@@ -50,6 +52,7 @@ def pod_json(
     *,
     name: str = "api-7f9-abc",
     digest: str = BASE_DIGEST,
+    image: str = "ghcr.io/acme/api:1.4.0",
     owner: str | None = "replicaset",
     annotations: dict[str, str] | None = None,
     seat: bool = True,
@@ -61,7 +64,7 @@ def pod_json(
         metadata["ownerReferences"] = [
             {"kind": owner.title(), "name": "api-7f9", "controller": True}
         ]
-    container: dict[str, Any] = {"name": "app", "image": "ghcr.io/acme/api:1.4.0"}
+    container: dict[str, Any] = {"name": "app", "image": image}
     if claim:
         # The listing's whole filter: a volume, which a GitOps controller
         # reconciles towards rather than strips.
@@ -71,9 +74,7 @@ def pod_json(
     spec: dict[str, Any] = {"containers": [container]}
     status: dict[str, Any] = {
         "phase": "Running",
-        "containerStatuses": [
-            {"name": "app", "image": "ghcr.io/acme/api:1.4.0", "imageID": digest}
-        ],
+        "containerStatuses": [{"name": "app", "image": image, "imageID": digest}],
     }
     if seat:
         spec["ephemeralContainers"] = [{"name": "podbench-1"}]
@@ -124,7 +125,13 @@ class FakeRunner:
         # here rather than counted: this key is what every canned response is
         # matched on, and an offset that moved would match none of them.
         rest = [word for word in argv if not word.startswith("--request-timeout=")]
-        return " ".join(rest[3:])
+        # `-n demo` is matched rather than counted, because the one read that
+        # spans namespaces carries no `-n` at all: a fixed offset would leave
+        # `--all-namespaces` matching none of the canned responses.
+        rest = rest[1:]
+        if rest[:1] == ["-n"]:
+            rest = rest[2:]
+        return " ".join(rest)
 
     def __call__(
         self,
@@ -233,6 +240,20 @@ def a_manifest(**overrides: Any) -> hotfix.HotfixManifest:
     return hotfix.HotfixManifest(**defaults)
 
 
+def flowed(text: str) -> str:
+    """*text* with its wrapping undone, for asserting on a phrase.
+
+    Everything this module's verbs print goes through `console` now, so a
+    sentence they emitted is not a contiguous substring of what came out — it
+    has a newline and a hanging indent somewhere in the middle of it. Collapsing
+    the whitespace is what `tests/test_doctor.py::flowed` does and for the same
+    reason; a test that cares how a line is *laid out* asserts on the raw
+    capture instead, so that flattening cannot hide a line that should have
+    wrapped.
+    """
+    return " ".join(text.split())
+
+
 # -- the manifest ----------------------------------------------------------
 
 
@@ -243,6 +264,22 @@ def test_manifest_round_trips_through_json() -> None:
         consolidated_branch="patch/beamtime-14",
     )
     assert hotfix.HotfixManifest.from_json(manifest.to_json()) == manifest
+
+
+def test_a_v1_manifest_loads_with_the_new_fields_defaulted() -> None:
+    """The falsification for #205 item 2: an existing claim carrying a recorded
+    non-default venv must keep loading, and keep being honoured."""
+    payload = json.loads(a_manifest().to_json())
+    payload["version"] = 1
+    del payload["claimVenv"]
+    del payload["baseCommitAssumed"]
+
+    loaded = hotfix.HotfixManifest.from_mapping(payload)
+
+    assert loaded.venv == VENV
+    assert hotfix.manifest_path(loaded.venv) == f"{VENV}/.podbench-hotfix.json"
+    assert loaded.claim_venv == hotfix.CLAIM_VENV_DIR
+    assert loaded.stale_schema
 
 
 def test_manifest_round_trips_on_disk(tmp_path: Path) -> None:
@@ -447,9 +484,12 @@ def test_probe_reports_an_interpreter_that_will_not_run() -> None:
 
 
 def test_assess_active_when_the_image_has_not_moved() -> None:
+    """And it adds no detail: `format_status`'s own columns carry the count and
+    the verdict, and a healthy row said the same number twice until it did
+    not - see `test_a_healthy_row_says_its_commit_count_and_its_sha_once`."""
     health, detail = hotfix.assess(a_manifest(ahead=2), current_digest=BASE_DIGEST)
     assert health is hotfix.HotfixHealth.ACTIVE
-    assert "2 commit(s) ahead" in detail
+    assert detail == ""
 
 
 def test_assess_flags_an_image_upgrade_under_the_mount() -> None:
@@ -599,6 +639,127 @@ def test_a_pod_read_keeps_the_bound_the_clone_is_exempt_from() -> None:
         DEFAULT_CALL_TIMEOUT,
         hotfix.POD_WORK_TIMEOUT,
     ]
+
+
+# -- --venv is read off the pod (#205 item 1) -------------------------------
+
+
+def a_target(mount: str = "") -> hotfix.HotfixTarget:
+    return hotfix.HotfixTarget(
+        pod=hotfix.PodRef("demo", "api-7f9-abc"),
+        container="app",
+        image="ghcr.io/acme/api:1.4.0",
+        image_digest=BASE_DIGEST,
+        claim_mount=mount,
+    )
+
+
+def test_the_claim_mount_is_resolved_by_volume_name_not_by_path() -> None:
+    """The mountPath is the answer being looked for, so it cannot also be the
+    key. `podbench-app` is podbench's own volume name, which is what keeps this
+    chart-agnostic where scanning a chart's keys would not be."""
+    pod = pod_json(owner=None, claim=True)
+    pod["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": "/elsewhere"}
+    ]
+    runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(pod)})
+
+    target = hotfix.resolve_target(kube(runner), "pod/api-7f9-abc")
+
+    assert target.claim_mount == "/elsewhere"
+
+
+def test_venv_defaults_to_the_mount_the_pod_declares() -> None:
+    assert hotfix.resolve_venv(a_target(model.HOTFIX_APP_PATH), None) == (
+        model.HOTFIX_APP_PATH,
+        None,
+    )
+
+
+def test_venv_defaults_to_the_convention_before_the_claim_exists() -> None:
+    """`init` is run against a pod that has just been given the claim, but the
+    same verbs are run against one that has not - and a default that guessed
+    nothing would make the flag required again for the case it exists to drop."""
+    assert hotfix.resolve_venv(a_target(), None) == (model.HOTFIX_APP_PATH, None)
+
+
+def test_a_venv_that_disagrees_with_the_pod_is_refused() -> None:
+    """The silent failure #205 item 1 names: any value other than the mountPath
+    writes a manifest at a path `status` never scans, and a hotfixed pod
+    invisible to `status` is the precise thing this mode exists to prevent."""
+    with pytest.raises(hotfix.HotfixError) as refusal:
+        hotfix.resolve_venv(a_target(model.HOTFIX_APP_PATH), "/opt/venv")
+
+    assert "/opt/venv" in str(refusal.value)
+    assert model.HOTFIX_APP_PATH in str(refusal.value)
+
+
+def test_a_claim_mounted_elsewhere_is_honoured_and_said_out_loud() -> None:
+    """The escape hatch stays open; what must not happen is that it is silent."""
+    venv, note = hotfix.resolve_venv(a_target("/opt/venv"), "/opt/venv")
+
+    assert venv == "/opt/venv"
+    assert note is not None
+    assert "hotfix status" in note
+
+
+def test_a_trailing_slash_is_not_a_disagreement() -> None:
+    assert hotfix.resolve_venv(a_target("/opt/venv"), "/opt/venv/")[0] == "/opt/venv"
+
+
+# -- the base commit's provenance (#205 item 2) -----------------------------
+
+
+REVISION = "3333333333333333333333333333333333333333"
+
+
+def a_clone(**outputs: str) -> FakeStore:
+    store = seeded_store()
+    store.outputs.update(outputs)
+    return store
+
+
+def test_a_stated_base_commit_is_measured() -> None:
+    sha, assumed, why = hotfix.base_commit_from(a_clone(), CHECKOUT, BASE_SHA, None)
+
+    assert (sha, assumed) == (BASE_SHA, False)
+    assert "as given" in why
+
+
+def test_the_image_label_supplies_the_base_commit() -> None:
+    """The number every drift figure is a difference against, taken from the
+    thing that actually knows it rather than from a fresh clone's HEAD."""
+    sha, assumed, why = hotfix.base_commit_from(
+        a_clone(), CHECKOUT, None, {oci.REVISION_LABEL: REVISION}
+    )
+
+    assert (sha, assumed) == (REVISION, False)
+    assert oci.REVISION_LABEL in why
+
+
+def test_a_revision_the_clone_does_not_have_is_not_believed() -> None:
+    """A label is a claim about *a* repository, and --repo may be a fork or a
+    mirror. Believing it anyway makes `git log base..HEAD` fail later, which is
+    a worse place to find out."""
+    store = a_clone()
+    store.failures[f"{GIT} cat-file -e {REVISION}"] = "not a commit"
+
+    sha, assumed, why = hotfix.base_commit_from(
+        store, CHECKOUT, None, {oci.REVISION_LABEL: REVISION}
+    )
+
+    assert (sha, assumed) == (HEAD_SHA, True)
+    assert "not in this checkout" in why
+
+
+def test_no_label_means_an_assumed_base_and_says_so() -> None:
+    """The honest-uncertainty path, which is the point of the item rather than
+    a fallback from it: without --ref the clone's HEAD is the default branch's
+    tip, which is almost never what the image was built from."""
+    sha, assumed, why = hotfix.base_commit_from(a_clone(), CHECKOUT, None, {})
+
+    assert (sha, assumed) == (HEAD_SHA, True)
+    assert "ASSUMED" in why
 
 
 # -- annotation ------------------------------------------------------------
@@ -800,6 +961,155 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
     assert any("rebuilt the venv" in action for action in actions)
 
 
+def test_init_takes_the_repo_and_the_base_from_the_image() -> None:
+    """#205 item 2. Both are things the image states about itself, so neither
+    is a thing to type into a six-flag command in an emergency - and the
+    checkout the image ships is what says the labels are its own."""
+    runner = FakeRunner()
+    store = seeded_store()
+    store.outputs[f"{GIT} remote get-url origin"] = "git@github.com:acme/api.git\n"
+
+    manifest, _ = hotfix.init(
+        kube(runner),
+        store,
+        deployment_target(),
+        venv=model.HOTFIX_APP_PATH,
+        image_labels={
+            oci.SOURCE_LABEL: "https://github.com/acme/api",
+            oci.REVISION_LABEL: BASE_SHA,
+        },
+        install=False,
+    )
+
+    assert manifest.repo == "git@github.com:acme/api.git"
+    # The image's revision, not the clone's HEAD - which is what HEAD_SHA is
+    # scripted to be, and is what this used to record.
+    assert manifest.base_commit == BASE_SHA
+    assert not manifest.base_commit_assumed
+
+
+def test_an_inherited_label_never_becomes_a_measured_base() -> None:
+    """OCI labels are inherited: measured 2026-08-23,
+    ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1 advertises the
+    *base image's* source and revision. Believing the pair would have measured
+    the IOC's drift against another project's history and called it measured,
+    because a clone made from the label's own repository contains the label's
+    own revision."""
+    runner = FakeRunner()
+    store = seeded_store()
+    store.outputs[f"{GIT} remote get-url origin"] = (
+        "https://github.com/DiamondLightSource/fastcs-example\n"
+    )
+
+    manifest, actions = hotfix.init(
+        kube(runner),
+        store,
+        deployment_target(),
+        venv=model.HOTFIX_APP_PATH,
+        image_labels={
+            oci.SOURCE_LABEL: (
+                "https://github.com/DiamondLightSource/ubuntu-devcontainer"
+            ),
+            oci.REVISION_LABEL: BASE_SHA,
+        },
+        install=False,
+    )
+
+    # The checkout's own origin wins: it is a measurement of the project on the
+    # claim, and manifest.repo is where `consolidate` will push.
+    assert manifest.repo == "https://github.com/DiamondLightSource/fastcs-example"
+    assert manifest.base_commit == HEAD_SHA
+    assert manifest.base_commit_assumed
+    assert any("ubuntu-devcontainer" in action for action in actions)
+    assert not store.ran(f"{GIT} cat-file -e {BASE_SHA}"), (
+        "the guard cannot see this - the labels are not checked against a "
+        "clone made from the same labels"
+    )
+
+
+def test_a_clone_made_from_the_label_corroborates_nothing() -> None:
+    """With no checkout in the image there is no origin to ask, so the only
+    thing naming the repository is the label itself and `_has_commit` runs
+    against a clone of it. Honest uncertainty, not a measurement."""
+    runner = FakeRunner()
+    store = FakeStore(
+        files={
+            CHECKOUT: "",
+            PROJECT_SRC: "",
+            "/proc/1/root/python": "",
+            f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
+        },
+        outputs={f"{GIT} rev-parse HEAD": HEAD_SHA},
+    )
+
+    manifest, _ = hotfix.init(
+        kube(runner),
+        store,
+        deployment_target(),
+        venv=model.HOTFIX_APP_PATH,
+        image_labels={
+            oci.SOURCE_LABEL: "https://github.com/acme/api",
+            oci.REVISION_LABEL: BASE_SHA,
+        },
+        install=False,
+    )
+
+    assert store.ran(f"git clone https://github.com/acme/api {CHECKOUT}")
+    assert manifest.repo == "https://github.com/acme/api"
+    assert manifest.base_commit == HEAD_SHA
+    assert manifest.base_commit_assumed
+
+
+def test_init_refuses_a_missing_repo_before_it_copies_anything() -> None:
+    """`main`'s except clause prints the error alone, so a refusal on the far
+    side of a ~50s `cp -a` costs the wait and then discards the only record
+    that the claim was written to at all."""
+    store = FakeStore(files={CHECKOUT: "", PROJECT_SRC: "", "/proc/1/root/python": ""})
+
+    with pytest.raises(hotfix.HotfixError, match="--repo"):
+        hotfix.init(
+            kube(FakeRunner()),
+            store,
+            deployment_target(),
+            venv=model.HOTFIX_APP_PATH,
+            install=False,
+        )
+
+    assert not store.ran("bash -c shopt -s dotglob"), "the seed must not have run"
+    assert not store.ran("cp -a /proc/1/root/python")
+
+
+def test_init_refuses_when_neither_the_flag_nor_the_label_names_a_repo() -> None:
+    store = FakeStore(files={CHECKOUT: "", f"{CHECKOUT}/pyproject.toml": ""})
+
+    with pytest.raises(hotfix.HotfixError, match="--repo"):
+        hotfix.init(
+            kube(FakeRunner()),
+            store,
+            deployment_target(),
+            venv=model.HOTFIX_APP_PATH,
+            install=False,
+        )
+
+
+def test_init_records_the_claim_venv_so_that_apply_need_not_be_told() -> None:
+    """#209's first half: the flag was a cross-command contract that nothing
+    recorded, so nothing downstream could honour it."""
+    store = seeded_store()
+
+    manifest, _ = hotfix.init(
+        kube(FakeRunner()),
+        store,
+        deployment_target(),
+        venv=model.HOTFIX_APP_PATH,
+        repo="https://example.invalid/acme/api.git",
+        claim_venv="env",
+        install=False,
+    )
+
+    assert manifest.claim_venv == "env"
+
+
 def test_init_is_idempotent_about_an_existing_checkout() -> None:
     runner = FakeRunner()
     store = seeded_store()
@@ -932,6 +1242,65 @@ def test_apply_reinstalls_after_a_hand_commit_that_touched_packaging() -> None:
     assert any("rebuilt the venv" in action for action in actions)
 
 
+def test_apply_rebuilds_into_the_venv_the_manifest_records() -> None:
+    """#209's other half. `apply` has no --claim-venv and never should have, so
+    before the manifest carried the name the reinstall defaulted to `.venv`
+    while the supervisor's runtime switch looked in the directory `init` was
+    told about - a packaging-change rebuild landing where nothing would ever run
+    it, and no error anywhere."""
+    runner = FakeRunner()
+    store = applied_store(changed="pyproject.toml")
+    store.files[hotfix.manifest_path(VENV)] = a_manifest(claim_venv="env").to_json()
+
+    hotfix.apply_hotfix(
+        kube(runner),
+        store,
+        deployment_target(),
+        venv=VENV,
+        message="new entry point",
+    )
+
+    rebuilt = runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
+    assert rebuilt
+    assert f"UV_PROJECT_ENVIRONMENT={CHECKOUT}/env" in " ".join(rebuilt[0])
+
+
+def test_apply_rebuilds_into_uvs_own_default_without_saying_so() -> None:
+    """The other side of the same switch: `install_argv` sets the variable only
+    when the name is not uv's own, so a default claim must not carry it."""
+    runner = FakeRunner()
+
+    hotfix.apply_hotfix(
+        kube(runner),
+        applied_store(changed="pyproject.toml"),
+        deployment_target(),
+        venv=VENV,
+        message="new entry point",
+    )
+
+    rebuilt = runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
+    assert "UV_PROJECT_ENVIRONMENT" not in " ".join(rebuilt[0])
+
+
+def test_apply_never_upgrades_an_unknown_base_into_a_measured_one() -> None:
+    """`apply` rewrites the manifest at the current schema version. A v1
+    manifest cannot say whether its base was measured, and rewriting it as v2
+    with the field's default would turn "unknown" into "measured" - the one
+    direction this field must never move in."""
+    payload = json.loads(a_manifest().to_json())
+    payload["version"] = 1
+    del payload["baseCommitAssumed"]
+    store = applied_store()
+    store.files[hotfix.manifest_path(VENV)] = json.dumps(payload)
+
+    manifest, _ = hotfix.apply_hotfix(
+        kube(FakeRunner()), store, deployment_target(), venv=VENV, message="fix"
+    )
+
+    assert manifest.schema_version == hotfix.MANIFEST_VERSION
+    assert manifest.base_commit_assumed
+
+
 def test_apply_after_a_code_only_hand_commit_does_not_reinstall() -> None:
     """The other direction: the commit is the key, so a code-only one is cheap."""
     runner = FakeRunner()
@@ -1044,7 +1413,15 @@ def test_consolidate_pushes_and_records_the_branch() -> None:
     # outlives the boolean either way (#190).
     assert f"{hotfix.SUBCHART_VALUES_KEY}.enabled=false" in checklist
     assert "hotfixProject.enabled=false" in checklist
-    assert "delete the claim" in checklist
+    # Flattened, because steps 4 and 5 are prose and take their width from the
+    # terminal: a phrase asserted on unflattened passes only at the width the
+    # suite happens to run at.
+    flowed = " ".join(checklist.split())
+    # The two steps nobody does, still stated as two - the values are the
+    # application's own and the boolean is the claim chart's - and now with the
+    # verb that measures which of them have landed.
+    assert "back out of the application's own values" in flowed
+    assert "podbench hotfix retire" in flowed
 
 
 def test_consolidate_dry_run_pushes_nothing() -> None:
@@ -1096,6 +1473,91 @@ def state_exec(
     sep = hotfix.STATE_SEPARATOR
     body = manifest.to_json() if manifest is not None else ""
     return f"{body}\n{sep}\n{hold}\n{sep}\n{now}\n"
+
+
+def test_status_says_when_the_drift_is_counted_from_an_assumed_base() -> None:
+    """A count is a difference against the base, so an unmeasured base makes it
+    a guess - and it is qualified in the column the eye lands on rather than
+    printed as though it were measured."""
+    row = hotfix.HotfixRow(
+        pod=hotfix.PodRef("demo", "api-7f9-abc"),
+        manifest=a_manifest(ahead=2, base_commit_assumed=True),
+        health=hotfix.HotfixHealth.ACTIVE,
+        detail="",
+    )
+
+    assert "+2 commit(s) from an assumed base" in hotfix.format_status([row])
+    measured = replace(row, manifest=a_manifest(ahead=2))
+    assert "assumed" not in hotfix.format_status([measured])
+
+
+def test_a_healthy_row_says_its_commit_count_and_its_sha_once() -> None:
+    """The plan's own "measured before starting" row, finally closed.
+
+    A healthy row read `+0 commit(s)  3d55455  active - hotfixed, base image
+    unchanged`, then `0 commit(s) ahead of the image` under it, then `base
+    3d55455`: one number twice and one sha twice, on the row a shutdown
+    checklist scans most often. The columns already carry both, and at `+0` the
+    claim is *at* its base - so the line below keeps only the provenance, which
+    appears nowhere else.
+    """
+    manifest = a_manifest(ahead=0)
+    row = hotfix.HotfixRow(
+        pod=hotfix.PodRef("demo", "api-7f9-abc"),
+        manifest=manifest,
+        health=hotfix.HotfixHealth.ACTIVE,
+        detail=hotfix.assess(manifest, current_digest=BASE_DIGEST)[1],
+    )
+
+    report = hotfix.format_status([row])
+
+    assert report.count("+0 commit(s)") == 1
+    assert "ahead of the image" not in report
+    assert report.count(BASE_SHA[:7]) == 1
+    # The provenance survives - it is the only thing this line ever added.
+    assert "Ada <ada@example.invalid>" in report
+    assert "2026-08-15T09:00:00+00:00" in report
+    # Layout rule 9e: the row is still an authored set of columns.
+    first = report.splitlines()[0]
+    assert first.startswith("  [ok]")
+    assert "  +0 commit(s)  " in first
+
+
+def test_a_row_that_is_ahead_still_names_the_base_it_is_ahead_of() -> None:
+    """The other side: two different shas are two facts, and both stay."""
+    manifest = a_manifest(ahead=2, commit=HEAD_SHA)
+    row = hotfix.HotfixRow(
+        pod=hotfix.PodRef("demo", "api-7f9-abc"),
+        manifest=manifest,
+        health=hotfix.HotfixHealth.ACTIVE,
+        detail="",
+    )
+
+    report = hotfix.format_status([row])
+
+    assert f"base {BASE_SHA[:7]}" in report
+    assert HEAD_SHA[:7] in report
+
+
+def test_a_manifest_recording_no_sha_at_all_still_says_unknown() -> None:
+    """The equality is vacuous when neither sha is there.
+
+    Dropping the repeated sha keys on `commit == base_commit`, and a manifest
+    carrying neither satisfies that by accident - which turned `base ?`, the one
+    place the line admitted it could not say, into "on its base commit", an
+    identity nobody measured.
+    """
+    row = hotfix.HotfixRow(
+        pod=hotfix.PodRef("demo", "api-7f9-abc"),
+        manifest=a_manifest(commit="", base_commit=""),
+        health=hotfix.HotfixHealth.ACTIVE,
+        detail="",
+    )
+
+    report = hotfix.format_status([row])
+
+    assert "base ?" in report
+    assert "on its base commit" not in report
 
 
 def test_status_ignores_pods_without_a_hotfix() -> None:
@@ -1233,6 +1695,615 @@ def test_status_reports_a_pod_whose_provenance_is_gone() -> None:
     rows = hotfix.status_rows(kube(runner))
     assert rows[0].health is hotfix.HotfixHealth.UNREADABLE
     assert "provenance" in hotfix.format_status(rows)
+
+
+# -- retirement ------------------------------------------------------------
+
+
+CLAIM = "api-podbench-project"
+
+
+def wired_pod(
+    *,
+    name: str = "api-7f9-abc",
+    namespace: str | None = None,
+    digest: str = NEW_DIGEST,
+    wired: bool = True,
+    claim: str | None = CLAIM,
+    fs_group: int | None = 37887,
+) -> dict[str, Any]:
+    """A pod as retirement meets it: wired for hotfix mode, or no longer.
+
+    Everything `values_snippet` emits, because that is what retirement takes
+    back out one at a time - both volumes, the mount, the command, the
+    supervisor's args and the fsGroup - and a fixture carrying only three of
+    them is what let the `wiring` row under-enumerate on the live target
+    (evidence §7.3) while every test here passed.
+    """
+    metadata: dict[str, Any] = {"name": name}
+    if namespace is not None:
+        metadata["namespace"] = namespace
+    container: dict[str, Any] = {"name": "app", "image": "ghcr.io/acme/api:1.4.0"}
+    spec: dict[str, Any] = {"containers": [container], "volumes": []}
+    if wired:
+        container["volumeMounts"] = [
+            {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH}
+        ]
+        container["command"] = ["bash", "-c"]
+        container["args"] = [hotfix.hold_loop_args("python -m app")]
+        volume: dict[str, Any] = {"name": model.HOTFIX_CLAIM_VOLUME}
+        if claim is not None:
+            volume["persistentVolumeClaim"] = {"claimName": claim}
+        spec["volumes"] = [
+            volume,
+            {"name": model.SEAT_HOME_VOLUME, "emptyDir": {"sizeLimit": "2Gi"}},
+        ]
+        if fs_group is not None:
+            spec["securityContext"] = {"fsGroup": fs_group}
+    return {
+        "metadata": metadata,
+        "spec": spec,
+        "status": {
+            "phase": "Running",
+            "containerStatuses": [
+                {"name": "app", "image": "ghcr.io/acme/api:1.4.0", "imageID": digest}
+            ],
+        },
+    }
+
+
+def consolidated() -> hotfix.HotfixManifest:
+    return a_manifest(ahead=3, consolidated_branch="hotfix/beamtime-14")
+
+
+def retire_runner(
+    *,
+    wired: bool = True,
+    pvc: bool | None = True,
+    manifest: hotfix.HotfixManifest | None = None,
+) -> FakeRunner:
+    """A namespace holding one target, and a claim that is there, gone or unreadable."""
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(wired_pod(wired=wired)),
+            # Who holds the claim is a question about the namespace, not about
+            # the target: the second pod of a rollout holds it just as hard.
+            "get pods -o json": json.dumps({"items": [wired_pod(wired=wired)]}),
+            "exec -c app": state_exec(manifest),
+            "get pvc -l": json.dumps(
+                {
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": CLAIM,
+                                "labels": {hotfix.HOTFIX_TARGET_LABEL: "app"},
+                            }
+                        }
+                    ]
+                    if pvc
+                    else []
+                }
+            ),
+            f"get pvc {CLAIM} -o name": f"persistentvolumeclaim/{CLAIM}\n",
+        }
+    )
+    if pvc is False:
+        runner.failures[f"get pvc {CLAIM} -o name"] = (
+            f'Error from server (NotFound): persistentvolumeclaims "{CLAIM}" not found'
+        )
+    if pvc is None:
+        runner.failures["get pvc"] = (
+            "Error from server (Forbidden): persistentvolumeclaims is forbidden: "
+            'User "ada" cannot list resource "persistentvolumeclaims"'
+        )
+    return runner
+
+
+def rows_by_step(
+    checks: Sequence[hotfix.RetirementCheck],
+) -> dict[hotfix.RetirementStep, hotfix.RetirementCheck]:
+    return {check.step: check for check in checks}
+
+
+def test_a_pod_wired_to_a_claim_its_chart_no_longer_declares_is_reported() -> None:
+    """The live specimen (p47-beamline, 2026-08-23).
+
+    `p47-services` carried `podbench-hotfix-claim.enabled: false`, every pod in
+    the namespace was deleted, and the target came back still mounting the claim
+    and still running the supervisor: the boolean disables the subchart, while
+    the wiring lives in the application's own values. Nothing said so, and this
+    is the report that has to.
+    """
+    checks = hotfix.retirement(
+        wired_pod(),
+        consolidated(),
+        claim=hotfix.ClaimState(CLAIM, True),
+        current_digest=NEW_DIGEST,
+        reference="pod/api-7f9-abc",
+    )
+    rows = rows_by_step(checks)
+    assert rows[hotfix.RetirementStep.WIRING].remaining
+    assert rows[hotfix.RetirementStep.CLAIM].remaining
+    wiring = rows[hotfix.RetirementStep.WIRING].detail
+    # Every half named, since retirement is somebody editing a values file.
+    assert model.HOTFIX_CLAIM_VOLUME in wiring
+    assert model.HOTFIX_APP_PATH in wiring
+    assert "args" in wiring
+    # And the reason the boolean did not do it.
+    assert "application's own pod template" in wiring
+    report = hotfix.format_retirement(checks)
+    assert "2 of 4 steps of retirement remain (exit 1)" in report
+    assert "REMAINING: wiring, claim" in report
+
+
+def test_a_claim_carrying_no_commits_has_its_branch_step_done() -> None:
+    """Evidence §7.2/§7.3, measured on the live target.
+
+    `retire` printed "0 commit(s) on this claim are on no branch: `podbench
+    hotfix consolidate …` first, or retiring the claim discards them" - about a
+    claim `consolidate` refuses in the same minute with "there is no hotfix to
+    consolidate ... retire the claim instead". Two verbs pointing at each other,
+    and a verdict of "4 of 4 steps remain" when three do. Nothing is discarded
+    by retiring a claim with nothing on it, so that step is done.
+    """
+    checks = hotfix.retirement(
+        wired_pod(digest=BASE_DIGEST),
+        a_manifest(ahead=0),
+        claim=hotfix.ClaimState(CLAIM, True),
+        current_digest=BASE_DIGEST,
+        reference="pod/api-7f9-abc",
+    )
+    rows = rows_by_step(checks)
+    branch = rows[hotfix.RetirementStep.BRANCH]
+    assert branch.done is True
+    assert not branch.remaining
+    # And no offer of the command that would refuse this very claim.
+    assert "podbench hotfix consolidate" not in branch.detail
+    # Hedged to what was measured: `ahead` is *recorded*, by `init` and
+    # `apply`, while `consolidate` recounts from `git log`. A seat somebody
+    # committed in by hand has commits this row cannot see, and `--delete-claim`
+    # is the destructive direction to be wrong in.
+    assert "nothing it records would be discarded" in branch.detail
+    report = hotfix.format_retirement(checks)
+    assert "3 of 4 steps of retirement remain (exit 1)" in report
+    assert "REMAINING: image, wiring, claim" in report
+
+
+def test_a_claim_that_is_ahead_still_has_to_be_consolidated() -> None:
+    """The other side of the same arm: commits on no branch are still a step,
+    and the offer is still the command that takes them off the claim."""
+    checks = hotfix.retirement(
+        wired_pod(),
+        a_manifest(ahead=2),
+        claim=hotfix.ClaimState(CLAIM, True),
+        current_digest=NEW_DIGEST,
+        reference="pod/api-7f9-abc",
+    )
+    branch = rows_by_step(checks)[hotfix.RetirementStep.BRANCH]
+    assert branch.remaining
+    assert "consolidate pod/api-7f9-abc" in branch.detail
+
+
+def test_the_wiring_row_names_every_value_that_has_to_come_out() -> None:
+    """Evidence §7.3 and the 2026-08-24 audit's correction to it.
+
+    The row named three things and six values were wired. Worse, its closing
+    clause sent the reader at "the values `podbench hotfix values` emitted" -
+    which under `--from-pod` is podbench's own entries only, while the service's
+    `volumes` and `volumeMounts` also carry its beamline hostPath. A helm list
+    replaces rather than merges (rule 5), so deleting those two keys wholesale
+    unmounts the beamline directory. What the row carries is the instruction -
+    the entries, not the keys - and the merge rule behind it is in the how-to,
+    under this report's own sample.
+    """
+    checks = hotfix.retirement(
+        wired_pod(),
+        consolidated(),
+        claim=hotfix.ClaimState(CLAIM, True),
+        current_digest=NEW_DIGEST,
+        reference="pod/api-7f9-abc",
+    )
+    wiring = " ".join(rows_by_step(checks)[hotfix.RetirementStep.WIRING].detail.split())
+    for named in (
+        model.HOTFIX_CLAIM_VOLUME,
+        model.SEAT_HOME_VOLUME,
+        model.HOTFIX_APP_PATH,
+        "command and args",
+        "podSecurityContext.fsGroup is 37887",
+    ):
+        assert named in wiring, named
+    # The fsGroup and the home volume are named, never counted: an application
+    # may have declared its own fsGroup, and the home volume is the seat's.
+    assert "not measured here" in wiring
+    assert "it is the seat's rather than the hotfix's" in wiring
+    # The hazard, replacing the advice that caused it: the entries, not the keys.
+    assert "and not the whole `volumes` and `volumeMounts` keys" in wiring
+    assert "`podbench hotfix values` emitted" not in wiring
+
+
+def test_the_wiring_row_leaves_an_fsgroup_out_when_the_pod_declares_none() -> None:
+    """Named only where it is there: an invented item is the same defect as a
+    missing one."""
+    checks = hotfix.retirement(
+        wired_pod(fs_group=None),
+        consolidated(),
+        claim=hotfix.ClaimState(CLAIM, True),
+        current_digest=NEW_DIGEST,
+    )
+    assert "fsGroup" not in rows_by_step(checks)[hotfix.RetirementStep.WIRING].detail
+
+
+def test_retirement_never_ticks_a_step_it_could_not_measure() -> None:
+    """#205 item 4's falsification: a retirement that lies is worse than the
+    checklist. Once nothing mounts the claim its manifest cannot be read, so the
+    two steps that come off it are unmeasured — and unmeasured is `[ ]`."""
+    checks = hotfix.retirement(
+        wired_pod(wired=False),
+        None,
+        claim=hotfix.ClaimState(CLAIM, True),
+        reference="pod/api-7f9-abc",
+    )
+    rows = rows_by_step(checks)
+    for step in (hotfix.RetirementStep.BRANCH, hotfix.RetirementStep.IMAGE):
+        assert rows[step].done is None
+        assert rows[step].flag == "[ ]"
+        # Unmeasured moves neither the tick nor the exit code.
+        assert not rows[step].remaining
+    report = hotfix.format_retirement(checks)
+    assert "NOT MEASURED: branch, image" in report
+    assert "1 of 4 steps of retirement remain" in report
+
+
+def test_a_pod_still_wired_to_a_claim_that_is_gone_is_the_loud_case() -> None:
+    """The state that is worse than either end of the checklist: the pod runs
+    only because it was scheduled while the claim existed, and the next
+    reschedule will not bind."""
+    checks = hotfix.retirement(
+        wired_pod(),
+        consolidated(),
+        claim=hotfix.ClaimState(CLAIM, False),
+        current_digest=NEW_DIGEST,
+        reference="pod/api-7f9-abc",
+    )
+    rows = rows_by_step(checks)
+    assert rows[hotfix.RetirementStep.CLAIM].done is True
+    wiring = rows[hotfix.RetirementStep.WIRING]
+    assert wiring.remaining
+    assert "next reschedule will not bind" in wiring.detail
+
+
+def test_a_finished_retirement_says_so_and_exits_zero() -> None:
+    checks = hotfix.retirement(
+        wired_pod(wired=False), None, claim=hotfix.ClaimState(CLAIM, False)
+    )
+    assert not any(check.remaining for check in checks)
+    report = hotfix.format_retirement(checks)
+    assert "VERDICT: retirement is complete (exit 0)" in report
+    # Flattened, because the details wrap: the two rows the gone claim makes
+    # moot carry the short form, and the mechanism is said once on the row that
+    # measured it.
+    flowed = " ".join(report.split())
+    assert flowed.count("not asked: the claim is gone") == 2
+
+
+def test_a_pod_that_kept_the_seats_home_volume_is_still_retired() -> None:
+    """The home volume is named, never counted.
+
+    `hotfix values` emits it, so the `wiring` row has to name it - but it is
+    the *seat's*, and a facility that wants `attach` and `vscode` to keep
+    working on this pod keeps it after the hotfix is gone. Counted, that pod
+    would report a step outstanding that nothing can close and `retire` could
+    never print "retirement is complete": a permanent exit 1 on a verb whose
+    whole value is a count somebody can trust.
+    """
+    kept_the_home_volume = wired_pod(wired=False)
+    kept_the_home_volume["spec"]["volumes"] = [
+        {"name": model.SEAT_HOME_VOLUME, "emptyDir": {"sizeLimit": "2Gi"}}
+    ]
+    checks = hotfix.retirement(
+        kept_the_home_volume, None, claim=hotfix.ClaimState(CLAIM, False)
+    )
+    assert not any(check.remaining for check in checks)
+    report = hotfix.format_retirement(checks)
+    assert "VERDICT: retirement is complete (exit 0)" in report
+    flowed = " ".join(report.split())
+    # Still named on the way out, and still on the two rows the gone claim
+    # makes moot - the early return only fires because nothing is counted.
+    assert "it is the seat's rather than the hotfix's" in flowed
+    assert flowed.count("not asked: the claim is gone") == 2
+
+
+def test_the_done_wiring_row_names_the_values_it_cannot_attribute() -> None:
+    """ "Carries none of the hotfix wiring" reads as an all-clear over the whole
+    values file, and the reader taking it as one is exactly the reader still
+    holding an `fsGroup` this run cannot attribute. Both named values are on
+    this arm too, or they vanish at the moment the last edit is made."""
+    unwired_but_not_untouched = wired_pod(wired=False)
+    unwired_but_not_untouched["spec"]["securityContext"] = {"fsGroup": 37887}
+    unwired_but_not_untouched["spec"]["volumes"] = [
+        {"name": model.SEAT_HOME_VOLUME, "emptyDir": {}}
+    ]
+    checks = hotfix.retirement(
+        unwired_but_not_untouched, None, claim=hotfix.ClaimState(CLAIM, True)
+    )
+    wiring = rows_by_step(checks)[hotfix.RetirementStep.WIRING]
+    assert wiring.done is True
+    detail = " ".join(wiring.detail.split())
+    assert "carries none of the hotfix wiring" in detail
+    assert "podSecurityContext.fsGroup is 37887" in detail
+    assert model.SEAT_HOME_VOLUME in detail
+
+
+def test_retire_refuses_to_delete_a_claim_the_pod_still_mounts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The safety of the flag. A claim deleted out from under a running pod
+    stays Terminating while that pod holds it, and surfaces a reschedule later
+    as a pod that cannot bind."""
+    runner = retire_runner(manifest=consolidated())
+    code = hotfix.main(
+        ["hotfix", "retire", "pod/api-7f9-abc", "-n", "demo", "--delete-claim"],
+        runner=runner,
+    )
+    assert code == 1
+    assert not runner.matching("delete")
+    out = " ".join(capsys.readouterr().out.split())
+    assert "still mounted by api-7f9-abc, so it was not deleted" in out
+
+
+def test_retire_deletes_the_claim_once_nothing_mounts_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """And says both things it cannot verify about the deletion it just made:
+    what was on the claim, and whether the chart will put it back."""
+    runner = retire_runner(wired=False)
+    code = hotfix.main(
+        ["hotfix", "retire", "pod/api-7f9-abc", "-n", "demo", "--delete-claim"],
+        runner=runner,
+    )
+    assert code == 0
+    assert runner.matching(f"delete pvc {CLAIM}")
+    out = " ".join(capsys.readouterr().out.split())
+    assert "what was on it is unverified" in out
+    assert "the next sync recreates it" in out
+    # Read-only otherwise, and it lands no seat: an ephemeral container cannot
+    # be taken back off a pod, and this verb is a question.
+    assert not runner.matching("patch")
+    assert not any("ephemeralcontainers" in " ".join(argv) for argv in runner.calls)
+
+
+def test_retire_will_not_delete_a_claim_it_could_not_ask_who_holds() -> None:
+    """The deletion's only precondition is a negative one, and a failed read
+    turns a negative into a false yes for anything that reads "found none" and
+    "could not look" as one answer."""
+    runner = retire_runner(wired=False)
+    runner.failures["get pods -o json"] = "Error from server (Forbidden): pods"
+    checks = hotfix.retire(kube(runner), "pod/api-7f9-abc", delete_claim=True)
+    claim = rows_by_step(checks)[hotfix.RetirementStep.CLAIM]
+    assert claim.remaining
+    assert "unmeasured" in claim.detail
+    assert not runner.matching("delete")
+
+
+def test_retire_finds_the_claim_by_label_once_the_pod_stops_naming_it() -> None:
+    """The pod stops naming the claim at exactly the step before the one that
+    deletes it, so the label both claim charts set is the only way back."""
+    runner = retire_runner(wired=False)
+    checks = hotfix.retire(kube(runner), "pod/api-7f9-abc")
+    assert runner.matching(f"get pvc -l {hotfix.HOTFIX_TARGET_LABEL}")
+    assert rows_by_step(checks)[hotfix.RetirementStep.CLAIM].remaining
+
+
+def test_a_claim_that_could_not_be_read_is_not_a_claim_that_is_gone() -> None:
+    """kubectl tells a 403 from a 404 in its text alone, and ticking `claim` on
+    a refusal would tick the one step of retirement nobody can undo."""
+    runner = retire_runner(wired=False, pvc=None)
+    checks = hotfix.retire(kube(runner), "pod/api-7f9-abc", delete_claim=True)
+    claim = rows_by_step(checks)[hotfix.RetirementStep.CLAIM]
+    assert claim.done is None
+    assert "forbidden" in claim.detail.lower()
+    assert not runner.matching("delete")
+
+
+def test_a_label_listing_that_found_nothing_is_not_a_claim_that_is_gone() -> None:
+    """An empty listing is an answer about labels, not about the claim.
+
+    `Charts/podbench/templates/pvc-hotfix-project.yaml` labels the claim with
+    the `hotfixProject.claims[].name` entry's own name, which nothing requires
+    to equal the container, the workload or the pod. Reading "no claim carries
+    this label" as "the claim is gone" ticks the one step of retirement that
+    cannot be undone, and would call a namespace with a standing claim in it a
+    completed retirement.
+    """
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(wired_pod(wired=False)),
+            "get pods -o json": json.dumps({"items": [wired_pod(wired=False)]}),
+            "exec -c app": state_exec(),
+            # Labelled for a claims[] entry named neither for the container nor
+            # for the pod, which is the case the subchart's release-name route
+            # never produces and so never shows.
+            "get pvc -l": json.dumps(
+                {
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": "myapp-podbench-project",
+                                "labels": {hotfix.HOTFIX_TARGET_LABEL: "myapp"},
+                            }
+                        }
+                    ]
+                }
+            ),
+        }
+    )
+    checks = hotfix.retire(kube(runner), "pod/api-7f9-abc", delete_claim=True)
+    claim = rows_by_step(checks)[hotfix.RetirementStep.CLAIM]
+    assert claim.done is None
+    assert claim.flag == "[ ]"
+    assert not runner.matching("delete")
+    report = hotfix.format_retirement(checks)
+    assert "VERDICT: retirement is complete" not in report
+    assert "NOT MEASURED" in report
+    assert "claim" in report.rsplit("NOT MEASURED", 1)[1]
+
+
+def test_retire_reports_on_a_workload_that_has_been_scaled_back_up() -> None:
+    """The single-replica refusal guards a write to a ReadWriteOnce claim.
+
+    A retirement report is a read, and the state it exists to confirm is
+    precisely the one it forbids - the wiring out and the team scaled back up -
+    so answering it with `init`'s refusal answers somebody who has finished.
+    And of two live pods it measures the one still wired, because ticking
+    `wiring` off the replica that was rolled first is the lie this verb exists
+    to stop.
+    """
+    runner = FakeRunner(
+        {
+            "get statefulset api -o json": json.dumps(
+                {"spec": {"replicas": 2, "selector": {"matchLabels": {"app": "api"}}}}
+            ),
+            "get pods -l app=api -o json": json.dumps(
+                {
+                    "items": [
+                        wired_pod(name="api-0", wired=False),
+                        wired_pod(name="api-1"),
+                    ]
+                }
+            ),
+            "get pods -o json": json.dumps({"items": [wired_pod(name="api-1")]}),
+            "exec -c app": state_exec(consolidated()),
+            f"get pvc {CLAIM} -o name": f"persistentvolumeclaim/{CLAIM}\n",
+        }
+    )
+    checks = hotfix.retire(kube(runner), "statefulset/api")
+    wiring = rows_by_step(checks)[hotfix.RetirementStep.WIRING]
+    assert wiring.remaining
+    assert "api-1" in wiring.detail
+
+
+def test_the_delete_claim_offer_names_the_namespace_it_was_read_from() -> None:
+    """`format_status` reasons about the same offer the same way: a command
+    pasted out of a report has to reach the object the report was about, and one
+    that silently means the kubeconfig's default namespace does not."""
+    runner = retire_runner(manifest=consolidated())
+    checks = hotfix.retire(kube(runner), "pod/api-7f9-abc")
+    claim = rows_by_step(checks)[hotfix.RetirementStep.CLAIM]
+    assert "podbench hotfix retire pod/api-7f9-abc -n demo --delete-claim" in (
+        claim.detail
+    )
+    # The `--context` half is the doctest on `_pasteable`: this module's fake
+    # kubectl keys on a fixed argv offset, so a client carrying one would match
+    # none of its canned responses.
+
+
+def test_status_says_which_retirement_steps_remain() -> None:
+    """`superseded` was correct and indefinite, which is a state nobody can act
+    on. The row now names the steps."""
+    manifest = consolidated()
+    runner = FakeRunner(
+        {
+            "get pods -o json": json.dumps({"items": [wired_pod(digest=NEW_DIGEST)]}),
+            "exec -c app": state_exec(manifest),
+        }
+    )
+    rows = hotfix.status_rows(kube(runner), probe=False)
+    assert rows[0].health is hotfix.HotfixHealth.SUPERSEDED
+    report = " ".join(hotfix.format_status(rows).split())
+    assert "retirement: 1 of 4 steps remain (wiring)" in report
+    # Never inferred from the mount: a pod goes on running after its claim is
+    # deleted, which is the one state most worth finding.
+    assert "claim not measured here" in report
+    assert "podbench hotfix retire pod/api-7f9-abc -n demo" in report
+
+
+def test_a_hotfix_that_is_not_on_its_way_out_gets_no_retirement_line() -> None:
+    """Every live hotfix is "still wired to its claim". Saying so on every row
+    is saying nothing on the row where it is the finding."""
+    manifest = a_manifest(ahead=1)
+    runner = FakeRunner(
+        {
+            "get pods -o json": json.dumps({"items": [wired_pod(digest=BASE_DIGEST)]}),
+            "exec -c app": state_exec(manifest),
+        }
+    )
+    rows = hotfix.status_rows(kube(runner))
+    assert rows[0].retirement == ()
+    assert "retirement:" not in hotfix.format_status(rows)
+
+
+def test_status_across_namespaces_reads_each_pod_in_its_own() -> None:
+    """One `get pods` for the cluster, then an exec per candidate — each
+    carrying that pod's namespace. One `-n` wrong reads a claim out of the wrong
+    pod, or none."""
+    manifest = consolidated()
+    runner = FakeRunner(
+        {
+            "get pods --all-namespaces -o json": json.dumps(
+                {
+                    "items": [
+                        wired_pod(name="api-7f9-abc", namespace="beam"),
+                        wired_pod(name="ioc-0", namespace="other"),
+                    ]
+                }
+            ),
+            "exec -c app": state_exec(manifest),
+        }
+    )
+    rows = hotfix.status_rows(kube(runner), probe=False, all_namespaces=True)
+    assert [str(row.pod) for row in rows] == ["beam/api-7f9-abc", "other/ioc-0"]
+    execs = [" ".join(argv) for argv in runner.calls if "exec" in argv]
+    assert any("-n beam" in call and "api-7f9-abc" in call for call in execs)
+    assert any("-n other" in call and "ioc-0" in call for call in execs)
+
+
+def test_the_cluster_wide_read_carries_no_namespace_flag() -> None:
+    """Evidence §5. The RBAC refusal relays the argv verbatim, and podbench's
+    carried both `-n p47-beamline` and `--all-namespaces`. kubectl resolves that
+    in favour of the latter, so the behaviour was right and the sentence was
+    not: the message read as podbench asking for two contradictory things."""
+    empty = json.dumps({"items": []})
+    runner = FakeRunner(
+        {"get pods --all-namespaces -o json": empty, "get pods -o json": empty}
+    )
+
+    hotfix.status_rows(kube(runner), probe=False, all_namespaces=True)
+
+    listing = next(argv for argv in runner.calls if "--all-namespaces" in argv)
+    assert "-n" not in listing
+    # And the namespace-scoped listing is unchanged.
+    hotfix.status_rows(kube(runner), probe=False)
+    scoped = [argv for argv in runner.calls if "--all-namespaces" not in argv]
+    assert ["-n", "demo"] == [word for word in scoped[-1] if word in ("-n", "demo")]
+
+
+def test_the_cluster_wide_listing_reassures_about_the_cluster() -> None:
+    """ "no hotfixed pods in this namespace" from a cluster-wide run is the
+    answer somebody wanted for the facility, given for one namespace."""
+    runner = FakeRunner(
+        {"get pods --all-namespaces -o json": json.dumps({"items": []})}
+    )
+    code = hotfix.main(["hotfix", "status", "-A", "-n", "demo"], runner=runner)
+    assert code == 0
+    assert (
+        hotfix.format_status([], all_namespaces=True)
+        == "no hotfixed pods in any namespace"
+    )
+
+
+def test_the_cluster_wide_listing_fails_on_a_row_that_needs_attention() -> None:
+    """The other half of the same contract, and the half a regression would be
+    silent in: "no unretired hotfixes" is an assertion only if a hotfix that
+    needs attention in *any* namespace makes the command non-zero."""
+    runner = FakeRunner(
+        {
+            "get pods --all-namespaces -o json": json.dumps(
+                {"items": [wired_pod(name="ioc-0", namespace="other")]}
+            ),
+            "exec -c app": state_exec(consolidated()),
+        }
+    )
+    assert hotfix.main(["hotfix", "status", "-A", "-n", "demo"], runner=runner) == 1
 
 
 # -- helm values -----------------------------------------------------------
@@ -1376,7 +2447,9 @@ def test_a_whole_probe_carries_its_timings_through() -> None:
 
 
 def test_a_bare_liveness_command_warns_that_it_carries_no_timings() -> None:
-    """--liveness cannot carry timings, so it must not look like it did."""
+    """An exec command alone carries no timings, so it must not look as if it
+    did - the emitted probe is rendered wholesale and the omissions become
+    Kubernetes defaults."""
     snippet = hotfix.values_snippet(
         "api", ENTRY, liveness_exec=["/bin/bash", "/epics/ioc/liveness.sh"]
     )
@@ -1424,10 +2497,10 @@ def test_values_snippet_gid_defaults_to_a_placeholder_not_a_plausible_number() -
 # -- CLI -------------------------------------------------------------------
 
 
-def test_print_values_needs_the_two_things_it_cannot_guess(
+def test_values_needs_the_two_things_it_cannot_guess(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert hotfix.main(["hotfix", "--print-values"]) == 2
+    assert hotfix.main(["hotfix", "values"]) == 2
     assert "--app" in capsys.readouterr().err
 
 
@@ -1468,7 +2541,7 @@ def target_pod(
 
 
 def test_from_pod_needs_no_hand_editing(capsys: pytest.CaptureFixture[str]) -> None:
-    """The whole point. `--print-values` used to take the entrypoint, the probe
+    """The whole point. `hotfix values` used to take the entrypoint, the probe
     and the gid by hand, and #176 is what a hand-supplied probe cost: a chart
     renders it wholesale, so an omitted timing silently became the Kubernetes
     default."""
@@ -1482,7 +2555,7 @@ def test_from_pod_needs_no_hand_editing(capsys: pytest.CaptureFixture[str]) -> N
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1527,7 +2600,7 @@ def test_a_target_with_no_liveness_probe_is_not_an_error(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1563,7 +2636,7 @@ def test_a_non_exec_probe_is_emitted_around_and_said_out_loud(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1578,7 +2651,7 @@ def test_a_non_exec_probe_is_emitted_around_and_said_out_loud(
     captured = capsys.readouterr()
     assert "livenessProbe:" not in captured.out
     assert "httpGet" in captured.err
-    assert "restart the pod out from under the seat" in captured.err
+    assert "restart the pod out from under the seat" in flowed(captured.err)
 
 
 def test_volumes_the_target_already_has_are_named_as_a_merge(
@@ -1605,7 +2678,7 @@ def test_volumes_the_target_already_has_are_named_as_a_merge(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1620,11 +2693,11 @@ def test_volumes_the_target_already_has_are_named_as_a_merge(
     assert code == 0
     err = capsys.readouterr().err
     assert "dev-shm" in err
-    # The advice is to merge into the values file, and explicitly *not* to copy
-    # the chart's own volumes in - which is what "replaces the ones your chart
-    # renders" would have sent a reader off to do.
-    assert "merge into it rather than replacing it" in err
-    assert "must not be copied in here" in err
+    # The advice is to merge into the values file rather than paste over it,
+    # and it ends on the flag that does the merge - which is also the flag that
+    # suppresses this warning, because then the file has said which is whose.
+    assert "merge them into that file rather than pasting over it" in flowed(err)
+    assert "let `--values` do the merge" in flowed(err)
     # podbench's own two are not reported back to the user as theirs.
     assert model.HOTFIX_CLAIM_VOLUME not in err
 
@@ -1653,7 +2726,7 @@ def test_values_answers_the_question_the_mount_warning_asks(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1669,7 +2742,7 @@ def test_values_answers_the_question_the_mount_warning_asks(
 
     assert code == 0
     err = capsys.readouterr().err
-    assert "merge into it rather than replacing it" not in err
+    assert "merge into it rather than replacing it" not in flowed(err)
     # The merge's own notes still say what it did.
     assert "went under" in err
 
@@ -1687,7 +2760,7 @@ def test_a_target_carrying_only_podbenchs_volumes_is_not_warned_about_them(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1722,7 +2795,7 @@ def test_from_pod_unwraps_a_target_that_already_carries_the_layout(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1755,7 +2828,7 @@ def test_an_unknown_gid_keeps_the_placeholder_rather_than_becoming_root(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1803,7 +2876,7 @@ def test_every_cluster_failure_names_the_escape_and_its_cost(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1817,7 +2890,7 @@ def test_every_cluster_failure_names_the_escape_and_its_cost(
     assert code == 2
     err = capsys.readouterr().err
     assert expected in err, err
-    assert "--no-from-pod" in err
+    assert "--from-pod POD" in err
     assert "#176" in err
 
 
@@ -1834,7 +2907,7 @@ def test_a_target_that_is_not_a_pod_is_refused_cleanly(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1849,7 +2922,7 @@ def test_a_target_that_is_not_a_pod_is_refused_cleanly(
     assert code == 2
     err = capsys.readouterr().err
     assert "works on pods" in err
-    assert "--no-from-pod" in err
+    assert "--from-pod POD" in err
     assert runner.calls == []
 
 
@@ -1867,7 +2940,7 @@ def test_a_container_that_is_not_in_the_pod_names_the_escape_too(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1883,7 +2956,7 @@ def test_a_container_that_is_not_in_the_pod_names_the_escape_too(
     assert code == 2
     err = capsys.readouterr().err
     assert "'nope' not in pod" in err
-    assert "--no-from-pod" in err
+    assert "--from-pod POD" in err
 
 
 def test_an_entrypoint_that_lives_in_the_image_says_which_flag_supplies_it(
@@ -1891,14 +2964,15 @@ def test_an_entrypoint_that_lives_in_the_image_says_which_flag_supplies_it(
 ) -> None:
     """A container declaring neither command nor args keeps its entrypoint in
     the image, which is not in the pod spec at all - nothing podbench reads from
-    the cluster will find it. The answer is --entrypoint, not --no-from-pod, and
-    the message has to offer the cheaper one first."""
+    the cluster will find it. --entrypoint is the whole answer - it states the
+    one field the pod could not, and the gid and the probe still come off the
+    pod - so the message has to name it rather than the read it cannot avoid."""
     runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(target_pod())})
 
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1913,7 +2987,7 @@ def test_an_entrypoint_that_lives_in_the_image_says_which_flag_supplies_it(
     err = capsys.readouterr().err
     assert "ENTRYPOINT" in err
     assert "--entrypoint" in err
-    assert "--no-from-pod" in err
+    assert "--from-pod POD" in err
 
 
 def test_a_flag_the_user_passed_beats_the_pod(
@@ -1928,7 +3002,7 @@ def test_a_flag_the_user_passed_beats_the_pod(
     code = hotfix.main(
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
             "-n",
@@ -1949,42 +3023,298 @@ def test_a_flag_the_user_passed_beats_the_pod(
     assert "initialDelaySeconds: 120" in out
 
 
-def test_reading_the_pod_is_the_default_and_says_so_when_none_is_named(
+def test_naming_no_pod_says_which_flag_names_one(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     runner = FakeRunner()
 
     code = hotfix.main(
-        ["hotfix", "--print-values", "--app", "api", "-n", "demo"], runner=runner
+        ["hotfix", "values", "--app", "api", "-n", "demo"], runner=runner
     )
 
     assert code == 2
     err = capsys.readouterr().err
     assert "--from-pod POD" in err
-    assert "--no-from-pod" in err
+    assert "#176" in err
     assert runner.calls == [], "nothing should have been asked of the cluster"
 
 
-def test_no_from_pod_asks_the_cluster_nothing_at_all() -> None:
-    """The escape has to work on a machine with no cluster to reach, which means
-    it must not so much as construct a kubectl call."""
+def test_the_offline_route_is_gone_rather_than_hidden(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#205 item 6, and no alias: a flag whose help had to talk you out of it.
+
+    Each argv is otherwise complete - it names the fixture pod - so a
+    `--no-from-pod` re-added as a hidden option that is accepted and ignored
+    would emit a snippet and exit 0. Without that the refusal proves nothing:
+    an argv naming no pod is refused whether or not the flag exists. The
+    assertion is on click's own "No such option", because that is the only
+    evidence that the parser has never heard of it.
+    """
+    base = ["hotfix", "values", "--app", "api", "--entrypoint", ENTRY, *TARGET_ARGV]
+    for argv in ([*base, "--no-from-pod"], [*base, "--liveness", "/bin/true"]):
+        assert hotfix.main(argv, runner=values_runner()) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "No such option" in " ".join(captured.err.split())
+
+
+# -- what reaches the terminal ----------------------------------------------
+#
+# The rest of this module asserts on *what* was said, flattening the wrap to do
+# it. The tests below assert on the layout itself, because flattening is exactly
+# what would hide a line that should have wrapped and did not - or one that
+# wrapped and should not have.
+
+
+def test_a_values_refusal_wraps_and_keeps_its_flags_pasteable(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`FROM_POD_ESCAPE` is two paragraphs carrying five backticked flags, and
+    it is appended to every failure of the pod read. Printed raw it was folded
+    by the terminal, mid-token, through the one half of the line the reader was
+    going to select."""
+    code = hotfix.main(["hotfix", "values", "--app", "api", "-n", "demo"])
+
+    assert code == 2
+    err = capsys.readouterr().err
+    limit = console.wrap_width()
+    assert [line for line in err.splitlines() if len(line) > limit] == []
+    # Wrapped, and not merely short: the message is far longer than one line.
+    assert len(err.splitlines()) > 4
+    # `console._TOKEN`'s whole purpose: a flag and its argument survive on one
+    # line however the paragraph round them falls.
+    for token in ("`--from-pod POD`", "`--context NAME`", "`--liveness-probe`"):
+        assert any(token in line for line in err.splitlines()), (token, err)
+
+
+def test_relayed_kubectl_stderr_is_not_reflowed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Somebody else's output is quoted, not laid out again.
+
+    `console.wrap` collapses runs of whitespace and breaks on spaces, so a
+    reflowed relay is one that no longer matches what the person saw in their
+    own terminal - and these lines are what they will paste into an issue.
+    """
+    hint = (
+        "hint: renew the token your exec credential plugin returns, or run "
+        "`kubectl config set-credentials` against this context"
+    )
     runner = FakeRunner()
+    runner.failures["get pod api-7f9-abc -o json"] = (
+        "error: You must be logged in to the server (Unauthorized)\n" + hint
+    )
 
     code = hotfix.main(
-        [
-            "hotfix",
-            "--print-values",
-            "--no-from-pod",
-            "--app",
-            "api",
-            "--entrypoint",
-            ENTRY,
-        ],
+        ["hotfix", "values", "--app", "api", "-n", "demo", "--from-pod", "api-7f9-abc"],
+        runner=runner,
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    # Longer than the window, so a line this length is proof it went through
+    # untouched rather than proof the window happened to be wide enough.
+    assert len(hint) > console.wrap_width()
+    assert hint in err
+    # ...while podbench's own prose either side of it did wrap. The relay is
+    # what the indent marks, so flush-left is exactly the half podbench wrote.
+    own = [line for line in err.splitlines() if line and not line.startswith(" ")]
+    assert own and all(len(line) <= console.wrap_width() for line in own)
+    assert "#176" in " ".join(err.split())
+
+
+def test_a_kubectl_refusal_reaching_main_is_not_reflowed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The other route somebody else's stderr takes out of this module.
+
+    The three messages that quote kubectl or uv mark the quoted half with
+    `_relay`, but `KubectlError._message` inlines `result.stderr` behind an argv
+    and an exit code, and every `KubectlError` that nothing catches is printed by
+    `main`. Laid out as prose it came back with podbench's own line breaks
+    through an RBAC refusal - which is the paste that no longer matches the
+    terminal it was copied from.
+    """
+    denial = (
+        'pods "api-7f9-abc" is forbidden: User "system:serviceaccount:demo:api" '
+        'cannot get resource "pods" in API group "" in the namespace "demo"'
+    )
+    runner = FakeRunner()
+    runner.failures["get pod api-7f9-abc -o json"] = f"Error from server:\n{denial}"
+
+    code = hotfix.main(
+        ["hotfix", "check", "pod/api-7f9-abc", "-n", "demo"], runner=runner
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    # Longer than the window, so its survival is evidence and not luck.
+    assert len(denial) > console.wrap_width()
+    assert denial in err.splitlines()
+
+
+def test_podbenchs_own_prose_never_reaches_the_consoles_line_rules(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`console`'s line rules read a rendered line's *shape*, and they are safe
+    only because wrapped prose does not reach them flush left - `_SHOUT` and
+    `_SECTION_LINE` both say so in as many words. This module's messages are
+    flush-left prose, so every line of them is handed over as a `Text`, which
+    `emit` prints with no rule run over it.
+
+    Asserted on what the console is *handed*, because the suite runs with
+    `NO_COLOR` and cannot see the damage. Measured at `FORCE_COLOR=1
+    COLUMNS=80` before the fix: the last paragraph of `FROM_POD_ESCAPE` opened
+    on a bold cyan `S`, drawn as a section heading because "So" is a capital at
+    the start of a line.
+    """
+    handed: list[str | Text] = []
+    real_emit = hotfix.emit
+
+    def record(text: str | Iterable[str | Text], *, stderr: bool = False) -> None:
+        lines = [text] if isinstance(text, str) else list(text)
+        handed.extend(lines)
+        real_emit(lines, stderr=stderr)
+
+    monkeypatch.setattr(hotfix, "emit", record)
+
+    code = hotfix.main(["hotfix", "values", "--app", "api", "-n", "demo"])
+
+    assert code == 2
+    assert "So make the read work" in " ".join(capsys.readouterr().err.split())
+    assert handed and all(isinstance(line, Text) for line in handed)
+
+
+def test_the_two_values_warnings_are_warnings(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both used to open on an unstyled `podbench:`, which `console` has no rule
+    for - so neither could be picked out of a pasted terminal, and neither was
+    coloured. `WARNING` is the one vocabulary every other verb already uses."""
+    pod = target_pod(
+        command=["python", "-m", "app"],
+        probe={"httpGet": {"path": "/healthz", "port": 8080}},
+    )
+    pod["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": "dev-shm", "mountPath": "/dev/shm"}
+    ]
+    runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(pod)})
+
+    code = hotfix.main(
+        ["hotfix", "values", "--app", "api", "-n", "demo", "--from-pod", "api-7f9-abc"],
         runner=runner,
     )
 
     assert code == 0
-    assert runner.calls == []
+    err = capsys.readouterr().err
+    leaders = [line for line in err.splitlines() if not line.startswith(" ")]
+    assert leaders and all(line.startswith(console.WARNING_LEAD) for line in leaders)
+    assert "podbench:" not in err
+    # Hung under the leader, so a continuation cannot be read as a new warning.
+    assert all(
+        line.startswith(" " * console.WARNING_HANG)
+        for line in err.splitlines()
+        if line.startswith(" ")
+    )
+
+
+def test_a_report_wraps_its_prose_and_leaves_an_authored_step_alone(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The half of `_report`'s rule that says what *not* to touch.
+
+    The retirement checklist is appended to `consolidate`'s actions already laid
+    out, and its step 1 is a `gh pr create` somebody selects and pastes —
+    longer than the window, and `console.wrap` breaks on spaces. It survives
+    because it is indented; the other half of the rule, that flush-left prose
+    does get wrapped, is
+    `test_a_long_action_is_wrapped_rather_than_left_to_the_terminal`.
+    """
+    seat = "exec -c podbench-1 api-7f9-abc --"
+    runner = FakeRunner(
+        {
+            "get deployment api -o json": json.dumps(workload_json()),
+            "get pods -l app=api -o json": json.dumps({"items": [pod_json()]}),
+            "get pod api-7f9-abc -o json": json.dumps(pod_json()),
+            f"{seat} cat /opt/venv/.podbench-hotfix.json": a_manifest().to_json(),
+            f"{seat} {GIT} log": f"{HEAD_SHA}\x1fstop the beam tripping\n",
+        }
+    )
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "consolidate",
+            "deployment/api",
+            "--venv",
+            VENV,
+            "--branch",
+            "patch/beamtime-14",
+            "-n",
+            "demo",
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 0
+    lines = capsys.readouterr().out.splitlines()
+    # Step 1 is the pasteable one, and it is longer than the window.
+    step = next(line for line in lines if "gh pr create" in line)
+    assert len(step) > console.wrap_width()
+    assert step.startswith("  1. gh pr create --head patch/beamtime-14 ")
+    # Everything podbench wrote flush left is inside the window.
+    own = [line for line in lines if line and not line.startswith(" ")]
+    assert own and all(len(line) <= console.wrap_width() for line in own)
+
+
+def test_a_long_action_is_wrapped_rather_than_left_to_the_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The other half: an action that is a sentence takes the window.
+
+    `base_commit_from`'s assumed-base provenance is the longest of them at
+    around a hundred characters, and it is the one a reader most needs to take
+    in — it says the commit count `status` will print was measured from a guess.
+    Left to the terminal it folded mid-word.
+    """
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(pod_json(owner=None, claim=True)),
+            f"exec -c podbench-1 api-7f9-abc -- {GIT} rev-parse": f"{HEAD_SHA}\n",
+        }
+    )
+
+    def no_labels(image: str) -> dict[str, str]:
+        del image
+        return {}
+
+    with mock.patch.object(hotfix, "read_image_labels", no_labels):
+        code = hotfix.main(
+            # fmt: off
+            [
+                "hotfix",
+                "init",
+                "pod/api-7f9-abc",
+                "--no-install",
+                "--repo",
+                "https://example.invalid/acme/api.git",
+                "-n",
+                "demo",
+            ],
+            # fmt: on
+            runner=runner,
+        )
+
+    assert code == 0
+    report = capsys.readouterr().out
+    assert "ASSUMED" in " ".join(report.split())
+    limit = console.wrap_width()
+    assert [line for line in report.splitlines() if len(line) > limit] == []
+    # Wrapped, not merely short: the provenance alone overruns the window.
+    assert len(report.splitlines()) > 4
 
 
 # -- --values: the whole file, not fragments to merge (#192) ---------------
@@ -2217,24 +3547,37 @@ def test_merged_values_reads_no_file_and_no_cluster() -> None:
     assert not referenced & {"open", "read_text", "Path", "write_text"}
 
 
-def test_values_flag_emits_the_file_and_asks_the_cluster_nothing(
+def values_runner() -> FakeRunner:
+    """A cluster carrying one target pod, for the CLI-level `values` tests.
+
+    These ran offline behind `--no-from-pod` until #205 item 6 removed it. The
+    read is not optional any more, so they read a fixture pod through the
+    injected runner instead - which is what keeps the unit suite cluster-free.
+    """
+    return FakeRunner({"get pod api-7f9-abc -o json": json.dumps(target_pod())})
+
+
+TARGET_ARGV = ["-n", "demo", "--from-pod", "api-7f9-abc"]
+"""Where the fixture pod is, appended to every CLI-level `values` argv."""
+
+
+def test_values_flag_emits_the_file_and_reads_only_the_pod(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """End to end through the CLI, and `--no-from-pod` so the run is offline."""
+    """End to end through the CLI, over a fixture pod and its own values file."""
     child = tmp_path / "values.yaml"
     child.write_text(CHILD)
     parent = tmp_path / "shared.yaml"
     parent.write_text(PARENT)
-    runner = FakeRunner()
+    runner = values_runner()
 
     code = hotfix.main(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
-            "--no-from-pod",
             "--entrypoint",
             ENTRY,
             "--gid",
@@ -2243,13 +3586,18 @@ def test_values_flag_emits_the_file_and_asks_the_cluster_nothing(
             str(child),
             "--parent-values",
             str(parent),
+            *TARGET_ARGV,
         ],
         # fmt: on
         runner=runner,
     )
 
     assert code == 0
-    assert runner.calls == []
+    # One read and no more: `--values` answers the volumes question from the
+    # file, so the pod is asked for the entrypoint, the gid and the probe only.
+    assert [runner.key(call) for call in runner.calls] == [
+        "get pod api-7f9-abc -o json"
+    ]
     captured = capsys.readouterr()
     document = yaml.safe_load(captured.out)
     assert document["ioc-instance"]["image"] == "ghcr.io/example/fastcs:2025.10.1"
@@ -2270,17 +3618,17 @@ def test_the_merge_flags_mean_nothing_without_the_file_they_merge_into(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
-            "--no-from-pod",
             "--entrypoint",
             ENTRY,
             "--parent-values",
             str(tmp_path / "shared.yaml"),
+            *TARGET_ARGV,
         ],
         # fmt: on
-        runner=FakeRunner(),
+        runner=values_runner(),
     )
     assert code == 2
     assert "without it" in capsys.readouterr().err
@@ -2293,17 +3641,17 @@ def test_a_values_file_that_is_not_there_is_refused_by_name(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
+            "values",
             "--app",
             "api",
-            "--no-from-pod",
             "--entrypoint",
             ENTRY,
             "--values",
             str(tmp_path / "nope.yaml"),
+            *TARGET_ARGV,
         ],
         # fmt: on
-        runner=FakeRunner(),
+        runner=values_runner(),
     )
     assert code == 2
     assert "nope.yaml" in capsys.readouterr().err
@@ -2332,17 +3680,10 @@ def test_values_snippet_has_no_cluster_dependency() -> None:
     assert "get_pod" not in referenced
 
 
-def test_print_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> None:
+def test_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> None:
     code = hotfix.main(
-        [
-            "hotfix",
-            "--print-values",
-            "--no-from-pod",
-            "--app",
-            "api",
-            "--entrypoint",
-            ENTRY,
-        ]
+        ["hotfix", "values", "--app", "api", "--entrypoint", ENTRY, *TARGET_ARGV],
+        runner=values_runner(),
     )
     assert code == 0
     out = capsys.readouterr().out
@@ -2350,55 +3691,285 @@ def test_print_values_prints_the_snippet(capsys: pytest.CaptureFixture[str]) -> 
     assert ENTRY in out
 
 
-def test_print_values_takes_the_apps_gid(capsys: pytest.CaptureFixture[str]) -> None:
+def test_values_takes_the_apps_gid(capsys: pytest.CaptureFixture[str]) -> None:
+    """And the flag beats the pod, which states 37000."""
     code = hotfix.main(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
-            "--no-from-pod",
+            "values",
             "--app",
             "api",
             "--entrypoint",
             ENTRY,
             "--gid",
             "65532",
+            *TARGET_ARGV,
         ],
         # fmt: on
+        runner=values_runner(),
     )
     assert code == 0
     assert "fsGroup: 65532" in capsys.readouterr().out
 
 
-def test_print_values_wraps_a_named_liveness_probe(
+def test_values_wraps_a_probe_stated_on_top_of_the_pod(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The probe is only emitted when the target has one to wrap."""
+    """--liveness-probe is what is left of stating a probe by hand.
+
+    `--liveness CMD` retired with the offline route: it could carry an exec
+    command and no timings, which is the shape of #176. This one carries the
+    whole probe, and the fixture pod declares none for it to override.
+    """
     code = hotfix.main(
         # fmt: off
         [
             "hotfix",
-            "--print-values",
-            "--no-from-pod",
+            "values",
             "--app",
             "api",
             "--entrypoint",
             ENTRY,
-            "--liveness",
-            "/bin/bash /epics/ioc/liveness.sh",
+            "--liveness-probe",
+            json.dumps(MO_IOC_PROBE),
+            *TARGET_ARGV,
         ],
         # fmt: on
+        runner=values_runner(),
     )
     assert code == 0
     out = capsys.readouterr().out
     assert "livenessProbe:" in out
     assert model.HOTFIX_HOLD_PATH in out
     assert "/epics/ioc/liveness.sh" in out
+    assert "initialDelaySeconds: 120" in out
+
+
+def test_a_probe_with_no_timings_warns_in_the_emitted_file(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The empty-timings warning through a route that survived #205 item 6.
+
+    A probe is entitled to declare no timings, so this shape reaches the
+    emitter from `--liveness-probe` and from the read alike, and both land on
+    the Kubernetes defaults 0s/10s unless somebody copies the real numbers in.
+    """
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "values",
+            "--app",
+            "api",
+            "--entrypoint",
+            ENTRY,
+            "--liveness-probe",
+            json.dumps({"exec": {"command": ["/bin/bash", "/epics/ioc/liveness.sh"]}}),
+            *TARGET_ARGV,
+        ],
+        # fmt: on
+        runner=values_runner(),
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "periodSeconds 10" in out
+    # and it does not claim the caller failed to supply a whole probe
+    assert "exec command alone" not in out
 
 
 def test_no_subcommand_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert hotfix.main(["hotfix"]) == 2
-    assert "consolidate" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "consolidate" in out
+    assert "values" in out, "the emitter is a verb, so it belongs in the verb list"
+
+
+def test_the_root_help_carries_no_option_belonging_to_one_verb(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#205 item 7: the root opened on fourteen options none of the four verbs
+    could reach, which is what buried the verbs themselves. Every one of them
+    now sits on `hotfix values`, so the root has only the flags typer gives it.
+    """
+    assert hotfix.main(["hotfix"]) == 2
+    root = capsys.readouterr().out
+    for flag in ("--app", "--from-pod", "--values", "--claim-venv", "--liveness-probe"):
+        assert flag not in root
+
+    assert hotfix.main(["hotfix", "values", "--help"]) == 0
+    verb = capsys.readouterr().out
+    for flag in ("--app", "--from-pod", "--values", "--claim-venv", "--liveness-probe"):
+        assert flag in verb
+
+
+def test_the_flag_the_verb_replaced_is_gone_rather_than_hidden(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No alias and no deprecation: hotfix mode is a surface nobody outside this
+    repo drives yet, so a second spelling would only be a second thing to keep
+    working. A hidden flag would still emit, which is the failure worth
+    catching — the assertion is on stdout being empty, not on the exit code.
+    """
+    code = hotfix.main(
+        ["hotfix", "--print-values", "--app", "api", "--entrypoint", ENTRY]
+    )
+
+    assert code == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_init_needs_neither_venv_nor_repo_when_the_pod_and_the_image_answer() -> None:
+    """#205 items 1 and 2 from the outside. Two of the flags in a four-flag
+    command typed in an emergency were values something already knew: the pod
+    knows where it mounts the claim, and the image states what it was built
+    from."""
+    runner = FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(pod_json(owner=None, claim=True)),
+            # The checkout the image ships, which is what corroborates the
+            # labels: OCI labels are inherited, so an uncorroborated one is
+            # recorded as an assumed base rather than believed.
+            f"exec -c podbench-1 api-7f9-abc -- {GIT} remote get-url origin": (
+                "https://github.com/acme/api\n"
+            ),
+        }
+    )
+    labels = {
+        oci.SOURCE_LABEL: "https://github.com/acme/api",
+        oci.REVISION_LABEL: BASE_SHA,
+    }
+
+    def labels_for(image: str) -> dict[str, str]:
+        assert image == BASE_DIGEST, "the digest running, not the tag it came in on"
+        return labels
+
+    with mock.patch.object(hotfix, "read_image_labels", labels_for):
+        code = hotfix.main(
+            ["hotfix", "init", "pod/api-7f9-abc", "--no-install", "-n", "demo"],
+            runner=runner,
+        )
+
+    assert code == 0
+    written = [
+        argv
+        for argv in runner.calls
+        if f"cat > {model.HOTFIX_APP_PATH}/.podbench-hotfix.json" in " ".join(argv)
+    ]
+    assert written, "the manifest goes where `status` scans, with no --venv typed"
+    manifest = hotfix.HotfixManifest.from_json(
+        runner.stdins[runner.calls.index(written[0])] or ""
+    )
+    assert manifest.venv == model.HOTFIX_APP_PATH
+    assert manifest.repo == "https://github.com/acme/api"
+    assert manifest.base_commit == BASE_SHA
+    assert not manifest.base_commit_assumed
+
+
+def test_the_registry_is_not_asked_when_both_flags_are_given() -> None:
+    """It is a network round trip on the way into an emergency, so it happens
+    only when something is actually missing."""
+    runner = FakeRunner(
+        {"get pod api-7f9-abc -o json": json.dumps(pod_json(owner=None, claim=True))}
+    )
+    asked: list[str] = []
+
+    def labels_for(image: str) -> dict[str, str]:
+        asked.append(image)
+        return {}
+
+    with mock.patch.object(hotfix, "read_image_labels", labels_for):
+        code = hotfix.main(
+            # fmt: off
+            [
+                "hotfix",
+                "init",
+                "pod/api-7f9-abc",
+                "--repo",
+                "https://example.invalid/acme/api.git",
+                "--base-commit",
+                BASE_SHA,
+                "--no-install",
+                "-n",
+                "demo",
+            ],
+            # fmt: on
+            runner=runner,
+        )
+
+    assert code == 0
+    assert asked == []
+
+
+def test_a_venv_that_disagrees_with_the_pod_exits_2(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = FakeRunner(
+        {"get pod api-7f9-abc -o json": json.dumps(pod_json(owner=None, claim=True))}
+    )
+
+    code = hotfix.main(
+        # fmt: off
+        [
+            "hotfix",
+            "apply",
+            "pod/api-7f9-abc",
+            "-m",
+            "fix",
+            "--venv",
+            "/opt/venv",
+            "-n",
+            "demo",
+        ],
+        # fmt: on
+        runner=runner,
+    )
+
+    assert code == 2
+    assert "disagrees with the pod" in capsys.readouterr().err
+
+
+def test_a_relocated_claim_is_warned_about_in_the_shared_warning_shape(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The one layout surface hotfix's `_warn` owns, driven through a verb.
+
+    A warning is one line under the coloured leader, hung at
+    `console.WARNING_HANG` - derived from `WARNING_LEAD`, so hotfix's warnings
+    re-align with the launcher's rather than silently staying where a
+    hand-counted indent put them.
+    """
+    relocated = pod_json(owner=None, claim=True)
+    relocated["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": "/opt/venv"}
+    ]
+    runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(relocated)})
+    runner.failures["exec -c podbench-1 api-7f9-abc -- test -e /podbench/app"] = ""
+
+    def no_labels(image: str) -> dict[str, str]:
+        return {}
+
+    with mock.patch.object(hotfix, "read_image_labels", no_labels):
+        code = hotfix.main(
+            ["hotfix", "init", "pod/api-7f9-abc", "--no-install", "-n", "demo"],
+            runner=runner,
+        )
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    warning = lines[: next(i for i, line in enumerate(lines[1:], 1) if line[0] != " ")]
+    assert warning[0].startswith(f"{console.WARNING_LEAD}  ")
+    assert all(
+        line.startswith(" " * console.WARNING_HANG)
+        and line[console.WARNING_HANG] != " "
+        for line in warning[1:]
+    ), warning
+    # And the warning does not promise something the next line takes away:
+    # `init` seeds, copies the interpreter and writes the supervisor switch at
+    # the default path, so a claim mounted elsewhere is refused.
+    flowed = " ".join(" ".join(warning).split())
+    assert "will refuse a claim mounted anywhere else" in flowed
+    assert code == 2
 
 
 def test_status_exits_non_zero_when_a_pod_needs_attention(
@@ -2584,3 +4155,493 @@ def test_a_named_seat_is_never_second_guessed_by_landing_another() -> None:
 
     assert hotfix.seat_container(kube(runner), "solo", "mine", land=True) == "mine"
     assert runner.calls == []
+
+
+# -- `hotfix check` ---------------------------------------------------------
+
+CHECK = ["hotfix", "check", "pod/api-7f9-abc", "-n", "demo"]
+INIT = ["hotfix", "init", "pod/api-7f9-abc", "--no-install", "-n", "demo"]
+
+IMAGE_LABELS = {
+    oci.SOURCE_LABEL: "https://github.com/acme/api",
+    oci.REVISION_LABEL: BASE_SHA,
+}
+
+SEAT_EXEC = "exec -c podbench-1 api-7f9-abc --"
+APP_EXEC = "exec -c app api-7f9-abc --"
+
+
+def stated_labels(image: str) -> dict[str, str]:
+    """What the target image says about itself, which both verbs read."""
+    return IMAGE_LABELS
+
+
+SEEDED_PROBES = (
+    f"{SEAT_EXEC} test -e /podbench/app/pyproject.toml",
+    f"{APP_EXEC} test -e /podbench/app/pyproject.toml",
+)
+"""Both readings of "the claim already carries a project", which is one fact.
+
+`init` asks it through the seat and `check` in the application container — one
+volume, two mounts of it, deliberately, because `check` must answer before a
+seat exists. A case that wants an unseeded claim has to deny both, or the fake
+cluster is one the real one could not be and the two verbs disagree for a
+reason nothing in the code shares.
+"""
+
+
+def hotfixable(pod: dict[str, Any]) -> FakeRunner:
+    """A cluster on which `init` succeeds, so that a case can break one thing.
+
+    The FakeRunner answers 0 to anything it was not told about, which is what
+    makes "the claim is already seeded, the supervisor is up, every path is
+    there" the default and each case below a single subtraction from it.
+    """
+    return FakeRunner(
+        {
+            "get pod api-7f9-abc -o json": json.dumps(pod),
+            f"{SEAT_EXEC} {GIT} remote get-url origin": "https://github.com/acme/api\n",
+        }
+    )
+
+
+def check_and_init(runner: FakeRunner) -> tuple[int, int]:
+    """Both verbs over one cluster, which is the pairing this phase asserts."""
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        return (
+            hotfix.main(CHECK, runner=runner),
+            hotfix.main(INIT, runner=runner),
+        )
+
+
+def rows(out: str) -> dict[str, str]:
+    """The report's rows by name, flattened - several of them wrap at 80.
+
+    Flattened the way `tests/test_doctor.py::flowed` does, and split on the two
+    spaces that hold the name column apart from the detail: a name is several
+    words for `target root`, and the run of spaces is what ends it.
+    """
+    found: dict[str, str] = {}
+    name = ""
+    for line in out.splitlines():
+        if line.startswith(("-", "VERDICT", "BLOCKERS")):
+            break
+        head = line.strip()
+        if head.startswith("["):
+            status, _, rest = head.partition("]")
+            name, _, detail = rest.strip().partition("  ")
+            found[name] = f"{status}] {' '.join(detail.split())}"
+        elif name:
+            found[name] += " " + " ".join(line.split())
+    return found
+
+
+def test_check_passes_a_target_init_then_accepts() -> None:
+    """The phase's falsification, the way round that matters most: `check` has
+    one job, which is to make the second attempt unnecessary."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+
+    assert check_and_init(runner) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("blocker", "claim", "denied"),
+    [
+        # The claim, read two different ways on purpose: `check` reads the pod
+        # spec, so it answers with no seat, and `init` finds out by asking the
+        # seat for the mountPath.
+        ("claim", False, [f"{SEAT_EXEC} test -e /podbench/app"]),
+        ("supervisor", True, [f"{APP_EXEC} test -e /tmp/podbench-child.pid"]),
+        (
+            "project",
+            True,
+            [
+                *SEEDED_PROBES,
+                f"{APP_EXEC} test -d /app",
+                f"{SEAT_EXEC} test -e /proc/1/root/app",
+            ],
+        ),
+        (
+            "target root",
+            True,
+            [
+                *SEEDED_PROBES,
+                f"{SEAT_EXEC} test -e /proc/1/root/app",
+                f"{SEAT_EXEC} ls /proc/1/root/",
+            ],
+        ),
+        (
+            "interpreter",
+            True,
+            [
+                *SEEDED_PROBES,
+                f"{APP_EXEC} test -d /python",
+                f"{SEAT_EXEC} cp -a /proc/1/root/python",
+            ],
+        ),
+    ],
+)
+def test_check_blocks_exactly_where_init_refuses(
+    blocker: str,
+    claim: bool,
+    denied: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The phase's falsification: `check` must refuse nothing `init` accepts and
+    accept nothing `init` refuses. Each case breaks one prerequisite and asserts
+    both verbs on the same cluster - which is also what stops the two drifting
+    apart later, since they measure the same state by different routes."""
+    runner = hotfixable(pod_json(owner=None, claim=claim))
+    for prefix in denied:
+        runner.failures[prefix] = ""
+
+    check, init = check_and_init(runner)
+
+    assert (check, init) == (1, 2)
+    out = capsys.readouterr().out
+    assert rows(out)[blocker].startswith("[FAIL]")
+    assert f"BLOCKERS: {blocker}" in out
+
+
+def test_a_multi_replica_target_is_the_whole_report() -> None:
+    """Nothing below the target can be measured without a pod, and eight "not
+    measured" lines under one real refusal would bury it."""
+    runner = FakeRunner(
+        {"get deployment api -o json": json.dumps(workload_json(replicas=3))}
+    )
+
+    code = hotfix.main(
+        ["hotfix", "check", "deployment/api", "-n", "demo"], runner=runner
+    )
+
+    assert code == 1
+    assert (
+        hotfix.main(
+            ["hotfix", "init", "deployment/api", "--no-install", "-n", "demo"],
+            runner=runner,
+        )
+        == 2
+    )
+
+
+def test_check_reports_every_blocker_in_one_pass(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#205 item 3 itself. Each of these was discovered one per attempt, and
+    each attempt is a chart change and a redeploy in an emergency."""
+    runner = hotfixable(pod_json(owner=None, claim=False))
+    runner.failures[f"{APP_EXEC} test -e /tmp/podbench-child.pid"] = ""
+    runner.failures[f"{APP_EXEC} test -d /app"] = ""
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        code = hotfix.main(CHECK, runner=runner)
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "BLOCKERS: claim, supervisor, project" in out
+
+
+def test_check_writes_nothing_and_lands_no_seat() -> None:
+    """Read-only is the verb's premise: an ephemeral container cannot be taken
+    back off a pod, so a verb somebody runs to ask a question must not spend
+    one - and `init` is the verb that lands seats."""
+    runner = hotfixable(pod_json(owner=None, claim=True, seat=False))
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        assert hotfix.main(CHECK, runner=runner) == 0
+
+    assert runner.stdins == [None] * len(runner.calls)
+    for argv in runner.calls:
+        key = runner.key(argv)
+        command = key.partition(" -- ")[2].split()
+        assert key.startswith("get ") or command[0] in ("test", "ls"), key
+
+
+def test_an_unmeasurable_check_says_so_rather_than_fine(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The seat's view of the target root is a property of a container that
+    does not exist yet. Reporting it either way would be an invention, and the
+    verdict says `measured here` for exactly this reason."""
+    runner = hotfixable(pod_json(owner=None, claim=True, seat=False))
+    for probe in SEEDED_PROBES:
+        runner.failures[probe] = ""
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        assert hotfix.main(CHECK, runner=runner) == 0
+
+    out = capsys.readouterr().out
+    assert rows(out)["target root"].startswith("[warn]")
+    assert "not measured" in rows(out)["target root"]
+    assert "nothing measured here blocks" in out
+    # And no `ls` was issued through a seat that is not there.
+    assert not runner.matching("exec -c podbench-1")
+
+
+def test_a_non_exec_probe_is_a_warning_because_init_accepts_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """It is `apply`'s hold this breaks, not `init`, and the exit code is
+    reserved for what stops the next command. Saying nothing is not an option
+    either: the kubelet will restart the pod out from under the seat."""
+    pod = pod_json(owner=None, claim=True)
+    pod["spec"]["containers"][0]["livenessProbe"] = {"httpGet": {"path": "/healthz"}}
+    runner = hotfixable(pod)
+
+    assert check_and_init(runner) == (0, 0)
+    assert rows(capsys.readouterr().out)["liveness"].startswith("[warn]")
+
+
+def test_an_exec_probe_and_no_probe_at_all_are_both_fine(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """7 of 18 containers on a real beamline declare a probe, and the canonical
+    fastcs target is not one of them: an absent probe is never a fault."""
+    pod = pod_json(owner=None, claim=True)
+    pod["spec"]["containers"][0]["livenessProbe"] = {
+        "exec": {"command": ["/bin/check"]},
+        "periodSeconds": 30,
+    }
+    runner = hotfixable(pod)
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        assert hotfix.main(CHECK, runner=runner) == 0
+    assert rows(capsys.readouterr().out)["liveness"].startswith("[ok]")
+
+
+def test_a_claim_mounted_somewhere_else_blocks_rather_than_warns() -> None:
+    """`init` seeds /podbench/app, copies the interpreter there and emits a
+    supervisor switch naming it, none of which move with the mount - so a claim
+    mounted elsewhere is a refusal and reporting it as a note would be a warning
+    contradicted by the next command."""
+    pod = pod_json(owner=None, claim=True)
+    pod["spec"]["containers"][0]["volumeMounts"] = [
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": "/opt/venv"}
+    ]
+    runner = hotfixable(pod)
+    runner.failures[f"{SEAT_EXEC} test -e /podbench/app"] = ""
+
+    assert check_and_init(runner) == (1, 2)
+
+
+def test_a_test_that_could_not_run_is_not_an_answer_about_the_image(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A distroless application container may have no `test` at all, and 127 is
+    not the same finding as a project that is absent."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+    for probe in SEEDED_PROBES:
+        runner.failures[probe] = ""
+
+    def no_test(argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        if " -- test -d /app" in " ".join(argv):
+            return CommandResult(tuple(argv), 127, "", "exec: test: not found")
+        return FakeRunner.__call__(runner, argv, **kwargs)
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        code = hotfix.main(CHECK, runner=no_test)
+
+    assert code == 0
+    assert rows(capsys.readouterr().out)["project"].startswith("[warn]")
+
+
+def test_an_image_naming_no_repository_blocks_because_init_refuses_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The falsification the other way round, and the one that was live: `init`
+    raises NO_SOURCE_REPO before it seeds anything, so a `check` that passed
+    this state would send the reader into exactly the second attempt this verb
+    exists to remove."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+
+    def unlabelled(image: str) -> None:
+        return None
+
+    with mock.patch.object(hotfix, "read_image_labels", unlabelled):
+        check = hotfix.main(CHECK, runner=runner)
+        init = hotfix.main(INIT, runner=runner)
+
+    assert (check, init) == (1, 2)
+    out = capsys.readouterr().out
+    assert rows(out)["source"].startswith("[FAIL]")
+    assert "BLOCKERS: source" in out
+
+
+def test_check_hears_repo_the_way_init_does() -> None:
+    """The other half of the same row: `--repo` is what answers it, so a check
+    that could not hear the flag would refuse a target `init --repo URL`
+    accepts. And the registry is not read at all once the flag has answered -
+    it is a round trip on the way into an emergency."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+    repo = ["--repo", "https://github.com/acme/api"]
+    reads: list[str] = []
+
+    def never_labelled(image: str) -> None:
+        reads.append(image)
+        return None
+
+    with mock.patch.object(hotfix, "read_image_labels", never_labelled):
+        check = hotfix.main([*CHECK, *repo], runner=runner)
+        assert reads == []
+        init = hotfix.main([*INIT, *repo], runner=runner)
+
+    assert (check, init) == (0, 0)
+    # `init` reads them anyway, for the revision that dates the base commit.
+    assert reads
+
+
+def test_a_source_label_the_image_contradicts_is_not_green_lit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The live defect (evidence §6, §7.1).
+
+    `ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1` advertises its
+    base image's labels wholesale - source, revision and title all name
+    `ubuntu-devcontainer`, and the revision provably does not exist in
+    `fastcs-example`. `check` printed `[ok] the image names …/ubuntu-devcontainer`
+    under "nothing measured here blocks `podbench hotfix init`", which is a
+    pre-flight being *more* confident than the verb it speaks for: `init` with
+    no `--repo` clones that repository and records an ASSUMED base.
+    """
+    image = "ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1"
+    digest = "ghcr.io/diamondlightsource/fastcs-example-debug@sha256:e803"
+    runner = hotfixable(pod_json(owner=None, claim=True, image=image, digest=digest))
+    inherited = {
+        oci.SOURCE_LABEL: "https://github.com/DiamondLightSource/ubuntu-devcontainer",
+        oci.REVISION_LABEL: "603392d2fd2f3c583e149f4d1266553ccc7a2d90",
+    }
+
+    def base_images_labels(image: str) -> dict[str, str]:
+        return inherited
+
+    with mock.patch.object(hotfix, "read_image_labels", base_images_labels):
+        code = hotfix.main(CHECK, runner=runner)
+
+    out = capsys.readouterr().out
+    source = rows(out)["source"]
+    assert source.startswith("[warn]")
+    # Both namings, so the reader can see which one is suspected and why.
+    assert "ubuntu-devcontainer" in source
+    assert "fastcs-example-debug" in source
+    # Beat three: the flag that settles it.
+    assert "--repo" in source
+    # Not a blocker, because `init` does not refuse this state - it clones.
+    assert code == 0
+    assert "nothing measured here blocks" in out
+
+
+def test_a_source_label_the_images_own_name_corroborates_is_ok(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The corroborator, named rather than implied.
+
+    A registry path is not in the config blob, so a base image cannot have set
+    it - which is what makes it the one independent naming `check` can take on
+    an unseeded claim, where there is no checkout and so no `origin`. It is a
+    correspondence and not an equality: a `-debug` variant is built from the
+    unsuffixed source.
+
+    The row says what *corresponds*, and no more. "An inherited label would
+    not" was a universal claim on a test with a hole in it - an image named
+    after its base corresponds to the base's own label - and the same sentence
+    invited the reader to expect the image's *revision* to be believed
+    downstream, which `init` still does not do.
+    """
+    image = "ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1"
+    digest = "ghcr.io/diamondlightsource/fastcs-example-debug@sha256:e803"
+    runner = hotfixable(pod_json(owner=None, claim=True, image=image, digest=digest))
+    own = {oci.SOURCE_LABEL: "https://github.com/DiamondLightSource/fastcs-example"}
+
+    def its_own_labels(image: str) -> dict[str, str]:
+        return own
+
+    with mock.patch.object(hotfix, "read_image_labels", its_own_labels):
+        assert hotfix.main(CHECK, runner=runner) == 0
+
+    source = rows(capsys.readouterr().out)["source"]
+    assert source.startswith("[ok]")
+    assert "corresponds to" in source
+    assert "an inherited label would not" not in source
+
+
+def test_an_already_seeded_claim_is_not_blocked_on_rows_init_never_reads(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`init` short-circuits its entire seed on a seeded claim, which makes the
+    target root, the project and the interpreter moot - so measuring them anyway
+    refuses a target `init` accepts. This is the state a second `check` is run
+    in: after a fix, on a pod already hotfixed, whose seat may well be a
+    degraded one that cannot list /proc/1/root."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+    runner.failures[f"{SEAT_EXEC} ls /proc/1/root/"] = ""
+    runner.failures[f"{APP_EXEC} test -d /app"] = ""
+
+    assert check_and_init(runner) == (0, 0)
+    report = rows(capsys.readouterr().out)
+    assert "already carries a project" in report["claim"]
+    for name in ("target root", "project", "interpreter"):
+        assert report[name].startswith("[ok]"), report[name]
+        assert "not asked" in report[name]
+
+
+def test_a_named_seat_is_corroborated_rather_than_restated(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--seat` naming a container nobody landed used to be reported as `[ok]
+    ghost is running`, and the row it broke was `target root` - so the report
+    sent a reader chasing CAP_SYS_PTRACE and `doctor` for a typo. #178's false
+    trail, by a new route."""
+    runner = hotfixable(pod_json(owner=None, claim=True, seat=False))
+    for probe in SEEDED_PROBES:
+        runner.failures[probe] = ""
+    # kubectl's own answer for an exec into a container that is not there.
+    runner.failures["exec -c ghost"] = "container ghost not found in pod"
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        check = hotfix.main([*CHECK, "--seat", "ghost"], runner=runner)
+        init = hotfix.main([*INIT, "--seat", "ghost"], runner=runner)
+
+    assert (check, init) == (1, 2)
+    report = rows(capsys.readouterr().out)
+    assert report["seat"].startswith("[FAIL]")
+    assert "ghost" in report["seat"]
+    # And no trail is laid to the ptrace rung for what is a name.
+    assert report["target root"].startswith("[warn]")
+    assert "not measured" in report["target root"]
+    assert not runner.matching("exec -c ghost api-7f9-abc -- ls")
+
+
+def test_the_pod_is_read_once_and_not_again() -> None:
+    """The target walk has already read this pod, and a second `get pod` to
+    re-read it is a call that answers nothing new - and one that puts the
+    report's rows a reconcile apart from the target they are about."""
+    runner = hotfixable(pod_json(owner=None, claim=True))
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        assert hotfix.main(CHECK, runner=runner) == 0
+
+    assert len(runner.matching("get pod api-7f9-abc -o json")) == 1
+
+
+def test_the_report_uses_the_status_tokens_console_knows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A new verb uses one of the existing spellings rather than inventing one:
+    the bracket is what lets `console` colour it without either module saying
+    what a colour is. And the name column keeps the two spaces that make a row a
+    row - a name padded to exactly its width leaves one, the rule stops firing,
+    and half the names come out bold and half plain."""
+    runner = hotfixable(pod_json(owner=None, claim=True, seat=False))
+
+    with mock.patch.object(hotfix, "read_image_labels", stated_labels):
+        hotfix.main(CHECK, runner=runner)
+
+    printed = [
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("  [")
+    ]
+    assert printed
+    for line in printed:
+        token, _, rest = line.strip().partition("]")
+        assert token[1:] in {status.value for status in hotfix.CheckStatus}
+        name, separator, detail = rest.strip().partition("  ")
+        assert name and separator and detail.strip(), line

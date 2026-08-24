@@ -104,6 +104,7 @@ from podbench.model import (
 )
 from podbench.proc import Credentials
 from podbench.resize import Headroom
+from podbench.spec import admission_rewrites, requested_seat_spec
 from podbench.sshcfg import SEAT_USER
 
 POD_UID = "11111111-2222-3333-4444-555555555555"
@@ -337,6 +338,7 @@ class FakeCluster:
         patch_error: str | None = None,
         ssh_probe_rc: int = 0,
         ssh_probe_err: str = "",
+        authorized_keys: str | None = CLIENT_KEY,
         limit_ranges: Sequence[dict[str, Any]] = (),
         seat_version: str | None = __version__,
         top: str | None = None,
@@ -385,6 +387,11 @@ class FakeCluster:
         # this to make the two disagree, which is the whole of issue #94 and
         # cannot be expressed by a securityContext.
         self.seat_status = seat_status
+        # What `cat <layout.authorized_keys_path>` answers on a reconnect.
+        # Defaulted to the key every test attaches with, because a seat landed
+        # with this identity authorising it is the common case #204 exists to
+        # stop warning about; `None` is a file that could not be read at all.
+        self.authorized_keys = authorized_keys
         self.limit_ranges = [dict(entry) for entry in limit_ranges]
         self.added: list[dict[str, Any]] = []
         self.calls: list[tuple[str, ...]] = []
@@ -748,6 +755,10 @@ class FakeCluster:
             # 3 is the read script's own "no such file"; anything else means it
             # found one and could not read it, which `--open` refuses to guess.
             return _ok(text) if text is not None else _fail("", returncode=3)
+        if command[:1] == ["cat"] and command[-1].endswith("authorized_keys"):
+            if self.authorized_keys is None:
+                return _fail("cat: no such file", returncode=1)
+            return _ok(self.authorized_keys + "\n")
         if command[:2] == ["podbench", "--version"]:
             if self.seat_version is None:
                 # click's usage message, which is what an image predating the
@@ -1393,11 +1404,12 @@ def test_a_reconnect_reports_the_capability_admission_took() -> None:
     assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
 
 
-def test_a_reconnect_reports_the_capabilities_admission_added() -> None:
+def test_a_reconnect_says_nothing_about_a_rewrite_that_cost_nothing() -> None:
     """The other half of the same pass: thirteen capabilities beside a
-    `drop: [ALL]` that asked for none of them (DLS, 2026-08-19). podbench adds
-    nothing but SYS_PTRACE and only on the full rung, so anything else in a
-    landed seat's capabilities.add came from a policy."""
+    `drop: [ALL]` that asked for none of them (DLS, 2026-08-19). It is still a
+    difference and it is still measurable - but the seat it produced is the seat
+    that was asked for, and #203's rule is that a warning fires where the
+    outcome changed. The measurement stays; the WARNING block goes."""
     seat = {
         "name": "podbench-1",
         "securityContext": {
@@ -1414,11 +1426,10 @@ def test_a_reconnect_reports_the_capabilities_admission_added() -> None:
     )
     session = attach(talking_to(cluster), "target")
 
-    rewrite = [
-        warning for warning in session.warnings if "admission rewrote" in warning
-    ]
-    assert len(rewrite) == 1
-    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
+    assert not any("admission" in warning for warning in session.warnings)
+    assert admission_rewrites(
+        requested_seat_spec(seat), seat, include_scalars=False
+    ) == ("added CHOWN, SETGID to capabilities.add",)
 
 
 def test_a_reconnect_to_an_unmutated_seat_says_nothing_about_admission() -> None:
@@ -1557,7 +1568,7 @@ def test_a_volume_the_pod_does_not_declare_is_refused_before_anything_is_created
     # The refusal has to explain that this is not podbench being unhelpful: a
     # pod's volumes are immutable, which is why Hotfix mode needs the chart.
     assert "immutable" in message
-    assert "--print-values" in message
+    assert "podbench hotfix values" in message
     assert cluster.added == [], "nothing may be submitted, and no name burnt"
 
 
@@ -1703,7 +1714,7 @@ HOTFIX_CLAIM: dict[str, Any] = {
 def layout_pod(**overrides: Any) -> dict[str, Any]:
     """A pod deployed with the hotfix layout: the claim, mounted, supervised.
 
-    Exactly what `podbench hotfix --print-values` emits and Argo renders, and
+    Exactly what `podbench hotfix values` emits and Argo renders, and
     the two halves `is_hotfixed` reads. The home volume comes along because a
     real deployment has both - the values emit them together - and because the
     claim has to be shown not to displace it.
@@ -3343,7 +3354,9 @@ def test_a_stripped_capability_against_a_root_target_is_taken_anyway() -> None:
     full = {step.rung: step for step in session.steps}[Rung.FULL]
     assert full.admitted
     assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
-    assert any("no rung below to prefer" in text for text in session.warnings)
+    assert any(
+        "every rung below pins a non-root uid" in text for text in session.warnings
+    )
     # And it does not cite the number report 3.11 measured in the case this
     # line never covers. §3.11 put a root seat against a *non-root* target, a
     # uid mismatch; here the walk found no non-root uid to pin, so the uids
@@ -3353,14 +3366,14 @@ def test_a_stripped_capability_against_a_root_target_is_taken_anyway() -> None:
     assert not any("three of the six" in text for text in session.warnings)
 
 
-def test_a_strip_and_a_rewrite_are_both_reported() -> None:
-    """Both DLS clusters do both, in one pass, and only the strip was printed.
+def test_a_strip_is_reported_and_the_rewrite_beside_it_is_not() -> None:
+    """Both DLS clusters do both, in one pass, and only one of them costs.
 
-    The stripped-capability arm used to return before the rewrite check, so on a
-    policy that removes ``SYS_PTRACE`` *and* hands the seat the thirteen
+    A policy that removes ``SYS_PTRACE`` *and* hands the seat the thirteen
     capabilities of its own baseline - which is every attach on p47-beamline and
-    on hgv27681 - the rewrite was dropped on the floor. Two facts, two lines: a
-    warning is one line, and these have two different remedies.
+    on hgv27681 - changed the outcome exactly once. The strip is the warning;
+    the addition is a diff against a request, and the seat it produced is the
+    one that was asked for.
     """
 
     def strip_and_add(container: dict[str, Any]) -> None:
@@ -3370,15 +3383,12 @@ def test_a_strip_and_a_rewrite_are_both_reported() -> None:
     cluster = FakeCluster(pod_document(uid=0), mutate=strip_and_add)
     session = attach(talking_to(cluster), "target", max_rung=Rung.FULL)
 
-    assert any("admission removed SYS_PTRACE" in text for text in session.warnings)
-    rewrite = [
-        warning for warning in session.warnings if "admission rewrote" in warning
-    ]
-    assert len(rewrite) == 1
-    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
-    # And the strip is named once. It has its own warning above; repeating it
-    # inside the rewrite list would be one event answered twice.
-    assert "removed SYS_PTRACE" not in rewrite[0]
+    strip = [w for w in session.warnings if "admission removed SYS_PTRACE" in w]
+    assert len(strip) == 1
+    # And nothing about the thirteen it handed the seat in the same pass: they
+    # land in `CapBnd` and never reach the effective set, so the rung the report
+    # measures is the whole of what they cost (#203).
+    assert not any("capabilities.add" in warning for warning in session.warnings)
 
 
 def test_a_mutation_that_would_wedge_the_kubelet_is_not_spent() -> None:
@@ -3404,11 +3414,12 @@ def test_a_mutation_that_would_wedge_the_kubelet_is_not_spent() -> None:
     assert "CreateContainerConfigError" in detail
 
 
-def test_a_rewrite_that_costs_nothing_is_one_warning_and_not_a_dropped_rung() -> None:
+def test_a_rewrite_that_costs_nothing_says_nothing_and_keeps_the_rung() -> None:
     """DLS, 2026-08-19: podbench asks for ``drop: [ALL]`` and adds nothing, and
     the pod comes back with thirteen capabilities added to it. Harmless to the
-    rung, and still not what was asked for - so it is said once, on the line the
-    rung is reported on, rather than acted on."""
+    rung, and harmless to the seat: at this uid they land in ``CapBnd`` and
+    never reach the effective set, so the rung row is already the whole
+    answer."""
 
     def add_baseline(container: dict[str, Any]) -> None:
         capabilities = cast(
@@ -3421,16 +3432,7 @@ def test_a_rewrite_that_costs_nothing_is_one_warning_and_not_a_dropped_rung() ->
     session = attach(talking_to(cluster), "target")
 
     assert landed_rung(session) is Rung.DEGRADED
-    rewrite = [
-        warning for warning in session.warnings if "admission rewrote" in warning
-    ]
-    assert len(rewrite) == 1
-    assert "added CHOWN, SETGID to capabilities.add" in rewrite[0]
-    # The stored spec is not the container, so the warning does not send the
-    # reader to `status` to find out what landed - the rung line above it is
-    # already a measurement, and the capabilities admission added are in
-    # `CapBnd` at this uid rather than in the effective set (report 3.10).
-    assert "read from the seat itself" in rewrite[0]
+    assert not any("admission" in warning for warning in session.warnings)
     assert session.credentials is not None
     assert session.credentials.capabilities.effective == 0
 
@@ -4159,7 +4161,7 @@ def test_open_on_a_hotfix_pod_opens_the_claim_and_not_the_home(
     # printed and the sentence under test spans the wrap.
     out = " ".join(capsys.readouterr().out.split())
     # A folder the user did not name, so the output names it.
-    assert f"opening {HOTFIX_APP_PATH} and not the seat's home" in out
+    assert f"opening {HOTFIX_APP_PATH}, not the seat's home" in out
     assert "the only tree here where an edit reaches the running process" in out
 
 
@@ -4221,9 +4223,9 @@ def test_open_keeps_the_home_when_the_seat_could_not_carry_the_claim(
     assert editor[-1][-1] == SEAT_HOME_PATH
     assert f"{HOTFIX_APP_PATH}/.vscode/settings.json" not in cluster.seat_files
     out = " ".join(capsys.readouterr().out.split())
-    assert f"opening the seat's home {SEAT_HOME_PATH} and not the claim" in out
-    assert f"there is no {HOTFIX_APP_PATH} here to open" in out
-    assert "reads the image's code, which is not the code running" in out
+    assert f"opening the seat's home {SEAT_HOME_PATH}, not the claim" in out
+    assert f"there is no {HOTFIX_APP_PATH} here" in out
+    assert "reads the image's code, not the code running" in out
 
 
 def test_open_separates_what_it_did_from_what_to_do_next(
@@ -6419,12 +6421,12 @@ def test_vscode_sizes_the_pod_from_the_headroom_it_already_reads(
     )
     assert code == 0
     out = " ".join(capsys.readouterr().out.split())
-    assert "1Gi free is under the 1215Mi vscode-server measured" in out
+    assert "for the 1215Mi vscode-server measured" in out
     assert "app's memory limit was raised to 5Gi" in out
     # Read back after the raise, which is the whole point of reading it there:
     # the editor now fits, so the OOM warning has nothing to say.
     assert "memory 2Gi free of 5Gi (3Gi in use)" in out
-    assert "vscode-server lands here" not in out
+    assert "the overflow OOM-kills" not in out
 
     # …and the same pod, attached without the editor, is neither warned nor
     # resized: nothing in `attach` decides to spend this pod's memory.
@@ -6450,7 +6452,7 @@ def test_no_resize_declines_the_raise_and_keeps_the_warning(
     out = " ".join(capsys.readouterr().out.split())
     assert not [call for call in cluster.calls if "patch" in call]
     assert "memory 1Gi free of 4Gi (3Gi in use)" in out
-    assert "vscode-server lands here and it measured 1215Mi" in out
+    assert "vscode-server measured 1215Mi live and this pod has 1Gi" in out
 
 
 def test_a_pod_with_room_is_left_alone(
@@ -6468,7 +6470,7 @@ def test_a_pod_with_room_is_left_alone(
     out = " ".join(capsys.readouterr().out.split())
     assert not [call for call in cluster.calls if "patch" in call]
     assert "sized for the editor" not in out
-    assert "vscode-server lands here" not in out
+    assert "the overflow OOM-kills" not in out
 
 
 def test_an_unmeasured_pod_is_told_that_nothing_sized_it(
@@ -6489,7 +6491,7 @@ def test_an_unmeasured_pod_is_told_that_nothing_sized_it(
     )
     out = " ".join(capsys.readouterr().out.split())
     assert not [call for call in cluster.calls if "patch" in call]
-    assert "not measured (no metrics API here), so nothing sized it" in out
+    assert "unmeasured (no metrics API here), so nothing sized it" in out
 
 
 def test_vscode_names_the_storage_cost_no_flag_of_its_can_pay(
@@ -6508,7 +6510,7 @@ def test_vscode_names_the_storage_cost_no_flag_of_its_can_pay(
     )
     out = " ".join(capsys.readouterr().out.split())
     assert "declares no 'podbench-home' volume" in out
-    assert "evicts the whole pod" in out
+    assert "evicts the pod, application included" in out
 
 
 def test_a_pod_deployed_with_the_home_volume_is_not_warned_about_it(
@@ -6525,7 +6527,7 @@ def test_a_pod_deployed_with_the_home_volume_is_not_warned_about_it(
     )
     out = " ".join(capsys.readouterr().out.split())
     assert "declares no 'podbench-home' volume" not in out
-    assert "a root seat does not use it" not in out
+    assert "a root seat cannot use it" not in out
 
 
 def test_a_root_seat_orphans_the_home_volume_and_is_told_so(
@@ -6547,7 +6549,7 @@ def test_a_root_seat_orphans_the_home_volume_and_is_told_so(
         == 0
     )
     out = " ".join(capsys.readouterr().out.split())
-    assert "a root seat does not use it" in out
+    assert "a root seat cannot use it" in out
     assert "'/root'" in out
 
 
@@ -6643,7 +6645,7 @@ def hotfixed_pod(
 ) -> dict[str, Any]:
     """A pod deployed to carry a hotfix, with a seat that shares it or does not.
 
-    Mirrors what `podbench hotfix --print-values` emits and Argo then renders:
+    Mirrors what `podbench hotfix values` emits and Argo then renders:
     the claim in `spec.volumes`, the application mounting it at
     `HOTFIX_APP_PATH`, and the supervisor loop as the container's `args`. Not
     an annotation - podbench never got to write one, because Argo strips
@@ -6918,20 +6920,67 @@ def test_reconnecting_to_a_sidecar_points_re_keying_at_the_dev_verb() -> None:
     """`--new` re-keys an ephemeral seat by landing another one. A sidecar's
     authorized_keys is written when the pod is authored, so the same advice
     there sends the reader to land a seat that does not fix it."""
-    cluster = FakeCluster(dev_pod())
+    cluster = FakeCluster(dev_pod(), authorized_keys="")
 
     session = attach(
         kubectl_for("demo", runner=cluster),
         "demo-podbench",
         image="ghcr.io/gilesknap/podbench:test",
-        public_key="ssh-ed25519 AAAA test",
+        public_key=CLIENT_KEY,
         probe=False,
     )
 
     keying = [w for w in session.warnings if "authorized_keys" in w]
     assert keying
     assert all("podbench dev --identity" in warning for warning in keying)
-    assert not any("needs --new" in warning for warning in keying)
+    assert not any("--new" in warning for warning in keying)
+
+
+def test_a_reconnect_whose_key_is_already_there_says_nothing_about_it() -> None:
+    """#204: the line was printed on every reconnect carrying a key, including
+    the overwhelmingly common one where the seat was landed with this identity
+    and ssh works. Measured now, and silent where the measurement is fine."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        )
+    )
+
+    session = attach(
+        kubectl_for("demo", runner=cluster),
+        "target",
+        public_key=CLIENT_KEY,
+        probe=False,
+    )
+
+    assert session.reused
+    assert not any("authorize" in warning for warning in session.warnings)
+
+
+def test_a_reconnect_whose_key_file_cannot_be_read_says_unmeasured() -> None:
+    """Never "fine" by silence and never a guess to fill the gap: a `cat` that
+    failed is reported as unmeasured, ending on the same action either way."""
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            ephemeral=[{"name": "podbench-1", "securityContext": {"runAsUser": 1000}}],
+            ephemeral_statuses=[running_status("podbench-1")],
+        ),
+        authorized_keys=None,
+    )
+
+    session = attach(
+        kubectl_for("demo", runner=cluster),
+        "target",
+        public_key=CLIENT_KEY,
+        probe=False,
+    )
+
+    unmeasured = [w for w in session.warnings if "unmeasured" in w]
+    assert len(unmeasured) == 1
+    assert "`--new` lands a seat that takes it." in unmeasured[0]
 
 
 def test_landing_a_seat_names_the_other_two_modes_once(

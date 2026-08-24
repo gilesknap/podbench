@@ -415,8 +415,8 @@ Notes:
   introduce one — `spec.volumes` is immutable once the pod exists — so a name
   the pod does not carry is refused with that explanation rather than submitted.
   That immutability is the whole reason Hotfix mode asks for the chart's
-  cooperation at deploy time; `podbench hotfix --print-values` emits the volume,
-  the volumeMount, the supervisor entrypoint and the fsGroup that put it there.
+  cooperation at deploy time; `podbench hotfix values` emits the volume, the
+  volumeMount, the supervisor entrypoint and the fsGroup that put it there.
   * The argument is a **claim** name or the pod's **volume** name; a claim is
     resolved to the volume entry that references it.
   * `MOUNTPATH` is optional and usually should be. Where the application
@@ -1020,7 +1020,7 @@ Hotfix mode met a cluster on 2026-08-22: an edit reached a live IOC's running
 code with `restartCount` unchanged and both seats alive. Two things about it are
 still undemonstrated — survival across pod replacement, which needs a real claim
 rather than the generic ephemeral volume that run used, and `consolidate`, which
-no cluster has run. `--print-values --from-pod` was measured against the live
+no cluster has run. `hotfix values --from-pod` was measured against the live
 `bl47p-ea-fastcs-01` and `bl47p-mo-ioc-01` targets, and is where the volume and
 probe warnings below came from.
 :::
@@ -1044,76 +1044,46 @@ seat, where the claim is already in this process's own mount namespace.
  a status command that will not let a hotfixed pod go unnoticed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --print-values                       emit the helm values an application's chart needs, and exit │
-│ --app                     NAME       application name, for --print-values                        │
-│ --entrypoint              CMD        the command the container runs today, which the supervisor  │
-│                                      wraps, for --print-values                                   │
-│ --liveness                CMD        the target's existing exec livenessProbe command, for       │
-│                                      --no-from-pod; emitted wrapped to honour the hold. Carries  │
-│                                      no timings, so prefer --liveness-probe - or --from-pod,     │
-│                                      which carries them without being asked                      │
-│ --liveness-probe          JSON       the target's whole livenessProbe as json, for               │
-│                                      --no-from-pod. --from-pod reads it off the target itself,   │
-│                                      which is what this flag existed to make you do by hand:     │
-│                                      `kubectl get pod POD -o                                     │
-│                                      jsonpath='{.spec.containers[0].livenessProbe}'`. Its exec   │
-│                                      command is wrapped and its timings are carried over; a      │
-│                                      chart renders a supplied probe wholesale, so a timing left  │
-│                                      out becomes the k8s default                                 │
-│ --size                    SIZE       claim size, for --print-values [default: 2Gi]               │
-│ --gid                     GID        the application container's gid, for --print-values         │
-│                                      (default: read from the target)                             │
-│                                      [default: <the application's runAsGroup>]                   │
-│ --from-pod                POD        read the entrypoint, livenessProbe and gid off this pod, so │
-│                                      the emitted values need no hand-editing (the default;       │
-│                                      --no-from-pod turns it off)                                 │
-│ --no-from-pod                        do not read any pod: emit from the flags alone, for CI, an  │
-│                                      offline machine, or a pod that does not exist yet           │
-│ --values                  PATH       the target service's own values file: emit it back whole    │
-│                                      with podbench's keys merged in, rather than a fragment to   │
-│                                      merge by hand                                               │
-│ --parent-values           PATH       a shared values file the service inherits from. A helm list │
-│                                      replaces rather than merges, so this is what stops a        │
-│                                      service declaring `volumes:` for the first time silently    │
-│                                      dropping the shared ones                                    │
-│ --values-under            KEY        dotted path to the mapping the target chart keeps its pod   │
-│                                      template keys under (`ioc-instance`). Read from the files   │
-│                                      when not given, and the output says where they went         │
-│ --central-claim                      emit the older namespace-wide `hotfixProject.claims[]`      │
-│                                      entry instead of the podbench-hotfix-claim chart dependency │
-│ --claim-venv              NAME       the venv's directory name on the claim, which the emitted   │
-│                                      runtime switch looks for (default: .venv). Must match       │
-│                                      `hotfix init --claim-venv`                                  │
-│                                      [default: .venv]                                            │
-│ --container               NAME       the application container (default: first)                  │
-│ --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context's own)           │
-│ --context                 NAME       kubeconfig context                                          │
-│ --kubectl                 BIN        kubectl binary to use [default: kubectl]                    │
-│ --help                               Show this message and exit.                                 │
+│ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ values       emit the helm values an application's chart needs                                   │
+│ check        say what would stop a hotfix on this target, before starting one                    │
 │ init         seed the claim from the running container, clone the source, rebuild the venv       │
 │ apply        commit the change on the claim and relaunch the running child                       │
 │ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim's checkout as a branch for the rebuild                               │
+│ retire       what is left of retiring this hotfix, and the one step podbench can take            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 | Sub-verb | Does |
 |---|---|
-| `init --repo URL --venv PATH TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
-| `apply -m MSG --venv PATH TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
-| `status` | every hotfixed pod in the namespace, its drift, and what is wrong with it |
-| `consolidate --branch B --venv PATH TARGET` | push the checkout as a branch and print the retirement checklist |
+| `values --app NAME --from-pod POD` | read the target and emit the helm values its chart needs, which is what makes the claim exist in the first place |
+| `check TARGET` | every prerequisite `init` has, measured in one read-only pass, with a verdict and an exit code |
+| `init TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
+| `apply -m MSG TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
+| `status` | every hotfixed pod in the namespace — or, with `-A`, the cluster — its drift, and what is wrong with it |
+| `consolidate --branch B TARGET` | push the checkout as a branch and print the retirement checklist |
+| `retire TARGET` | which steps of that checklist have landed, measured against the cluster, and `--delete-claim` to take the last one |
 
-`TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags:
-`--venv` (the mountPath the claim is mounted at, beside the application's own
-project and never over it), `--container`, `--seat`, `--local`, `--author`.
+`TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags
+across `init`, `apply` and `consolidate`: `--container`, `--seat`, `--local`,
+`--author`, and `--venv` — which is the mountPath the claim is mounted at,
+beside the application's own project and never over it, and which is **read off
+the pod** rather than asked for. `check` takes `--container` and `--seat`, and
+`retire` takes `--container`. `values` runs before any of that exists, so it
+takes a `--from-pod POD` rather than a `TARGET` and has its own flags, listed
+below.
 
 Notes:
 
 * **Single replica only**, refused otherwise: the claim is `ReadWriteOnce`, so a
-  second replica either fails to schedule or races on one checkout.
+  second replica either fails to schedule or races on one checkout. `retire` is
+  the exception, because the refusal guards a *write* and the state a retirement
+  report exists to confirm is the one after the wiring came out and the team
+  scaled back up. Where it finds several live pods it measures the one that
+  still carries the wiring, so a rollout in flight cannot tick that step.
 * `init` **performs** the seed. It copies the project and the interpreter out of
   the running application container through `/proc/1/root`, and never out of the
   seat's own `/app`: the seat is a different image and its venv is podbench's,
@@ -1144,18 +1114,154 @@ Notes:
   beside it is a design question this does not settle.
 * **`--claim-venv` must match on both ends.** It names the venv directory on the
   claim, which the supervisor's runtime switch looks for and which `uv sync`
-  builds, so `hotfix init --claim-venv` and `hotfix --print-values --claim-venv`
+  builds, so `hotfix init --claim-venv` and `hotfix values --claim-venv`
   have to agree. `init` sets `UV_PROJECT_ENVIRONMENT` whenever it is not uv's own
   `.venv`, because otherwise the rebuild lands beside the venv the supervisor is
-  looking for and the pod goes on quietly running the image's code.
+  looking for and the pod goes on quietly running the image's code. `init`
+  records it in the manifest and `apply` reads it from there; `apply` has no such
+  flag, because a rebuild that has to be told twice is one that gets told once
+  ([#209](https://github.com/gilesknap/podbench/issues/209)).
+* **`--venv` is read off the pod, and a value that disagrees is refused.** The
+  claim is podbench's own `podbench-app` volume, so its `mountPath` in the
+  application container *is* the answer. `status` finds a hotfixed pod by
+  scanning for a `mountPath` of `/podbench/app`, so any other value wrote a
+  manifest `status` could not see — a hotfixed pod nobody can list, which is the
+  failure the mode exists to prevent. A claim genuinely mounted elsewhere is
+  still accepted by the flag, with a warning saying both that `status` will not
+  list it and that `init` will refuse it — the seed, the copied interpreter and
+  the supervisor's runtime switch all name `/podbench/app`.
+* **`--base-commit` and `--repo` default to what the image says about itself.**
+  podbench reads `org.opencontainers.image.revision` and
+  `org.opencontainers.image.source` off the target image over the registry API,
+  anonymously and with a short timeout. The old default for the base was
+  `git rev-parse HEAD` of the fresh clone, which without `--ref` is the default
+  branch's tip and is almost never what the released image was built from —
+  while `status`'s `+N commit(s)` and everything `consolidate` pushes are
+  differences against it. A revision the clone does not contain is not believed.
+
+  **The labels themselves are corroborated first.** OCI labels are inherited, so
+  a derived image advertises its base image's repository and revision unless the
+  build overrides them — measured on
+  `ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1`, which names
+  `…/ubuntu-devcontainer`. Checking the revision against the clone cannot catch
+  that, because the clone came from the same label. podbench asks the seeded
+  checkout's `origin` instead, and where it disagrees `origin` wins.
+
+  Where nothing corroborates them the base is recorded as **assumed** and `status`
+  prints `+N commit(s) from an assumed base` rather than a derived count wearing
+  a measurement's clothes.
 * The editable install runs in the **application** container, not the seat: the
   venv is shared but its interpreter is not. `--no-install` skips it.
 * `consolidate` does not open a PR; it prints the `gh pr create` line.
-* `status` exits **1** when any pod needs attention, so "no unretired hotfixes" is
-  a testable shutdown assertion.
+* `status` exits **1** when any pod needs attention, so "no hotfix here needs somebody
+  today" is a testable shutdown assertion. It is **not** the assertion "nothing here is
+  still to be retired": a consolidated fix whose image has not moved is a live hotfix
+  doing its job, so retirement is not part of a row's `ok` and `status` can exit 0 on a
+  pod `retire` reports several steps short. `retire` is the verb that stays red until a
+  retirement is finished. `-A`/`--all-namespaces` is that assertion for the
+  whole cluster, with the same exit code — the facility-wide form used to be a shell
+  loop the operator had to write and keep correct. Every pod is still read through a
+  client bound to its own namespace.
+* `retire` is the retirement checklist as a measurement rather than as prose. Four
+  rows — `branch`, `image`, `wiring`, `claim` — because those are the four a cluster
+  can be asked about, and `[x]` goes on **only** a step that was measured done: an
+  unmeasured one is `[ ]` with a detail saying why, and it moves the exit code in
+  neither direction. It is read-only and lands no seat unless `--delete-claim` is
+  given, and that flag declines while **anything in the namespace** still mounts the
+  claim — the second pod of a rollout holds it just as hard — because a claim deleted
+  out from under a running pod stays `Terminating` and then fails to bind on the next
+  reschedule. A pod listing that could not be read declines too. Deleting it prints both things podbench cannot verify about the
+  deletion: nothing mounted the claim, so what was on it went unread, and a chart that
+  still declares the claim will have the next sync recreate it. Exit **1** while any
+  measured step is outstanding.
+* `retire`'s `branch` step is **done** on a claim that records no commits: a seeded
+  claim nobody ever `apply`-ed has nothing to consolidate and nothing that retiring it
+  discards, and `consolidate` refuses that same claim.
+* `retire`'s `wiring` row names both volumes, the mount and the supervisor loop in
+  `command` and `args`, and it says to take those *entries* out of the application's
+  values rather than the whole `volumes` and `volumeMounts` keys — a helm list replaces
+  across the parent/child merge rather than merging into it, so a key deleted wholesale
+  takes the service's own mounts with it. A `podSecurityContext.fsGroup` is **named,
+  not counted**: `hotfix values` emits one, an application may have declared its own,
+  and the pod cannot say which.
+* **Turning the claim off is not retiring the hotfix**, and this is the state `retire`
+  exists to name. `podbench-hotfix-claim.enabled: false` disables the subchart — the
+  PVC — while the `volumes`, `volumeMounts`, `command`, `args` and `podSecurityContext`
+  that wire the pod are the *application's* own values. Measured on p47-beamline on 2026-08-23:
+  with the boolean off, every pod in the namespace deleted, and the workloads
+  recreated from git, the target came back still mounting the claim and still running
+  the supervisor loop.
+* `check` exits **1** when anything it measured would block an `init`, and it is
+  read-only: it writes nothing and lands no seat, because an ephemeral container
+  cannot be taken back off a pod and a verb run to ask a question must not spend
+  one. A non-exec `livenessProbe` is `warn` rather than a blocker by design: it
+  breaks `apply`'s hold rather than `init`. `check` takes `--repo` because `init`
+  does — an image naming no source repository is a state `init` refuses, so it is
+  a blocker here, and a check that could not hear the flag would refuse a target
+  the next command accepts. A label that *is* there is corroborated rather than
+  believed: OCI labels are inherited from the base image, so the row is `[ok]` only
+  where the image's own registry path corresponds to the repository the label names
+  (a `-debug` or `-runtime` variant counts), and a `warn` otherwise. It is a warning
+  and not a blocker because `init` does not refuse the state — it clones the label's
+  repository and records an `ASSUMED` base. The `[ok]` speaks for the **repository**
+  alone: it is a correspondence rather than a proof — an image named after its base
+  corresponds to the base's own label — and `init`'s revision label is gated
+  separately, on `--repo` or the seeded checkout's `origin`. On a claim that is already seeded the three rows only
+  a seed reads — the target root, the project and the interpreter — are **not
+  asked**, because `init` does not read them either. Where no seat is running yet,
+  the seat's view of the target's root is reported **unmeasured** rather than
+  either way, and the verdict says "nothing measured here".
 
 ```
-$ podbench hotfix --print-values --app myapp --from-pod myapp-0
+
+ Usage: podbench hotfix values [OPTIONS]
+
+ emit the helm values an application's chart needs
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --app                     NAME       application name [required]                              │
+│    --entrypoint              CMD        the command the container runs today, which the          │
+│                                         supervisor wraps (default: read from the target)         │
+│    --liveness-probe          JSON       the target's whole livenessProbe as json, overriding the │
+│                                         one read off the target. Its exec command is wrapped and │
+│                                         its timings are carried over; a chart renders a supplied │
+│                                         probe wholesale, so a timing left out becomes the k8s    │
+│                                         default                                                  │
+│    --size                    SIZE       claim size [default: 2Gi]                                │
+│    --gid                     GID        the application container's gid (default: read from the  │
+│                                         target)                                                  │
+│                                         [default: <the application's runAsGroup>]                │
+│    --from-pod                POD        read the entrypoint, livenessProbe and gid off this pod, │
+│                                         so the emitted values need no hand-editing               │
+│    --values                  PATH       the target service's own values file: emit it back whole │
+│                                         with podbench's keys merged in, rather than a fragment   │
+│                                         to merge by hand                                         │
+│    --parent-values           PATH       a shared values file the service inherits from. A helm   │
+│                                         list replaces rather than merges, so this is what stops  │
+│                                         a service declaring `volumes:` for the first time        │
+│                                         silently dropping the shared ones                        │
+│    --values-under            KEY        dotted path to the mapping the target chart keeps its    │
+│                                         pod template keys under (`ioc-instance`). Read from the  │
+│                                         files when not given, and the output says where they     │
+│                                         went                                                     │
+│    --central-claim                      emit the older namespace-wide `hotfixProject.claims[]`   │
+│                                         entry instead of the podbench-hotfix-claim chart         │
+│                                         dependency                                               │
+│    --claim-venv              NAME       the venv's directory name on the claim, which the        │
+│                                         runtime switch looks for and `uv sync` builds (default:  │
+│                                         .venv). `values` and `init` have to be given the same    │
+│                                         name                                                     │
+│                                         [default: .venv]                                         │
+│    --container               NAME       the application container (default: first)               │
+│    --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context's own)        │
+│    --context                 NAME       kubeconfig context                                       │
+│    --kubectl                 BIN        kubectl binary to use [default: kubectl]                 │
+│    --help                               Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+```
+$ podbench hotfix values --app myapp --from-pod myapp-0
 ```
 
 emits both halves of the chart wiring: `hotfixProject` values for the podbench
@@ -1166,33 +1272,37 @@ project at `/podbench/app` under `volumeMounts`, the supervisor as
 declares an exec one — its `livenessProbe` wrapped to honour the hold.
 
 `--from-pod` reads the entrypoint, the whole `livenessProbe` and the gid off
-that pod, and reading is the **default**: naming no pod and not passing
-`--no-from-pod` is a refusal that asks for one. Supplying those three by hand is
-how issue #176 happened — a chart renders a supplied `livenessProbe` wholesale,
-so a timing left out becomes the Kubernetes default, and a compiled IOC went
-from `initialDelaySeconds: 120` and `periodSeconds: 30` to 0s and 10s: probed
-from the moment it started, before it had reached its hardware. Reading the pod
-removes the whole class, and the timings arrive without anyone typing them. It
+that pod, and reading is **all there is**: naming no pod is a refusal that asks
+for one, and there is no offline emission to fall back to
+([#205](https://github.com/gilesknap/podbench/issues/205) item 6). Supplying
+those three by hand is how issue #176 happened — a chart renders a supplied
+`livenessProbe` wholesale, so a timing left out becomes the Kubernetes default,
+and a compiled IOC went from `initialDelaySeconds: 120` and `periodSeconds: 30`
+to 0s and 10s: probed from the moment it started, before it had reached its
+hardware. Reading the pod removes the whole class, and the timings arrive
+without anyone typing them. It
 reaches the cluster the way every other verb does — `-n`/`--namespace`,
 `--context` and `--kubectl`, with the namespace coming from the kubeconfig
 context when `-n` is not given — and `--container NAME` picks the application
 container where the pod has more than one, defaulting to the first.
 
-Notes on `--print-values`:
+Notes on `hotfix values`:
 
-* `--no-from-pod` is the way to emit without a cluster — CI, an offline machine,
-  or a pod that does not exist yet — and it is the only way `--entrypoint`,
-  `--gid`, `--liveness` and `--liveness-probe` have to carry the whole snippet
-  between them. `--liveness-probe` takes the JSON the pod would have given you,
-  `kubectl get pod POD -o jsonpath='{.spec.containers[0].livenessProbe}'`, which
-  is exactly the paste `--from-pod` exists to spare you; `--liveness` takes the
-  exec command alone and carries **no timings**, which is the shape of #176.
-* **A flag you pass beats the pod.** That is what makes `--entrypoint` a usable
-  answer to a target whose command lives in the image's `ENTRYPOINT` — a
-  container declaring neither `command` nor `args` has it nowhere in the pod
-  spec, so nothing read from the cluster will find it — without giving up the
-  gid and the probe as well. The refusal says so, rather than sending you to
-  `--no-from-pod` for all three.
+* **There is no offline emission.** `--no-from-pod` emitted from `--entrypoint`,
+  `--gid`, `--liveness` and `--liveness-probe` alone; it went with `--liveness`
+  in #205 item 6, and neither is deprecated or hidden — a flag whose help had to
+  talk you out of using it had already failed. "A pod that does not exist yet"
+  is close to vacuous for a mode applied to something running and broken, and
+  the offline emission was strictly the lower-fidelity one: hand-supplied fields
+  lose the probe's timings, the gid and the real entrypoint. `--liveness-probe`
+  survives because it carries a whole probe with its timings; `--liveness`
+  carried an exec command and **no timings**, which is the shape of #176.
+* **A flag you pass beats the pod**, and that is now the only thing the three
+  override flags do. It is what makes `--entrypoint` a usable answer to a target
+  whose command lives in the image's `ENTRYPOINT` — a container declaring
+  neither `command` nor `args` has it nowhere in the pod spec, so nothing read
+  from the cluster will find it — without giving up the gid and the probe as
+  well. The refusal names that one flag rather than the read it cannot avoid.
 * **A target with no `livenessProbe` is not an error.** 7 of 18 containers on a
   real beamline declare one and the canonical fastcs target is not among them,
   so no probe block is emitted and nothing is said about it.
@@ -1206,8 +1316,13 @@ Notes on `--print-values`:
   survives.
 * **`--values PATH` emits the whole file, not a fragment.** Given the service's
   own values file, podbench merges its keys into it and prints the result — the
-  same file, its comments intact, ready to be pasted back or redirected over
-  itself. The notes go to stderr so stdout stays exactly the file.
+  same file, its comments intact, ready to be pasted back or redirected to a
+  new name and moved over the input. The notes go to stderr so stdout stays
+  exactly the file — but do not redirect straight over the input: a shell
+  truncates a redirect target before podbench starts, so the merge reads an
+  empty file, and the output that lands is the snippet alone with everything
+  the service declared silently gone. Exit 2 from a failed read leaves the
+  same emptied file behind.
 
   Three things it decides, and it says which on stderr each time:
 
@@ -1260,17 +1375,22 @@ Notes on `--print-values`:
   the chart renders them. Prefer it; the warning is what is left for a target
   whose values file you do not have.
 * `fsGroup` stays the literal placeholder `<the application's runAsGroup>` only
-  where nothing could say what it should be: under `--no-from-pod` with no
-  `--gid`, or against a pod that states `runAsUser` and no `runAsGroup`, which a
-  hardened workload routinely does. It is deliberately not a number — a snippet
+  where nothing could say what it should be: a pod that states `runAsUser` and
+  no `runAsGroup`, which a hardened workload routinely does, and no `--gid` to
+  say otherwise. It is deliberately not a number — a snippet
   pasted unread then fails at `helm install` rather than deploying an fsGroup the
   application does not run as. It must never become 0: a claim that is present
   and unwritable starts and *then* fails, in the dark.
-* **Every failure reading the pod names `--no-from-pod` and what taking it
-  costs**, quoting #176, because making a cluster read the default lands each of
-  these on somebody who did not ask for one. kubectl tells a missing kubeconfig,
-  an absent pod and a forbidden `get pods` apart only in the text of its own
-  message, so podbench relays that verbatim rather than guessing at a category.
+* **Every failure reading the pod says why the read is not optional**, quoting
+  #176, and names what will get you going: `--from-pod POD`, `-n` and
+  `--context` to make the read work, or one override where the read reached the
+  pod and the pod could not answer. Making a cluster read the only way lands
+  each of these on somebody who did not ask for one, and #176 is the reason
+  there is nothing to fall back to — without it the reader's next move is to
+  hand-write the five keys into the chart anyway. kubectl tells a missing
+  kubeconfig, an absent pod and a forbidden `get pods` apart only in the text of
+  its own message, so podbench relays that verbatim rather than guessing at a
+  category.
 
 ---
 
@@ -1902,6 +2022,6 @@ session inherits the image's value regardless, where `podbench dbg
 | Code | Meaning |
 |---|---|
 | `0` | success — including a degraded seat, which is an honest outcome and not a failure |
-| `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `hotfix status` found a pod needing attention; or `doctor` found something blocking an attach |
+| `1` | an Iterate-mode operation failed (`dev`, `dev-bootstrap`, `run`, `stop`); `hotfix status` found a pod needing attention; `hotfix check` found something blocking an `init`; `hotfix retire` found a step of a retirement still outstanding; or `doctor` found something blocking an attach |
 | `2` | a launcher error, a `hotfix` error, an unanswerable `POD` (see {ref}`Naming the pod <naming-the-pod>`), a `doctor` usage error, or `podbench` with no verb |
 | `0` / `10` / `15` / `20` | `capreport` only: the capability verdict |
