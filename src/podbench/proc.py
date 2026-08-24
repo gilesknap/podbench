@@ -41,6 +41,7 @@ from .model import (
 
 __all__ = [
     "CAP_SYS_PTRACE_BIT",
+    "DEBUGPY_ADAPTER",
     "DEFAULT_PROC",
     "DEFAULT_SYS",
     "DELETED_SUFFIX",
@@ -51,9 +52,13 @@ __all__ = [
     "Attribution",
     "Capabilities",
     "Credentials",
+    "DebugpyAdapter",
     "ProcessListing",
+    "adapter_port",
     "candidate_note",
     "debug_candidates",
+    "debugpy_adapters",
+    "is_debugpy_adapter",
     "env_host_network",
     "parse_host_network",
     "env_pod_containers",
@@ -91,6 +96,7 @@ __all__ = [
     "strip_container_scheme",
     "strip_deleted",
     "sysroot_path",
+    "without_adapters",
     "yama_scope",
 ]
 
@@ -931,6 +937,141 @@ def is_shell(info: ProcInfo) -> bool:
         return True
     argv = info.cmdline.split()
     return bool(argv) and PurePosixPath(argv[0]).name in _SHELLS
+
+
+DEBUGPY_ADAPTER = "debugpy/adapter"
+"""The argv token naming debugpy's adapter, wherever the tree was installed.
+
+``debugpy.listen()`` spawns the adapter *from the debuggee* with
+``[sys.executable, <...>/debugpy/adapter, "--for-server", E, "--host", H,
+"--port", P, "--server-access-token", T]`` (``debugpy/server/api.py``, quoted
+verbatim in ``.claude/evidence/phase8-why-the-adapter-never-answers.md``), so
+the last two path components are the same in every install while everything to
+their left is wherever ``--provision`` put the tree.
+"""
+
+
+@dataclass(frozen=True)
+class DebugpyAdapter:
+    """A live debugpy adapter, and the debuggee whose ``listen()`` spawned it.
+
+    The port here is the **client** port — the one a DAP client connects to and
+    the one a ``launch.json`` names — which is the ``--port`` in the adapter's
+    own argv. The adapter carries two other numbers (``--for-server``, and the
+    server port it prints into its log) and neither is what an editor connects
+    to.
+    """
+
+    pid: int
+    debuggee: int
+    port: int
+
+    def describe(self) -> str:
+        """Who holds the port, in the same shape as an ``ss`` attribution."""
+        return f"pid {self.pid} (debugpy's adapter for pid {self.debuggee})"
+
+
+def is_debugpy_adapter(info: ProcInfo) -> bool:
+    """Whether this process is a debugpy adapter rather than anything to debug.
+
+    Matched on the argv token and not on ``comm``, which is the interpreter's
+    name (``python3``) and says nothing.
+
+    >>> is_debugpy_adapter(ProcInfo(181, 0, "python3",
+    ...     "/app/.venv/bin/python3 /proc/13/root/app/.podbench-debugpy/"
+    ...     "debugpy/adapter --for-server 58508 --host 127.0.0.1 --port 40448"))
+    True
+    >>> is_debugpy_adapter(ProcInfo(13, 0, "ioc", "/epics/ioc/bin/ioc st.cmd"))
+    False
+    """
+    return any(token.endswith(DEBUGPY_ADAPTER) for token in info.cmdline.split())
+
+
+def adapter_port(info: ProcInfo) -> int | None:
+    """The client port a debugpy adapter serves, read out of its own argv.
+
+    ``None`` where the flag is absent or is not a number: an adapter podbench
+    cannot read a port out of is one nothing may be pointed at.
+
+    >>> adapter_port(ProcInfo(181, 0, "python3", "python /d/debugpy/adapter "
+    ...                       "--for-server 58508 --host 127.0.0.1 --port 40448"))
+    40448
+    """
+    argv = info.cmdline.split()
+    for flag, value in zip(argv, argv[1:], strict=False):
+        if flag == "--port":
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
+def debugpy_adapters(processes: Sequence[ProcInfo]) -> dict[int, DebugpyAdapter]:
+    """Which of ``processes`` already have a debugpy server, by debuggee pid.
+
+    **The parent, not the port, is the discriminator.** A port proves nothing
+    about which pod holds it under ``hostNetwork: true``, where the network
+    namespace is the node's — that is the whole of issue #87 — while the PID
+    namespace this reads is genuinely the pod's. So a server is claimed for a
+    target only where the adapter serving it is that target's own child, which
+    is where ``debugpy.listen()`` puts it.
+
+    Dead adapters are skipped: a zombie holds no socket, and ten
+    ``debugpy``/``pydevd`` mappings outlived the adapter's death on p47
+    (2026-08-24, §9), so nothing about debugpy having *been* in a process is
+    evidence that a server is there now.
+
+    >>> tree = [
+    ...     ProcInfo(13, 0, "ioc", "/venv/bin/python app.py", state="S"),
+    ...     ProcInfo(181, 0, "python3", "/venv/bin/python3 /d/debugpy/adapter "
+    ...              "--for-server 58508 --host 127.0.0.1 --port 40448",
+    ...              ppid=13, state="S"),
+    ... ]
+    >>> print(debugpy_adapters(tree)[13].describe())
+    pid 181 (debugpy's adapter for pid 13)
+    """
+    found: dict[int, DebugpyAdapter] = {}
+    for info in sorted(processes, key=lambda item: item.pid):
+        if not info.alive or info.ppid is None or not is_debugpy_adapter(info):
+            continue
+        port = adapter_port(info)
+        if port is not None:
+            # `setdefault`, in pid order: one debuggee should never have two
+            # live adapters, and if it somehow does the answer has to be the
+            # same on two calls a second apart.
+            found.setdefault(info.ppid, DebugpyAdapter(info.pid, info.ppid, port))
+    return found
+
+
+def without_adapters(processes: Sequence[ProcInfo]) -> list[ProcInfo]:
+    """``processes`` less the debugpy adapters podbench's own runs started.
+
+    An adapter is a Python process, alive, ptrace-readable and deeper than the
+    app it serves, so :func:`debug_candidates` ranks it *first* — and a run
+    then spends three lines failing to read ``/proc/<adapter>/exe`` and emits
+    nothing for it (p47, 2026-08-24, §8.3). It is this run's plumbing rather
+    than a candidate, and it is dropped here rather than demoted because there
+    is no seat and no capability under which debugging it is the answer.
+
+    Only a *child of one of the listed processes*, for :func:`debugpy_adapters`'
+    reason: the parent is what ties the adapter to this pod's own pid
+    namespace.
+
+    >>> tree = [
+    ...     ProcInfo(13, 0, "ioc", "/venv/bin/python app.py", state="S"),
+    ...     ProcInfo(181, 0, "python3", "/venv/bin/python3 /d/debugpy/adapter "
+    ...              "--port 40448", ppid=13, state="S"),
+    ... ]
+    >>> [info.pid for info in without_adapters(tree)]
+    [13]
+    """
+    pids = {info.pid for info in processes}
+    return [
+        info
+        for info in processes
+        if not (is_debugpy_adapter(info) and info.ppid in pids)
+    ]
 
 
 def debug_candidates(targets: Sequence[ProcInfo]) -> list[ProcInfo]:

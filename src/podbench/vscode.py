@@ -133,13 +133,17 @@ from .model import describe_pause
 from .probe import Attacher, default_attacher
 from .proc import (
     DEFAULT_PROC,
+    DebugpyAdapter,
+    debugpy_adapters,
     env_host_network,
     env_target_container_id,
+    list_processes,
     seat_cwd,
     strip_container_scheme,
 )
 from .provision import (
     PROVISION_DEST,
+    Injected,
     Prover,
     inject_debugpy,
     provision_debugpy,
@@ -163,6 +167,7 @@ __all__ = [
     "MACHINE_SETTINGS_PATH",
     "PYTHON_INTERPRETER_KEY",
     "SEAT_MACHINE_SETTINGS",
+    "WITHHELD_NOTE",
     "ListeningServer",
     "configurations_for",
     "cppdbg_configuration",
@@ -333,6 +338,20 @@ a true and useful sentence either way and the *decision* it feeds is not the
 seat's to take: whether the path means anything on the other side depends on
 whether the tree holding it is shared with the seat, which is a fact about the
 pod's mounts (:func:`podbench.editor.interpreter_for_folder`).
+"""
+
+WITHHELD_NOTE = "so no debugpy configuration is written"
+"""How "the handshake refused, keep the file you have" reaches the laptop.
+
+The third thing this stderr carries, after
+:data:`podbench.editor.PROVISION_FLAG` and :data:`INTERPRETER_NOTE`, and it is
+read for the same reason the other two are:
+an empty ``configurations`` list means "nothing fits this target" and "the
+configuration that fits it could not be proved" alike, and only the second of
+those must stop :func:`podbench.editor._configurations` falling back to an
+earlier run's answer. That fallback is right for an injection that failed on
+egress and wrong here, because the answer it would fall back to is a port from
+a run that never started a server either - #218 arriving one layer up.
 """
 
 #: Adapter ``type`` to the extension that contributes it. Keyed on the type
@@ -1455,7 +1474,7 @@ def _inject(
     host_network: bool | None,
     runner: Runner | None,
     prove: Prover,
-) -> bool:
+) -> Injected | None:
     """Start the debugpy server inside the target, under ``--provision``.
 
     :func:`podbench.flavour.injection_command`'s docstring says this is printed
@@ -1470,15 +1489,23 @@ def _inject(
 
     Gated on the verdict rather than on the install's return value, so the
     reason a refusal gives is the same sentence :func:`assess` would have given.
+
+    ``None`` is "nothing was injected", and it is a third answer rather than a
+    failure: the caller withdraws a configuration whose port could not be
+    proved, and a run that never touched the workload has nothing to withdraw.
+    The whole :class:`~podbench.provision.Injected` record comes back for the
+    same reason - ``ok`` is the injector's exit code and ``proved`` is whether a
+    DAP session could be started, and the two disagreeing is exactly the
+    2026-08-24 measurement that #218 is (§8.2).
     """
     if mode is Mode.DEV or target.language is not Language.PYTHON:
         # Both already named by `_provision`, which refuses first for the same
         # two reasons; saying it twice would read as two separate problems.
-        return False
+        return None
     if seat.listening_port is not None:
         # Not a no-op worth reporting: `_provision` has just said the same
         # thing, and the emitted configuration connects to it either way.
-        return False
+        return None
     verdict = next(
         (
             item
@@ -1492,7 +1519,7 @@ def _inject(
             "--provision: not starting the server - "
             + (verdict.reason if verdict else "debugpy was not assessed")
         )
-        return False
+        return None
     exposure = _exposure_warning(port, host_network)
     if exposure is not None:
         _warn(f"--provision: {exposure}")
@@ -1506,12 +1533,37 @@ def _inject(
     injected = inject_debugpy(command, runner=runner, port=port, prove=prove)
     for message in injected.messages:
         _warn(f"--provision: {message}")
-    # `ok` and not `proved`: the caller re-probes for a listener on the strength
-    # of this, and an injection whose adapter never answered still moved the
-    # server off the conventional port. Reporting it as a failure here would
-    # print "nothing is listening" over a port that is genuinely open, which is
-    # the same class of untrue sentence this whole slice exists to remove.
-    return injected.ok
+    # Both halves travel, and the caller reads a different one for each
+    # decision: `ok` decides where to re-probe for a listener - an injection
+    # whose adapter never answered has still moved the server off the
+    # conventional port - and `proved` decides whether anything may be written
+    # naming this port at all.
+    return injected
+
+
+def _withhold(pid: int, port: int, *, detail: str | None, remedy: str) -> None:
+    """Say that nothing was written naming ``port``, and why.
+
+    One sentence for both gates - the adapter that was found and the injection
+    that was made - because it is one decision. **The DAP handshake is the only
+    evidence anywhere in a run that a session can be started**, and a
+    configuration naming a port that failed ``initialize`` is one whose F5 hangs
+    or is refused (#218). Written once so the two cannot drift into saying
+    different things about the same verdict, and so
+    :data:`WITHHELD_NOTE` - which the laptop reads out of this line - has a
+    single author.
+
+    ``remedy`` is the caller's, because that is the half that genuinely differs:
+    an adapter that stopped answering wants the app restarted, while an
+    injection that started nothing has a command to run by hand.
+    """
+    _warn(
+        f"no debug session could be started on {DEBUGPY_HOST}:{port}"
+        + (f" ({detail})" if detail else "")
+        + f", {WITHHELD_NOTE} for pid {pid} and whatever launch.json already "
+        "holds is kept - replacing a configuration that worked with one naming "
+        f"a port nothing answers is worse than changing nothing. {remedy}"
+    )
 
 
 def _no_ptrace_clause(target: Target, evidence: PtraceEvidence) -> str:
@@ -1778,6 +1830,16 @@ def _run(
         else env_target_container_id()
     )
     host_network = env_host_network()
+    # Where a debugpy server already is, read out of the PID namespace rather
+    # than guessed from a port (#218). `debugpy.listen()` spawns its adapter
+    # from the debuggee, so the adapter is a *child* of the target and carries
+    # the client port in its own argv - and `ppid` is the discriminator because
+    # under hostNetwork a port names nothing about which pod holds it (#87).
+    #
+    # Enumerated here rather than per candidate: `_for_target` runs once per
+    # offered pid, and this is one walk of a namespace that had 112 processes on
+    # the largest pod surveyed.
+    adapters = debugpy_adapters(list_processes(target_cid, proc=proc))
 
     requested = list(flavours) + ([Flavour.LLDB] if lldb else [])
     explicit = bool(requested)
@@ -1821,6 +1883,7 @@ def _run(
                 prove=prove,
                 target_cid=target_cid,
                 host_network=host_network,
+                adapter=adapters.get(candidate),
                 hint=primary,
                 # A verb that prints rather than writes touches nothing, and the
                 # probe is per candidate: N candidates were N real attaches on
@@ -1866,6 +1929,7 @@ def _for_target(
     prove: Prover,
     target_cid: str | None,
     host_network: bool | None,
+    adapter: DebugpyAdapter | None = None,
     hint: bool,
     probe: bool = True,
 ) -> list[dict[str, Any]]:
@@ -1873,11 +1937,18 @@ def _for_target(
 
     ``port`` is ``None`` unless the user named one, and the two questions it
     used to answer are separated here because their answers differ. *Where to
-    look* for a server that is already running is :data:`DEBUGPY_PORT`, the
-    conventional port an app that ran ``-m debugpy`` at start-up will be on.
+    look* for a server that is already running is ``adapter``'s port where this
+    pid has one and :data:`DEBUGPY_PORT` otherwise, the conventional port an app
+    that ran ``-m debugpy`` at start-up will be on.
     *Where a server started from this run should listen* is a port the kernel
     picks (:func:`ephemeral_port`), so that two seats on one node - which under
     ``hostNetwork`` share a network namespace - cannot land on the same one.
+
+    ``adapter`` is the third question, and it is the one #218 was: *where the
+    server this target already has actually is*. A reconnect used to probe 5678,
+    find nothing there, choose a fresh port, inject into a pid debugpy declines
+    to serve twice and emit the new number - replacing a working ``launch.json``
+    with one naming a closed port (2026-08-24, §8.2).
     """
     target = inspect_target(pid, proc=proc, program=program)
     for note in target.notes:
@@ -1924,6 +1995,60 @@ def _for_target(
     attach_ok: bool | None = None
     attach_asked = False
 
+    # **Parentage proves the adapter is this target's; it does not prove it
+    # still answers.** An adapter mid-teardown, or one whose pydevd threads have
+    # exited while the process lingers, is live by `ppid` and dead by
+    # `initialize` - and §9's ten debugpy/pydevd mappings that outlived the
+    # adapter's death are why "still there" is not taken on trust here. So the
+    # port a configuration would name is asked the same question the injection
+    # is judged by, through the same `prove` seam, rather than a second
+    # implementation whose verdict could differ from the one #218 is about.
+    #
+    # It costs one `initialize` and nothing else: §6.1 measured that this probe
+    # does not burn a live adapter's session, which is what makes asking safe on
+    # the reconnect path - now the common one - rather than only on the
+    # injection's.
+    #
+    # Never in dev mode: the dev-mode debugpy entry is a `launch` and names no
+    # port at all, so there is nothing here for a handshake to be evidence of.
+    adapter_answers = True
+    if adapter is not None and mode is not Mode.DEV:
+        answer = prove(adapter.port)
+        adapter_answers = answer.ok
+        if not adapter_answers:
+            wanted = wanted - {Flavour.DEBUGPY}
+            _withhold(
+                target.pid,
+                adapter.port,
+                detail=answer.detail,
+                remedy=(
+                    f"{adapter.describe()} is still running, so this is an "
+                    "adapter that has stopped answering rather than a missing "
+                    "one - and debugpy serves a process once, so nothing is "
+                    "injected over it either. Restart the app to get a process "
+                    "debugpy has not already served; `debugpy.listen()` in the "
+                    "app image needs no injection at all"
+                ),
+            )
+
+    if (
+        adapter is not None
+        and adapter_answers
+        and port is not None
+        and adapter.port != port
+    ):
+        # The adapter wins over `--port`, and is said rather than done quietly:
+        # debugpy refuses a second `listen()` in a process that already has one,
+        # so injecting on the requested port would return 0, start nothing, and
+        # leave the working server unnamed (§8.2). `--port` still decides where
+        # a *new* server goes, which is every target without one.
+        _warn(
+            f"pid {target.pid} is already served by {adapter.describe()} on "
+            f"{DEBUGPY_HOST}:{adapter.port}, so the configuration names that "
+            f"port rather than the {port} you asked for - debugpy serves one "
+            "process once, and a second listen in it starts nothing"
+        )
+
     # Where to look for a server that is already running. It moves exactly once,
     # to the port an injection was actually made on: an ephemeral port is not
     # 5678, so re-probing 5678 after --provision would find the run's own new
@@ -1958,8 +2083,53 @@ def _for_target(
                 chosen = DEBUGPY_PORT
         return chosen
 
+    def survey(listening: int | None, listening_owner: str | None) -> Seat:
+        """The seat as it stands, given who was found serving this target."""
+        nonlocal attach_ok, attach_asked
+        # The languages that reach gdb only (NATIVE_LANGUAGES, which is where
+        # Rust joins), and still, though the debugpy pid
+        # injection now withdraws on the same answer — it drives gdb to `call
+        # (void*)dlopen(...)`, which needs the symbols this asks about. What gdb
+        # says about a python-build-standalone interpreter is issue #90's open
+        # question, and measuring it here would settle that issue by accident,
+        # in a verb that otherwise only authors a file, at the price of a gdb
+        # start-up per candidate. #90 is where the Python case joins.
+        load_error = (
+            program_load_error(target.pid, gdb_program, runner=runner)
+            if gdb_program and target.language in NATIVE_LANGUAGES
+            else None
+        )
+        surveyed = survey_seat(
+            target,
+            proc=proc,
+            which=which,
+            debugpy_root=debugpy_root,
+            listening_port=listening,
+            listening_owner=listening_owner,
+            provision_dest=provision_dest,
+            program_load_error=load_error,
+        )
+        if not attach_asked:
+            attach_asked = True
+            attach_ok = measured_attach(
+                target,
+                target_mode,
+                surveyed,
+                proc=proc,
+                attacher=attacher,
+                probe=probe,
+            )
+        return replace(surveyed, target_attach_ok=attach_ok)
+
     def measure() -> Seat:
         nonlocal attach_ok, attach_asked, said_unattributed
+        if adapter is not None:
+            # Attributed by parentage, so no `ss` and no attribution question:
+            # this pid's own child is serving this pid, which is the one fact a
+            # port cannot establish under hostNetwork (#87). A seat with no `ss`
+            # - or one whose sweep names an owner it cannot resolve - still gets
+            # the right answer here, because the evidence is the process tree.
+            return survey(adapter.port, adapter.describe())
         # The listener is re-probed on every measurement rather than read once:
         # --provision can *start* one part way through this function, and a
         # port sampled before that would emit a configuration whose "already
@@ -1999,43 +2169,17 @@ def _for_target(
         listening_owner = (
             found.describe() if found is not None and found.attributed else None
         )
-        # The languages that reach gdb only (NATIVE_LANGUAGES, which is where
-        # Rust joins), and still, though the debugpy pid
-        # injection now withdraws on the same answer — it drives gdb to `call
-        # (void*)dlopen(...)`, which needs the symbols this asks about. What gdb
-        # says about a python-build-standalone interpreter is issue #90's open
-        # question, and measuring it here would settle that issue by accident,
-        # in a verb that otherwise only authors a file, at the price of a gdb
-        # start-up per candidate. #90 is where the Python case joins.
-        load_error = (
-            program_load_error(target.pid, gdb_program, runner=runner)
-            if gdb_program and target.language in NATIVE_LANGUAGES
-            else None
-        )
-        surveyed = survey_seat(
-            target,
-            proc=proc,
-            which=which,
-            debugpy_root=debugpy_root,
-            listening_port=listening,
-            listening_owner=listening_owner,
-            provision_dest=provision_dest,
-            program_load_error=load_error,
-        )
-        if not attach_asked:
-            attach_asked = True
-            attach_ok = measured_attach(
-                target,
-                target_mode,
-                surveyed,
-                proc=proc,
-                attacher=attacher,
-                probe=probe,
-            )
-        return replace(surveyed, target_attach_ok=attach_ok)
+        return survey(listening, listening_owner)
 
     seat = measure()
-    if provision:
+    # `adapter_answers` and not merely `provision`: a live adapter that has
+    # stopped answering is not licence to start a second one. debugpy serves a
+    # process once, so the injection would return 0 and leave nothing behind
+    # (§8.2) - and the workload would have been ptraced for it. Both mutations
+    # are skipped rather than refused one layer down, because `_provision`'s
+    # "already listening ... and the emitted configuration connects to it"
+    # sentence is untrue of a run that has just withdrawn that configuration.
+    if provision and adapter_answers:
         if _provision(
             target,
             mode,
@@ -2054,7 +2198,7 @@ def _for_target(
         # debugpy takes the "nothing is installed" path above and still has
         # nothing listening, which is the case this whole flag exists to end.
         injected_on = serving_port()
-        if _inject(
+        injected = _inject(
             target,
             mode,
             seat,
@@ -2062,11 +2206,51 @@ def _for_target(
             host_network=host_network,
             runner=runner,
             prove=prove,
-        ):
+        )
+        if injected is not None and injected.ok:
             # The re-measure has to look where the server was actually put, not
             # where a server conventionally is.
             probe_at = injected_on
             seat = measure()
+        if injected is not None and not injected.proved:
+            # **The handshake decides what may be written**, and this is the
+            # whole of #218. The DAP `initialize` above is the only evidence
+            # anywhere in this run that a session can be started, and a run that
+            # computed it and then emitted the port anyway replaced a working
+            # launch.json with one naming a closed port (2026-08-24, §8.2).
+            #
+            # Withdrawing the flavour keeps whatever the file already holds:
+            # `merge_launch_configs` matches on name, so an entry podbench does
+            # not emit is an entry it does not touch. That is deliberately the
+            # answer to a question nobody has measured - whether a third
+            # injection into a pid whose pydevd threads have exited would work -
+            # because it does not need answering.
+            wanted = wanted - {Flavour.DEBUGPY}
+            _withhold(
+                target.pid,
+                injected_on,
+                # The injector's own outcome, where there was one: a run that
+                # never reached a handshake has `session is None`, and inventing
+                # a refusal for it would read as a second failure rather than as
+                # the absence of a question.
+                detail=injected.session.detail if injected.session else None,
+                remedy=(
+                    "debugpy serves a process once, so a target that has "
+                    "already been debugged needs a restart before it can be "
+                    "again; `debugpy.listen()` in the app image needs none"
+                ),
+            )
+            # The paste survives the withdrawal, because now it is the reader's
+            # only way through: `_hint` is suppressed with the flavour, and its
+            # own first sentence ("the configuration above connects to a closed
+            # port") would name a configuration this run did not write.
+            print(
+                "debug-config: --provision: the injection this run attempted, "
+                "to run by hand - it runs in *this seat*, whose interpreter and "
+                "PYTHONPATH are not the target's however alike they are "
+                f"spelled:\n{injection_command(target, seat, injected_on)}",
+                file=sys.stderr,
+            )
     assessments = assess(target, mode, seat, wanted=wanted)
 
     _warn(

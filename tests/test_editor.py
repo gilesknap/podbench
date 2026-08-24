@@ -36,7 +36,11 @@ from podbench.editor import (
 )
 from podbench.kubectl import CommandResult, Kubectl
 from podbench.model import ContainerRef, PodRef
-from podbench.vscode import INTERPRETER_NOTE, PYTHON_INTERPRETER_KEY
+from podbench.vscode import (
+    INTERPRETER_NOTE,
+    PYTHON_INTERPRETER_KEY,
+    WITHHELD_NOTE,
+)
 
 SEAT = ContainerRef(PodRef("demo", "api-7f9"), "podbench-1")
 ALIAS = "podbench-demo-api-7f9"
@@ -80,6 +84,7 @@ class FakeSeat:
         debug_config_rc: int = 0,
         debug_config_stderr: str = "",
         provision_rc: int = 0,
+        provision_stderr: str | None = None,
         provisioned_configurations: Sequence[dict[str, Any]] = (DEBUGPY_CONFIG,),
         files: dict[str, str] | None = None,
         unreadable: Sequence[str] = (),
@@ -97,6 +102,10 @@ class FakeSeat:
         self.debug_config_rc = debug_config_rc
         self.debug_config_stderr = debug_config_stderr
         self.provision_rc = provision_rc
+        # A separate narration for the provisioning run, because the two runs
+        # genuinely say different things: only the second one can report what a
+        # DAP handshake answered.
+        self.provision_stderr = provision_stderr
         self.provisioned_configurations = list(provisioned_configurations)
         self.provisioned = False
         self.files = dict(files or {})
@@ -146,6 +155,8 @@ class FakeSeat:
                 self.provisioned = True
                 self.debug_config_rc = self.provision_rc
                 self.configurations = list(self.provisioned_configurations)
+                if self.provision_stderr is not None:
+                    self.debug_config_stderr = self.provision_stderr
             if self.debug_config_rc != 0:
                 return _result(self.debug_config_rc, stderr=self.debug_config_stderr)
             document = {"version": "0.2.0", "configurations": self.configurations}
@@ -532,6 +543,20 @@ _SUCCESS = (
 """A live *successful* run, trimmed. It names the flag, which is the whole
 point: the prerequisites are met and there is still nothing to connect to."""
 
+_WITHHELD = (
+    "debug-config: --provision: injected in 1.8s, but nothing is listening on "
+    "127.0.0.1:37516 (Connection refused): the injector returned 0 and left no "
+    "server behind\n"
+    "debug-config: --provision: no debug session could be started on "
+    f"127.0.0.1:37516, {WITHHELD_NOTE} for pid 13 and whatever launch.json "
+    "already holds is kept\n"
+)
+"""Run 3 on p47, once slice 2 gates the write on the handshake (#218).
+
+The seat proved, with a DAP `initialize`, that no session can be started - so
+the retry's *empty* answer is a measurement and not an absence, and the laptop
+may not paper over it with the first run's."""
+
 _NO_DEBUGPY_WANTED = (
     "debug-config: c++ target, observe mode, x86_64\n"
     "debug-config: emitting cppdbg for pid 1\n"
@@ -667,6 +692,27 @@ def test_a_failed_install_keeps_the_configuration_the_first_run_authored() -> No
     assert seat.provisioned
     document = json.loads(seat.files[f"{HOME}/.vscode/launch.json"])
     assert document["configurations"] == [DEBUGPY_CONFIG]
+
+
+def test_a_withheld_configuration_is_not_replaced_by_the_first_runs_dead_port() -> None:
+    """The other half of #218, one layer up.
+
+    The fallback exists so that a provisioning run failing on egress does not
+    take the first run's good configurations with it. A *withheld* answer is the
+    one case where it must not fire: the first run's configurations name a port
+    it never started a server on either, so falling back to them writes exactly
+    the closed port the seat has just refused to write.
+    """
+    seat = FakeSeat(
+        debug_config_stderr=_SUCCESS,
+        provision_stderr=_WITHHELD,
+        provisioned_configurations=(),
+    )
+    notes = run_open(seat, provision=Provision.IF_NEEDED)
+
+    assert seat.provisioned
+    assert f"{HOME}/.vscode/launch.json" not in seat.files
+    assert any(WITHHELD_NOTE in note for note in notes)
 
 
 def test_the_retry_cannot_loop_however_loudly_it_names_the_flag() -> None:

@@ -38,6 +38,7 @@ from podbench.probe import AttachOutcome
 from podbench.proc import DEFAULT_PROC, seat_cwd
 from podbench.provision import INJECTION_TIMEOUT_SECONDS
 from podbench.vscode import (
+    ADAPTER_DEBUGPY,
     GDB_WRAPPER,
     INTERPRETER_NOTE,
     MACHINE_SETTINGS_PATH,
@@ -1744,11 +1745,11 @@ def test_an_injection_whose_adapter_never_answers_is_relayed_as_such(
 ) -> None:
     """The live target's state on 2026-08-24, driven end to end through the verb.
 
-    Two things have to hold at once and they pull in opposite directions. The
-    report may not claim a working debugger, because none was proved; and it may
-    not print "nothing is listening" either, because the port genuinely is open
-    and the configuration this run emits has to connect to it. Naming only one of
-    those is how the sentence goes back to being untrue in the other direction.
+    The port genuinely is open — it accepts a connection — and no session can be
+    started on it, so the report may claim neither a working debugger nor that
+    nothing is listening. And **nothing may be written naming it** (#218): a
+    configuration whose port fails `initialize` is one whose F5 hangs, and
+    emitting it replaces whatever launch.json already held with that.
     """
     proc, root = provision_seat(tmp_path)
     uv = InstallingUv()
@@ -1762,12 +1763,9 @@ def test_an_injection_whose_adapter_never_answers_is_relayed_as_such(
         debugpy_root=root,
     )
 
-    assert code == 0
     captured = capsys.readouterr()
-    assert json.loads(captured.out)["configurations"][0]["connect"] == {
-        "host": "127.0.0.1",
-        "port": INJECT_PORT,
-    }
+    assert code == EXIT_USAGE
+    assert str(INJECT_PORT) not in captured.out
     said = " ".join(captured.err.split())
     assert "no debug session could be started" in said
     assert "debuggable" not in said
@@ -1807,7 +1805,10 @@ def test_a_refused_injection_is_reported_and_not_claimed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A ptrace an LSM denies is the DLS case. The install still happened, so
-    the run is not a failure - but it must not read as one that connected."""
+    the run is not a failure - but it must not read as one that connected, and
+    since #218 it must not author a configuration for the port it failed to open
+    either: an injector that never started a server leaves the same closed port
+    a refused handshake does."""
     proc, root = provision_seat(tmp_path)
     uv = InstallingUv(inject_rc=1)
     main(
@@ -1823,8 +1824,9 @@ def test_a_refused_injection_is_reported_and_not_claimed(
     captured = capsys.readouterr()
     assert "injection exited 1" in captured.err
     assert "injected in" not in captured.err
+    assert str(INJECT_PORT) not in captured.out
     # And the paste is back, because now it is the reader's only way through.
-    assert "nothing is listening" in captured.err
+    assert f"--pid {PID}" in captured.err
 
 
 def test_without_the_flag_nothing_is_injected_either(
@@ -2423,3 +2425,255 @@ def test_a_seat_without_the_variable_says_unknown_and_not_no(
     warned = capsys.readouterr().err
     assert "cannot tell whether" in warned
     assert "podbench attach" in warned
+
+
+# -- finding the adapter where it is, and never authoring an unproved port ----
+#
+# Issue #218. Run 3 on p47 - a plain reconnect - replaced a working launch.json
+# with one naming a closed port, and the diff between run 2's file and run 3's
+# was three port numbers and nothing else. Both halves of the fix are measured
+# facts podbench already held: the live adapter is a child of the target it had
+# just enumerated, and the DAP handshake had already said no on the line above.
+
+
+ADAPTER_PID = 181
+ADAPTER_PORT = 40448
+"""Run 2's adapter and the port it served, from the live run (§3.1, §8.2).
+
+Deliberately not 5678 and not :data:`INJECT_PORT`: the whole of the defect is
+that a reconnect probed the conventional port, found nothing there, and chose a
+fresh one, so a fixture on either of those numbers would let it pass.
+"""
+
+
+def write_adapter(
+    proc: Path, *, pid: int = ADAPTER_PID, ppid: int = PID, port: int = ADAPTER_PORT
+) -> Path:
+    """debugpy's adapter as ``listen()`` leaves it: a child of the debuggee.
+
+    The argv is the live one, ``--for-server`` and all
+    (``phase8-why-the-adapter-never-answers.md``): the client port is the
+    ``--port``, and a fixture with only that flag would not prove the parser
+    skips the other number.
+    """
+    entry = proc / str(pid)
+    entry.mkdir()
+    cmdline = (
+        "/app/.venv/bin/python3 "
+        f"/proc/{ppid}/root/app/.podbench-debugpy/debugpy/adapter "
+        f"--for-server 58508 --host 127.0.0.1 --port {port} "
+        "--server-access-token 7e525a6d"
+    )
+    (entry / "cmdline").write_text(cmdline.replace(" ", "\x00"))
+    (entry / "comm").write_text("python3\n")
+    (entry / "status").write_text(
+        f"Uid:\t0\t0\t0\t0\nPPid:\t{ppid}\nState:\tS (sleeping)\nThreads:\t4\n"
+    )
+    (entry / "cgroup").write_text(
+        f"0::/kubepods/besteffort/podfeed-face/{TARGET_CID}\n"
+    )
+    (entry / "stat").write_text(proc_stat(pid, "python3"))
+    return proc
+
+
+class Handshakes:
+    """A ``prover`` that answers as told and records what it was asked.
+
+    Recording, because the found-adapter path is judged on *whether* the
+    handshake happened: parentage says the adapter is this target's and only an
+    ``initialize`` says it still answers, so a test that asserted the port
+    without asserting the question would pass against a run that took the
+    adapter on trust.
+    """
+
+    def __init__(self, answer: Answer) -> None:
+        self.answer = answer
+        self.ports: list[int] = []
+
+    def __call__(self, port: int) -> Answer:
+        self.ports.append(port)
+        return self.answer
+
+
+def test_a_live_adapter_is_found_by_parentage_and_not_injected_over(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reconnect, fixed. Run 2 left a server on an ephemeral 40448; run 3
+    probed 5678, found nothing, and injected into a pid debugpy declines to
+    serve twice. The adapter was in the enumeration all along, as a child of the
+    target, with the port in its own argv."""
+    seat = debugpy_seat(tmp_path)
+    seat["which"] = which_of("gdb", "gdb-podbench", "uv")
+    write_adapter(seat["proc"])
+    uv = InstallingUv()
+    prover = Handshakes(Answer(Handshake.ANSWERED, "success: true", 0.01))
+    code = main(
+        [str(PID), "--print-config", "--provision", "--container-id", TARGET_CID],
+        prover=prover,
+        runner=uv,
+        **seat,
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    connect = json.loads(captured.out)["configurations"][0]["connect"]
+    assert connect == {"host": "127.0.0.1", "port": ADAPTER_PORT}
+    # Asked, and asked about the port the configuration names: parentage is
+    # what found it, and only the handshake says it still answers.
+    assert prover.ports == [ADAPTER_PORT]
+    # Neither mutation: nothing installed, and the workload never ptraced.
+    assert uv.argv == []
+    assert uv.injected is None
+    assert f"already listening on 127.0.0.1:{ADAPTER_PORT}" in captured.err
+    assert f"pid {ADAPTER_PID} (debugpy's adapter for pid {PID})" in captured.err
+
+
+def test_an_adapter_serving_somebody_else_is_not_this_targets_server(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``ppid`` is the discriminator and the port is not. Under hostNetwork the
+    network namespace is the node's, so a port proves nothing about which pod -
+    let alone which process - holds it (#87); the pid namespace is the pod's."""
+    seat = debugpy_seat(tmp_path)
+    seat["which"] = which_of("gdb", "gdb-podbench", "uv")
+    write_adapter(seat["proc"], ppid=PID + 1)
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision", "--container-id", TARGET_CID],
+        prover=answered,
+        runner=uv,
+        **seat,
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    connect = json.loads(captured.out)["configurations"][0]["connect"]
+    assert connect == {"host": "127.0.0.1", "port": INJECT_PORT}
+    assert uv.injected is not None
+    assert str(ADAPTER_PORT) not in captured.out
+
+
+def test_a_refused_handshake_leaves_the_working_launch_json_alone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """§8.2 itself: run 2's file, run 3's refusal, and nothing rewritten.
+
+    The handshake is the only evidence in the run that a session can be started,
+    and a configuration naming a port that failed ``initialize`` is one whose F5
+    meets a closed port. Keeping what the file already holds is the answer to a
+    case nobody has measured - whether a third injection into a pid whose pydevd
+    threads have exited would work - because the handshake settles it either
+    way.
+    """
+    proc, root = provision_seat(tmp_path)
+    written = tmp_path / "launch.json"
+    # Run 2's file: podbench's own entry, under the name this run would replace,
+    # naming the port that worked.
+    before = merge_launch_json(
+        None,
+        debugpy_attach_configuration(
+            PID,
+            name=f"podbench: attach to demo_service.py ({ADAPTER_DEBUGPY})",
+            port=ADAPTER_PORT,
+        ),
+    )
+    written.write_text(before)
+    code = main(
+        [str(PID), "--output", str(written), "--provision"],
+        prover=lambda _port: Answer(Handshake.REFUSED, "Connection refused", 0.01),
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=InstallingUv(),
+        port_chooser=fixed_port,
+        debugpy_root=root,
+    )
+
+    assert code == EXIT_USAGE
+    assert written.read_text() == before
+    said = " ".join(capsys.readouterr().err.split())
+    assert f"nothing is listening on 127.0.0.1:{INJECT_PORT}" in said
+    assert "no debug session could be started" in said
+    assert "whatever launch.json already holds is kept" in said
+
+
+def test_the_adapter_is_not_offered_as_something_to_debug(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """2b. Run 3 listed pid 181 - the adapter podbench had just started - among
+    the debuggable pids and spent three lines failing to read the exe of a
+    process podbench created (§8.3)."""
+    seat = debugpy_seat(tmp_path)
+    write_adapter(seat["proc"])
+    code = main(
+        ["--print-config", "--container-id", TARGET_CID],
+        prover=answered,
+        runner=no_listeners,
+        **seat,
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    # It is named once, as the owner of the port - and never as a candidate.
+    assert f"also emitting for pid {ADAPTER_PID}" not in captured.err
+    assert f"pid {ADAPTER_PID} (python3)" not in captured.err
+    assert f"pid {PID} (demo_service.py)" in captured.err
+
+
+def test_an_adapter_that_no_longer_answers_is_neither_authored_nor_injected_over(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Parentage proves whose the adapter is; it does not prove it still answers.
+
+    An adapter mid-teardown - or one whose pydevd threads have exited while the
+    process lingers - is live by ``ppid`` and dead by ``initialize``, and §9's
+    ten debugpy mappings that outlived the adapter's death are why this is asked
+    rather than assumed. A refusal is the refused injection's answer exactly:
+    keep the file, say why, and **do not ptrace the workload for a second
+    server**, because debugpy serves a process once.
+    """
+    proc = python_proc(tmp_path, site_packages=SITE_PACKAGES)
+    write_debugpy(
+        proc / str(PID) / "root" / SITE_PACKAGES.lstrip("/"),
+        helpers=["attach_linux_amd64.so"],
+    )
+    write_adapter(proc)
+    written = tmp_path / "launch.json"
+    before = merge_launch_json(
+        None,
+        debugpy_attach_configuration(
+            PID,
+            name=f"podbench: attach to demo_service.py ({ADAPTER_DEBUGPY})",
+            port=ADAPTER_PORT,
+        ),
+    )
+    written.write_text(before)
+    uv = InstallingUv()
+    prover = Handshakes(Answer(Handshake.REFUSED, "Connection refused", 0.01))
+    code = main(
+        [
+            str(PID),
+            "--output",
+            str(written),
+            "--provision",
+            "--container-id",
+            TARGET_CID,
+        ],
+        prover=prover,
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        port_chooser=fixed_port,
+        debugpy_root=seat_debugpy(tmp_path, helpers=["attach_linux_amd64.so"]),
+    )
+
+    assert code == EXIT_USAGE
+    assert written.read_text() == before
+    assert prover.ports == [ADAPTER_PORT]
+    # Neither mutation, and this is the half a "just inject again" fix would
+    # have got wrong: the workload is not ptraced for a second server.
+    assert uv.argv == []
+    assert uv.injected is None
+    said = " ".join(capsys.readouterr().err.split())
+    assert f"no debug session could be started on 127.0.0.1:{ADAPTER_PORT}" in said
+    assert "whatever launch.json already holds is kept" in said
+    assert "has stopped answering rather than a missing one" in said

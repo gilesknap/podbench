@@ -91,6 +91,7 @@ from .vscode import (
     INTERPRETER_NOTE,
     MACHINE_SETTINGS_PATH,
     PYTHON_INTERPRETER_KEY,
+    WITHHELD_NOTE,
     extensions_for,
     merge_launch_configs,
     merge_machine_settings,
@@ -1056,6 +1057,14 @@ class _Authored:
     """The target's own interpreter, in the *target's* spelling. Whether it means
     anything in this seat is :func:`interpreter_for_folder`'s question."""
 
+    withheld: bool = False
+    """Whether the seat deliberately emitted no debugpy configuration.
+
+    Read off :data:`podbench.vscode.WITHHELD_NOTE`, and the whole of its value
+    is that it distinguishes an empty answer from a *withdrawn* one, which is
+    what :func:`_configurations`' fallback must not step on.
+    """
+
 
 def _configurations(
     kubectl: Kubectl,
@@ -1101,9 +1110,20 @@ def _configurations(
     # The fallback is per *field*: a provisioning run that failed on egress
     # still measured the target, and the interpreter it named is the same file
     # either way, so each answer comes from whichever run had one.
+    #
+    # `withheld` is the one case it must not fire on. The retry proved, with a
+    # DAP `initialize`, that no session can be started - and the first run's
+    # configurations name a port *it* never started a server on either, so
+    # falling back to them writes the closed port #218 is about, having just
+    # been told not to (measured on p47, 2026-08-24, §8.2).
     return _Authored(
-        configurations=retried.configurations or first.configurations,
+        configurations=(
+            retried.configurations
+            if retried.configurations or retried.withheld
+            else first.configurations
+        ),
         interpreter=retried.interpreter or first.interpreter,
+        withheld=retried.withheld,
     )
 
 
@@ -1169,6 +1189,11 @@ def _author(
     relayed = _relay(result.stderr, report)
     wants_provisioning = not provision and PROVISION_FLAG in result.stderr
     interpreter = _narrated_interpreter(result.stderr)
+    # Read on a failed run too, and for the reason the exit code is not enough:
+    # a pod whose only candidate is the withdrawn one emits nothing at all, and
+    # that is exactly the run whose answer must not be replaced by an earlier
+    # one.
+    withheld = WITHHELD_NOTE in result.stderr
     if result.returncode != 0:
         # The last line only when there was nothing to relay - a `podbench` the
         # image does not resolve exits 127 with sh's message and no narration,
@@ -1178,22 +1203,23 @@ def _author(
             if relayed
             else f"{WARN} no launch.json: {_detail(result.stderr)}"
         )
-        return _Authored([], wants_provisioning, interpreter)
+        return _Authored([], wants_provisioning, interpreter, withheld)
     document: Any
     try:
         document = json.loads(result.stdout)
     except ValueError as error:
         report(f"{WARN} no launch.json: debug-config printed no JSON ({error})")
-        return _Authored([], interpreter=interpreter)
+        return _Authored([], interpreter=interpreter, withheld=withheld)
     if not isinstance(document, dict):
         report(f"{WARN} no launch.json: debug-config printed no JSON object")
-        return _Authored([], interpreter=interpreter)
+        return _Authored([], interpreter=interpreter, withheld=withheld)
     raw: Any = as_dict(document).get("configurations")
     entries = cast("list[Any]", raw) if isinstance(raw, list) else []
     return _Authored(
         [as_dict(entry) for entry in entries if isinstance(entry, dict)],
         wants_provisioning,
         interpreter,
+        withheld,
     )
 
 
