@@ -205,6 +205,28 @@ citing this as a reason; it is suggestive, not proven.
 `hotfix` goes from seven verbs to six: `values`, `check`, `init`, `restart`,
 `status`, `retire`.
 
+**`retire` stays, and it is not a git wrapper** — it is a *report* of where a pod
+is in its retirement (branch, image, wiring, claim), measured rather than
+remembered, plus the one action podbench can take, `--delete-claim`. Everything
+else retirement needs is a chart edit and an image rebuild. Confirmed with Giles
+2026-08-24; he also asked whether `enabled: false` on the claim subchart would do
+the same thing, and it will not — `p47-services`' own values file records that
+being tried at **94b74d2** and leaving the pod still hotfix-wired, because the
+wiring lives in the *application's* `ioc-instance` values (supervisor `args`, the
+two volumes, the `volumeMounts`, `podSecurityContext.fsGroup`), not in the flag.
+Worse, removing the PVC while the pod still declares the volume leaves an unbound
+claim and a Pending pod — the state `retirement()`'s docstring singles out as
+"the shape that matters most".
+
+**One consequence this slice must settle, and does not yet.** `retire`'s **branch**
+row reads `consolidated_branch` — the manifest field deleted with `consolidate`.
+So removing that verb leaves `retire` with a row it can no longer answer. Two
+honest options, neither yet chosen: drop the branch row (retirement then turns on
+image, wiring and claim, all of which are measured), or have `retire` take
+`--branch` and check it with the same laptop-side `ls-remote` slice 5 uses.
+**Decide this before writing slice 4**, because it is the one place removing a
+verb reaches outside its own surface.
+
 **Falsified if** anything `apply` or `consolidate` did turns out not to be
 reachable with ordinary git plus slice 3 — in which case that capability, not the
 verb, is what needs re-homing.
