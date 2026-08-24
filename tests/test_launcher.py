@@ -48,6 +48,7 @@ from podbench.launcher import (
     capability_report_from_json,
     container_names,
     current_namespace,
+    debug_command,
     default_host_alias,
     dev_seat,
     emit_ssh_config,
@@ -105,7 +106,7 @@ from podbench.model import (
     describe_pause,
 )
 from podbench.proc import Credentials
-from podbench.provision import PROVISION_DEST, claim_destination
+from podbench.provision import claim_destination
 from podbench.resize import Headroom
 from podbench.spec import (
     admission_rewrites,
@@ -4145,7 +4146,7 @@ def test_open_configures_the_seats_home_and_opens_that(
 
     settings = json.loads(cluster.seat_files[MACHINE_SETTINGS])
     assert settings["files.watcherExclude"]["**/proc/**"] is True
-    assert "/root/.vscode/launch.json" in cluster.seat_files
+    assert set(cluster.seat_files) == {MACHINE_SETTINGS}
     editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
     assert editor[-1] == (
         "/usr/bin/code",
@@ -4179,12 +4180,13 @@ def test_open_on_a_hotfix_pod_opens_the_claim_and_not_the_home(
     )
     assert code == 0
 
-    # The claim's own .vscode gets launch.json and nothing else (D1b): it is a
-    # committed checkout on an NFS PVC, so every other file podbench used to
-    # author there was a permanent line in the user's git diff.
+    # Nothing lands on the claim at all (#230). It is a committed checkout on an
+    # NFS PVC, so anything podbench authored there was a permanent line in the
+    # user's git diff - and the launch.json that was the last of them went stale
+    # at the next restart anyway, because it is keyed on a pid.
     assert [
         name for name in cluster.seat_files if name.startswith(f"{HOTFIX_APP_PATH}/")
-    ] == [f"{HOTFIX_APP_PATH}/.vscode/launch.json"]
+    ] == []
     editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
     assert editor[-1][-1] == HOTFIX_APP_PATH
     # Flattened, because the note is wrapped under its own tick before it is
@@ -4195,17 +4197,17 @@ def test_open_on_a_hotfix_pod_opens_the_claim_and_not_the_home(
     assert "the only tree here where an edit reaches the running process" in out
 
 
-def test_open_on_a_hotfix_pod_provisions_into_the_claim_and_says_so(
+def test_the_debug_step_offered_on_a_hotfix_pod_names_the_claim(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The other half of #189's pod, and the first link of the 2026-08-24
     cascade: the seat cannot write the target's root-owned ``/opt``, so a
-    ``--provision`` aimed there installs nothing, emits no configuration, and
-    leaves the report saying only "no launch.json".
+    ``--provision`` aimed there installs nothing and emits no configuration.
 
-    The destination reaches the seat as a flag rather than being decided there,
-    because only this side can see the pod - and it is named in the same block
-    that already says where the claim was mounted.
+    Only this side can see the pod, so only it can spell the destination — which
+    is why the offered command carries it rather than leaving the user to find
+    out by running the short one. The assessment gets it too, as the extra path
+    ``debug-config`` searches for a copy an earlier step installed.
     """
     cluster = FakeCluster(layout_pod())
     code = main(
@@ -4220,8 +4222,12 @@ def test_open_on_a_hotfix_pod_provisions_into_the_claim_and_says_so(
     assert runs
     for call in runs:
         assert call[call.index("--provision-dest") + 1] == dest
-    out = " ".join(capsys.readouterr().out.split())
-    assert f"any debugpy this run installs goes to {dest} on the claim" in out
+    # Not flattened: the offer's two spaces are what mark the right-hand half
+    # pasteable, and a report that collapsed them would pass a flattened match.
+    assert (
+        "to debug, in the seat:  podbench debug-config --provision "
+        f"--provision-dest {dest}"
+    ) in capsys.readouterr().out
 
 
 def test_open_follows_the_claim_to_wherever_the_application_mounts_it(
@@ -4420,12 +4426,22 @@ def test_without_open_no_editor_is_touched(tmp_path: Path) -> None:
     assert cluster.seat_files == {}
 
 
-def test_open_does_not_ask_for_the_verb_it_has_just_run(
+def test_the_window_is_offered_the_debug_step_it_no_longer_takes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A step the reader has already had done for them reads as a step that did
-    not happen - and `--open` reports what debug-config actually got, which the
-    static line cannot."""
+    """Slice 2 of #230, and the inversion of what this used to assert.
+
+    The offer was suppressed here because ``vscode`` ran ``debug-config``
+    itself and reported what it got — a step the reader has already had done
+    for them reads as a step that did not happen. It no longer runs it, so the
+    suppression is what would leave the debugger undiscoverable: the run prints
+    nothing else that names the verb.
+
+    It is an offer rather than a step: the two spaces mark the command as
+    pasteable, and it lives under ``next`` with the other things a reader might
+    do, because a step in the ``editor`` block is the past tense and goes
+    through the paragraph wrap that collapses those spaces.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
     assert (
         main(
@@ -4435,20 +4451,24 @@ def test_open_does_not_ask_for_the_verb_it_has_just_run(
         )
         == 0
     )
-    captured = capsys.readouterr()
+    out = capsys.readouterr().out
 
-    assert "run `podbench debug-config` in the seat" not in captured.out
+    assert "to debug, in the seat:  podbench debug-config --provision" in out
+    assert out.index("over Remote-SSH") < out.index("to debug, in the seat:")
     # The rest of the block is what the reader needs either way.
-    assert "ssh config written to" in captured.out
+    assert "ssh config written to" in out
 
 
 def test_without_open_the_seat_is_still_told_how_to_get_a_launch_json(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """One spelling for both verbs. ``attach`` names no destination and no
+    ``--provision``: it touches the workload not at all, and the flag that
+    would is not one of its own."""
     cluster = FakeCluster(pod_document(uid=1000))
     assert main(attach_argv(tmp_path), runner=cluster, which=lambda _: None) == 0
 
-    assert "run `podbench debug-config` in the seat" in capsys.readouterr().out
+    assert "to debug, in the seat:  podbench debug-config" in capsys.readouterr().out
 
 
 def test_attach_carries_no_flag_that_mutates_the_workload(
@@ -4472,11 +4492,17 @@ def test_attach_carries_no_flag_that_mutates_the_workload(
     assert "--provision" in capsys.readouterr().err
 
 
-def test_vscode_provisions_a_target_that_says_it_needs_it(tmp_path: Path) -> None:
-    """The seat is the only thing that can see the target, and it names the flag
-    in its own refusal. So the answer is already in hand when the refusal
-    arrives, and the round trip it used to cost was podbench asking the user to
-    retype a fact it had just measured."""
+def test_vscode_provisions_nothing_however_loudly_the_seat_asks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Slice 1 of #230, at the verb.
+
+    The seat names ``--provision`` in its own refusal and this verb used to
+    answer it. Now it relays the refusal and offers the step: the debugger's
+    bill — ~15 MB in the workload's writable layer and a ptrace of a probed
+    application — is paid by somebody who asked for a debugger, not by everyone
+    who asked for an editor.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
     cluster.unprovisioned = True
     code = main(
@@ -4487,47 +4513,30 @@ def test_vscode_provisions_a_target_that_says_it_needs_it(tmp_path: Path) -> Non
     assert code == 0
 
     asked = [call for call in cluster.calls if "debug-config" in call]
-    assert len(asked) == 2, "the refusal is answered once, not looped on"
+    assert len(asked) == 1, "one assessment, and nothing that acts on it"
     assert "--provision" not in asked[0]
-    assert "--provision" in asked[1]
-
-
-def test_vscode_provisions_nothing_a_target_did_not_ask_for(tmp_path: Path) -> None:
-    """A target that already has a debugger is not a target to install one into.
-    `--provision` was never "always"; the consent the verb carries is spent only
-    where the seat said it is the blocker."""
-    cluster = FakeCluster(pod_document(uid=1000))
-    assert (
-        main(
-            vscode_argv(tmp_path),
-            runner=cluster,
-            which=lambda name: f"/usr/bin/{name}",
-        )
-        == 0
+    # Named on the terminal, though: it is the flag the offered step carries.
+    assert "to debug, in the seat:  podbench debug-config --provision" in (
+        capsys.readouterr().out
     )
 
-    assert not any("--provision" in call for call in cluster.calls)
 
-
-def test_no_provision_leaves_the_target_exactly_as_it_is(
+def test_the_verb_carries_no_flag_that_mutates_the_workload(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Issue #45's decision, kept as an opt-out: ~15 MB into the workload's
-    writable layer is a mutation, and a user who declines it gets the offer they
-    used to get instead of the act."""
+    """``--no-provision`` went with the thing it declined. There is nothing left
+    to opt out of, and a flag that only ever meant "keep doing nothing" is one
+    more thing to explain."""
     cluster = FakeCluster(pod_document(uid=1000))
-    cluster.unprovisioned = True
-    assert (
-        main(
-            vscode_argv(tmp_path, "--no-provision"),
-            runner=cluster,
-            which=lambda name: f"/usr/bin/{name}",
-        )
-        == 0
+    code = main(
+        vscode_argv(tmp_path, "--no-provision"),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
     )
 
-    assert not any("--provision" in call for call in cluster.calls)
-    assert "--provision" in " ".join(capsys.readouterr().out.split())
+    assert code == 2
+    assert cluster.added == []
+    assert "--no-provision" in capsys.readouterr().err
 
 
 def test_open_follows_the_home_volume_rather_than_assuming_root(
@@ -4544,10 +4553,7 @@ def test_open_follows_the_home_volume_rather_than_assuming_root(
     )
     assert code == 0
 
-    assert set(cluster.seat_files) == {
-        MACHINE_SETTINGS,
-        "/home/podbench/.vscode/launch.json",
-    }
+    assert set(cluster.seat_files) == {MACHINE_SETTINGS}
     opened = [
         call
         for call in cluster.calls
@@ -4579,23 +4585,29 @@ def test_open_on_a_seat_with_no_stanza_says_so_rather_than_opening_nothing(
     assert "no ssh config was written" in captured.out
 
 
-def test_open_stops_at_a_seat_file_it_cannot_write(
+def test_a_seat_whose_machine_settings_refuse_a_write_still_opens(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A refused write is the layer's own sentence, not `kubectl exec`'s argv -
-    and it ends the run, because a window opened without the exclude list is the
-    walk that OOMs a seat which cannot be restarted."""
+    """The one file left, and it fails as a line rather than as a refusal.
+
+    ``podbench agent`` already wrote the excludes at seat start-up, so a run
+    that cannot add to them has not left the window unguarded — it has failed to
+    repair a guard that is probably there. The line says *unmeasured* rather
+    than fine, because this side cannot tell.
+    """
     cluster = FakeCluster(pod_document(uid=1000))
-    cluster.unwritable.add("/root/.vscode/launch.json")
+    cluster.unwritable.add(MACHINE_SETTINGS)
     code = main(
         vscode_argv(tmp_path, "--max-rung", "full"),
         runner=cluster,
         which=lambda name: f"/usr/bin/{name}",
     )
 
-    assert code == 2
-    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"] == []
-    assert "cannot write /root/.vscode/launch.json" in capsys.readouterr().err
+    assert code == 0
+    assert [call for call in cluster.calls if call[0] == "/usr/bin/code"] != []
+    out = " ".join(capsys.readouterr().out.split())
+    assert "could not write" in out
+    assert "the excludes are whatever `podbench agent` wrote at seat start-up" in out
 
 
 def test_open_leaves_the_probe_deadline_as_the_last_thing_on_screen(
@@ -6979,15 +6991,13 @@ def test_a_hotfixed_seat_provisions_into_the_claim_it_carries() -> None:
     The path is read off the mount rather than assumed to be `HOTFIX_APP_PATH`:
     the application chose the mountPath and podbench only matched it.
     """
-    dest, why = provision_destination(*seat_of(hotfixed_pod(mounted=True)))
+    dest = provision_destination(*seat_of(hotfixed_pod(mounted=True)))
 
     expected = f"{HOTFIX_APP_PATH}/.podbench-debugpy"
     assert dest == expected
-    # And it says which of the two it chose, in the report that already says
-    # where the claim was mounted.
-    assert why is not None
-    assert expected in why
-    assert PROVISION_DEST in why
+    # And it is named on the terminal, in the step the reader is offered rather
+    # than in a sentence about a run that no longer installs anything.
+    assert expected in debug_command(*seat_of(hotfixed_pod(mounted=True)))
 
 
 def test_a_seat_without_the_claim_keeps_the_default_it_can_at_least_fail_on() -> None:
@@ -7000,7 +7010,7 @@ def test_a_seat_without_the_claim_keeps_the_default_it_can_at_least_fail_on() ->
     not: the claim is one path in *both* namespaces only where both containers
     mount it. Choosing it from a seat that does not would be choosing on an
     assumption rather than on the mount."""
-    assert provision_destination(*seat_of(hotfixed_pod(mounted=False))) == (None, None)
+    assert provision_destination(*seat_of(hotfixed_pod(mounted=False))) is None
 
 
 def test_a_pod_with_no_layout_is_left_exactly_as_it_was() -> None:
@@ -7012,7 +7022,8 @@ def test_a_pod_with_no_layout_is_left_exactly_as_it_was() -> None:
         ephemeral_statuses=[running_status("podbench-1")],
     )
 
-    assert provision_destination(*seat_of(pod)) == (None, None)
+    assert provision_destination(*seat_of(pod)) is None
+    assert debug_command(*seat_of(pod)) == "podbench debug-config --provision"
 
 
 def test_the_claim_destination_is_named_so_it_cannot_meet_the_project() -> None:

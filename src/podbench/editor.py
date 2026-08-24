@@ -20,46 +20,49 @@ a user is most likely to improvise are the two that fail quietly:
 
 Everything either step needs is already known here: the alias comes from the
 stanza this attach just wrote, the folder from the seat's own home, and the
-extensions from the configurations ``debug-config`` emits in the seat — so they
-are read from the *emitted* configurations rather than assessed a second time
-from the laptop, which could not see the target's ``/proc`` anyway.
+extensions from the configurations ``debug-config`` says *would* fit the target
+— so they are read from the seat's own assessment rather than assessed a second
+time from the laptop, which could not see the target's ``/proc`` anyway.
 
 That last point is also why the seat's ``stderr`` is relayed line by line rather
 than summarised. ``debug-config`` is the only thing here that can see the
 target, so its narration *is* the diagnosis — it ends "every mechanism that said
 no is named above", and a caller that keeps the last line alone points at output
-it has just thrown away. It carries the injection command too, which a written
-``launch.json`` needs and cannot state: the configuration is emitted once the
-prerequisites are met, and nothing is listening until that command is run.
+it has just thrown away. It is also where the reader learns that debugpy will
+need ``--provision`` when they come to run the debug step.
 
-``--provision`` is a pass-through to the same verb and not a default, which is
-issue #45's decision: writing ~15 MB into the workload's writable layer, on a
-budget the seat shares and cannot reserve, is the larger of the two mutations a
-config author must be asked for — the other being the ptrace
-``flavour.injection_command`` prints rather than runs. What the flag fixes is
-that the remedy was previously unreachable from the laptop at all.
+**This module writes nothing at all into the folder** (issue #230). D1b had
+already stopped ``settings.json`` and ``extensions.json``; ``launch.json`` was
+the remaining write, and it now happens only when the user asks for it by
+running ``podbench debug-config`` in the seat. What makes that more than
+tidiness is that **restart changes the pid**, and every configuration podbench
+authors is pid-named and pid-keyed: measured across restarts on the p47 replica,
+``fastcs-example`` was pid 12, then 2446, then 13. Where restarting is the
+normal inner loop, anything written at window-open is stale almost immediately.
+Writing nothing cannot go stale — and the folder on a hotfixed pod is the user's
+committed checkout on an NFS PVC, where anything authored is a permanent line in
+somebody's git diff.
 
-It answers **two** blockers, and reading it as one is what left this verb unable
-to finish its own job. A Python target that cannot import debugpy gets no
-configuration; a Python target that can — which is most of them, since an app
-with debugpy in its lockfile is the common shape — gets one that connects to a
-port nothing is listening on. Only the first is a non-zero exit from the seat,
-so keying on the exit code meant the second silently skipped provisioning and
-handed over a launch.json whose F5 met ``ECONNREFUSED``. The trigger is now the
-seat naming the flag, which it does for either.
+Nothing here provisions either, for that reason and for issue #45's: an editor
+is what was asked for, and ~15 MB in the workload's writable layer plus a ptrace
+of a probed application is the debugger's bill. ``launcher.debug_command``
+composes the step that pays it, ready to paste, and spells the destination the
+laptop had to choose (``launcher.provision_destination``) because the seat's own
+default is unwritable on a hotfixed pod.
+
+The assessment run stays, and it is not a debugger feature. It is what says
+which extensions this target needs *in the seat* — the only reliable way to
+know, since ``code --install-extension --remote`` answers from the *laptop's*
+install list — and it carries the target's own interpreter, which is what stops
+the language server resolving imports against the wrong tree. Both are editor
+facts, and the run mutates nothing: ``--print-config`` neither writes nor
+probes, on the principle that a verb which prints rather than writes touches
+nothing.
 
 The order below is load-bearing. The excludes are written **before** the window
 opens, because the watcher and the indexer start walking the moment it does;
 opening first and configuring afterwards is the race whose loser is an
 unrecoverable seat.
-
-**The one file podbench writes into the folder is ``launch.json``** (D1b,
-2026-08-24). The folder on a hotfixed pod is the user's committed checkout on an
-NFS PVC, so anything authored there is a permanent line in somebody's git diff —
-seen first-hand while hotfix mode was being driven — and the excludes have a
-home of their own in the seat that costs nobody a diff. ``extensions.json`` went
-with it and costs nothing: it is recommendations only, while this module
-installs the extensions itself and then asks the seat whether they landed.
 
 Files reach the seat over ``kubectl exec`` rather than over the ssh transport:
 this runs while the launcher still has the :class:`podbench.kubectl.Kubectl` it
@@ -70,7 +73,6 @@ machine settings are the exception, and :data:`MACHINE_SETTINGS` says why.
 
 from __future__ import annotations
 
-import enum
 import json
 import shutil
 import time
@@ -91,9 +93,7 @@ from .vscode import (
     INTERPRETER_NOTE,
     MACHINE_SETTINGS_PATH,
     PYTHON_INTERPRETER_KEY,
-    WITHHELD_NOTE,
     extensions_for,
-    merge_launch_configs,
     merge_machine_settings,
 )
 
@@ -106,12 +106,10 @@ __all__ = [
     "SSH_CONNECT_TIMEOUT",
     "EditorError",
     "PROVISION_DEST_FLAG",
-    "PROVISION_FLAG",
     "SERVER_CLI_ATTEMPTS",
     "SERVER_CLI_INTERVAL",
     "FAIL",
     "OK",
-    "Provision",
     "WARN",
     "check_reachable",
     "interpreter_for_folder",
@@ -163,35 +161,19 @@ mapping and a flag, but none of the four has been driven against a podbench seat
 from a real GUI client yet. One that is unverified is a smaller claim than four.
 """
 
-VSCODE_DIR = ".vscode"
-
 DEBUG_CONFIG_ARGV = ("podbench", "debug-config", "--print-config")
 """How the seat is asked which debuggers apply.
 
-``--print-config`` rather than ``--output``: the assessment then happens exactly
-once, so the extensions installed and the configurations written cannot come
-from two different measurements of the same target.
+``--print-config`` rather than ``--output``: this run authors nothing in the
+folder, and the flag is what guarantees it. It also turns the per-candidate
+probe off, which is right for the same reason — a verb that prints rather than
+writes touches the target not at all.
 
 Spelled as the two-token verb for the reason ``CAPREPORT_ARGV`` is: since #47
 the image ships ``podbench`` and ``gdb-podbench`` and no per-subcommand alias,
 so a bare ``debug-config`` over ``kubectl exec`` is ``executable file not
 found`` — which arrives here as "printed no JSON", blaming the assessment for a
 command that never ran.
-"""
-
-PROVISION_FLAG = "--provision"
-"""What a provisioning run appends to :data:`DEBUG_CONFIG_ARGV`.
-
-Also the string an *unprovisioned* run is recognised by. ``debug-config`` names
-this flag in its own narration when debugpy is the blocker and does not name it
-for any other flavour — there is no ``--provision`` for a missing delve — so
-matching on it offers the pass-through exactly where it is the answer, without
-this side of the wire guessing the target's language a second time.
-
-"Blocker" covers both of debugpy's, and deliberately: the flag is named by the
-refusal a target that cannot import debugpy gets, *and* by the hint a target
-that can import it gets when nothing is listening on the port its configuration
-connects to. One string, because to this side of the wire they are one request.
 """
 
 PROVISION_DEST_FLAG = "--provision-dest"
@@ -202,43 +184,12 @@ Spelled only when there is one (``launcher.provision_destination`` answers
 byte-identical to the one this verb has always sent — including into a seat
 landed by a launcher that predates the flag.
 
-Passed on the *assessment* run as well as the provisioning one, and not only for
-symmetry: it is also the one extra path ``debug-config`` searches for the
-target's own debugpy, so a reconnect after an earlier install finds it there
-instead of offering to install it again."""
-
-
-class Provision(enum.Enum):
-    """Whether this run may make the target debuggable, and on whose say-so.
-
-    Three states rather than a boolean because the *decision* and the *consent*
-    are separate facts, and only the seat holds the first one. ``debug-config``
-    is the one thing that can see the target, and it names
-    :data:`PROVISION_FLAG` in its own narration when — and only when — debugpy
-    is what stands between this target and a bound breakpoint. So a run that
-    already has consent can answer the need itself instead of printing it.
-
-    :attr:`NEVER` and :attr:`ALWAYS` are what ``attach --open`` had.
-    :attr:`IF_NEEDED`
-    is what a verb named for the editor can offer: choosing ``podbench vscode``
-    *is* asking for a debuggable target, whereas ``attach``'s contract is that
-    it touches the workload not at all — which is why this is a mode and not a
-    new default.
-    """
-
-    NEVER = "never"
-    """Author whatever fits the target as it stands, and offer the flag."""
-
-    IF_NEEDED = "if-needed"
-    """Provision only where the seat itself named the flag.
-
-    Not "only where no configuration came back": a target shipping its own
-    debugpy gets one, and it connects to a port nothing is listening on until
-    the injection runs. That is the same request, made by a run that exited 0.
-    """
-
-    ALWAYS = "always"
-    """Provision first, whether or not the target turns out to need it."""
+Spelled even though nothing here provisions any more, because that is not what
+it does on this run: it is the one extra path ``debug-config`` searches for the
+target's *own* debugpy, so a window opened after the user ran the debug step
+finds what that step installed and asks for the Python extensions on the
+strength of it. ``launcher.debug_command`` spells the same value into the step
+itself."""
 
 
 _REMOTE_CLI_MARKERS = ("/remote-cli/", "/.vscode-server/", "/.vscode-server-insiders/")
@@ -264,70 +215,6 @@ _ABSENT = 3
 Not 1: that is what ``cat`` itself exits with when it *found* the file and could
 not read it, which is the case this whole arrangement exists to tell apart. 2
 and 127 belong to ``sh``.
-"""
-
-PROVISION_TIMEOUT = 600.0
-"""How long a provisioning ``debug-config`` may take before it is killed.
-
-Twenty times :data:`podbench.kubectl.DEFAULT_CALL_TIMEOUT`, because this one
-``exec`` contains a uv resolve, a download and a gdb injection — work whose
-honest duration is minutes on a cold index, and which
-:data:`_PROVISION_NOTICE` announces for exactly that reason. The bound is here
-so that a resolve against an index with *no route* ends in a sentence instead of
-in the hang the notice was written to make bearable.
-"""
-
-_PROVISION_NOTICE = (
-    f"{WARN} --provision is mutating the workload: installing debugpy into the "
-    "target and starting its server, which ptraces the app for a few seconds "
-    "(deadline under `supports` above)."
-)
-"""Said before the exec, not after: the install is a uv resolve and download.
-
-One line, naming the fact and the flag. It used to append
-:data:`podbench.provision.CAVEATS` in full, which put the three costs on the
-laptop's screen a second time: the seat itself names them
-(:func:`podbench.provision.install`), and this verb relays the seat's narration
-verbatim a moment later. So they are said once, by the side that is doing the
-thing, and ``docs/how-to/vscode-remote-ssh.md`` carries them for a reader who
-wants them before running anything.
-
-The probe deadline is *pointed at* rather than repeated, for the reason the
-vscode-in-a-seat skill gives: :mod:`podbench.budget` computes it from the pod
-spec and ``attach`` has already printed it, and a second hand-written copy is
-a second thing to keep true.
-"""
-
-_PROVISION_REMEDY = (
-    f"{WARN} re-run without `--no-provision` to install debugpy from the seat "
-    "first - it is what this verb does by default."
-)
-"""The offer, reached now only by somebody who declined the default.
-
-Issue #45 settled that provisioning is not implicit, and it still is not: what
-changed is where the consent is given. It used to be a flag typed beside
-``--open`` on a verb whose contract is that it touches the workload not at all;
-it is now the name of the verb, which is why the only reader left here is one
-who said ``--no-provision`` and then met the refusal it leads to.
-"""
-
-_PROVISION_NEEDED = (
-    f"{OK} the seat named `--provision` above, so provisioning debugpy now; "
-    "`--no-provision` authors whatever fits the target as it stands instead."
-)
-"""Said instead of :data:`_PROVISION_REMEDY` when the answer is already known.
-
-The narration it follows is relayed rather than swallowed, for the reason the
-module docstring gives: ``debug-config`` is the only thing that can see the
-target, so its account of *why* debugpy is the blocker is the diagnosis, and a
-run that hid it would be asserting the need rather than showing it. What changes
-is only the last line — "re-run with the flag" becomes "doing it now", because
-:attr:`Provision.IF_NEEDED` means the flag was already typed, as the verb's own
-name.
-
-Both blockers are named because only the seat knows which one it met, and this
-sentence is composed on the laptop. Naming the wrong one would be worse than
-naming both: the reader has the seat's own account two lines above.
 """
 
 _RELOAD_NOTE = (
@@ -572,13 +459,12 @@ def open_seat(
     folder: str,
     report: Callable[[str], None],
     editor: str = DEFAULT_EDITOR,
-    provision: Provision = Provision.NEVER,
     provision_dest: str | None = None,
     ssh: str = DEFAULT_SSH,
     runner: Runner | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Configure ``folder`` in the seat, install what it needs, and open it.
+    """Install what ``folder`` needs in the seat, and open it. Write nothing.
 
     Nothing is written, downloaded or launched until :func:`check_reachable`
     has proven the alias: the two steps that follow it both report success on a
@@ -601,24 +487,18 @@ def open_seat(
     no route to ``update.code.visualstudio.com`` is otherwise minutes of nothing
     at all, indistinguishable from a hang.
 
-    ``provision`` is the only argument here that changes the *target*: it
-    installs debugpy into the workload when the workload cannot import one.
-    :attr:`Provision.NEVER` by default for issue #45's reason, given in the
-    module docstring — a caller that has been given consent passes
-    :attr:`Provision.IF_NEEDED` and lets the seat decide whether to spend it.
-
-    ``provision_dest`` is *where* that install goes, and it is the caller's
-    choice for the same reason ``folder`` is: only the launcher can see the
-    pod, and on a hotfixed one the seat's own default is a root-owned ``/opt``
-    it has no capability to write (``launcher.provision_destination``). ``None``
-    leaves the seat's default alone.
+    ``provision_dest`` is the destination the *debug step* will use, passed on
+    the assessment run because it is also the extra path ``debug-config``
+    searches for the target's own debugpy — see :data:`PROVISION_DEST_FLAG`.
+    Nothing here installs anything into the target, so it changes no file;
+    ``None`` leaves the seat's own search alone.
 
     Anything that went wrong but left the seat usable is a line rather than an
-    exception — a missing ``launch.json`` costs an F5, whereas the excludes and
+    exception — an unnameable extension costs an F5, whereas the excludes and
     the folder are what keep the seat alive.
 
-    ``launch.json`` is the *only* thing written into ``folder``; see the module
-    docstring for why, and :data:`MACHINE_SETTINGS` for where the excludes went.
+    **Nothing is written into ``folder``.** See the module docstring for why,
+    and :data:`MACHINE_SETTINGS` for where the excludes live instead.
     """
     if not folder.startswith("/") or folder.strip("/") == "":
         raise EditorError(
@@ -635,18 +515,13 @@ def open_seat(
     # this line travels over the alias, and the two steps that do - the
     # extension install and the window itself - both report success without it
     # (`code --install-extension` exits 0 having only queued the work for a
-    # window that has not connected yet). Provisioning is behind it too: it
-    # writes ~15 MB into the workload and ptraces it, which is not worth
-    # spending on a seat no editor can reach.
+    # window that has not connected yet).
     check_reachable(alias, ssh=ssh, runner=run)
     report(f"{OK} ssh reaches the seat, so Remote-SSH will too")
     # Everything from here is one line each: this is a sequence of steps, and
     # a step that explains itself in a paragraph buries the one that failed.
-    authored = _configurations(
-        kubectl, seat, report, provision=provision, dest=provision_dest
-    )
-    configurations = authored.configurations
-    extensions = extensions_for(configurations)
+    authored = _author(kubectl, seat, report, dest=provision_dest)
+    extensions = extensions_for(authored.configurations)
 
     # The machine settings first, and not merely early: the excludes have to be
     # on disk before the window that starts the walk. They are also the only
@@ -659,27 +534,6 @@ def open_seat(
         runner=run,
         report=report,
     )
-
-    base = f"{folder}/{VSCODE_DIR}"
-    merged = (
-        _merge_into(
-            kubectl,
-            seat,
-            f"{base}/launch.json",
-            lambda existing: merge_launch_configs(existing, configurations),
-            report,
-        )
-        if configurations
-        else None
-    )
-    if merged is not None:
-        # Both halves are worth saying: "wrote" is what this run did, and
-        # "already said" is what a reconnect into a configured seat looks like -
-        # which is not nothing, since it is the answer to "why did my edits
-        # survive".
-        name, changed = merged
-        said = "wrote" if changed else "already said everything podbench would in"
-        report(f"{OK} {said} {name} in {base}")
 
     authority = remote_authority(alias)
     if extensions:
@@ -1041,90 +895,34 @@ def _relay(stderr: str, report: Callable[[str], None]) -> bool:
     return bool(lines)
 
 
+_NO_EXTENSION = "no debug extension to install"
+"""What an assessment that came back with nothing costs *this* run.
+
+It used to read "no launch.json", which was the truth while this module wrote
+one. It no longer does (issue #230), so the consequence left here is narrower
+and worth saying plainly: the seat gets no debugger extension, because nothing
+named a debugger the target could use. The debug step is still there to be run,
+and the seat's own narration above says what it will need.
+"""
+
+
 @dataclass(frozen=True)
 class _Authored:
-    """One ``debug-config`` run's answer, which is three facts and not a list.
+    """One ``debug-config`` run's answer, which is two facts and not a list.
 
-    ``configurations`` is what goes in ``launch.json``. The other two are things
-    only the seat can know and only the laptop can act on, and both travel on
-    :func:`_author`'s **stderr** rather than in the printed document — see
-    :data:`PROVISION_FLAG` and :data:`podbench.vscode.INTERPRETER_NOTE`.
+    ``configurations`` is what a debug step *would* write, and this run reads it
+    for one thing only: which extensions the seat needs
+    (:func:`podbench.vscode.extensions_for`). Nothing here writes it anywhere.
+
+    ``interpreter`` is a thing only the seat can know and only the laptop can
+    act on, and it travels on :func:`_author`'s **stderr** rather than in the
+    printed document — see :data:`podbench.vscode.INTERPRETER_NOTE`.
     """
 
     configurations: list[dict[str, Any]]
-    wants_provisioning: bool = False
     interpreter: str | None = None
     """The target's own interpreter, in the *target's* spelling. Whether it means
     anything in this seat is :func:`interpreter_for_folder`'s question."""
-
-    withheld: bool = False
-    """Whether the seat deliberately emitted no debugpy configuration.
-
-    Read off :data:`podbench.vscode.WITHHELD_NOTE`, and the whole of its value
-    is that it distinguishes an empty answer from a *withdrawn* one, which is
-    what :func:`_configurations`' fallback must not step on.
-    """
-
-
-def _configurations(
-    kubectl: Kubectl,
-    seat: ContainerRef,
-    report: Callable[[str], None],
-    *,
-    provision: Provision = Provision.NEVER,
-    dest: str | None = None,
-) -> _Authored:
-    """What ``debug-config`` would write, asked for rather than recomputed.
-
-    A target no debugger fits is not a failure of the editor: the folder, the
-    excludes and the terminals are the rest of the seat, and every mechanism
-    that said no was named on ``debug-config``'s stderr — which is relayed by
-    :func:`_author` whether or not a configuration came back with it.
-
-    :attr:`Provision.IF_NEEDED` is the whole of the retry. The seat has just
-    said, in its own words, that debugpy in the target is the blocker; consent
-    was given by the verb; so the second ask is the first one answered rather
-    than a second measurement of anything. It cannot loop — the retry runs with
-    :attr:`Provision.ALWAYS`, and only a run that did *not* provision reports
-    itself unprovisioned.
-
-    The retry falls back to what the first run authored, which it did not have
-    to do while the trigger was a refusal: back then the first run had no
-    configurations by definition, so there was nothing to lose. Now it often
-    has good ones whose only fault is a closed port — and the command that
-    opens that port by hand was relayed along with them. A provisioning run
-    that then fails on egress or on the injection must not take them with it,
-    or widening the trigger would be a regression for the very case it was
-    widened to serve.
-    """
-    first = _author(
-        kubectl, seat, report, provision=provision is Provision.ALWAYS, dest=dest
-    )
-    if not first.wants_provisioning:
-        return first
-    if provision is not Provision.IF_NEEDED:
-        report(_PROVISION_REMEDY)
-        return first
-    report(_PROVISION_NEEDED)
-    retried = _author(kubectl, seat, report, provision=True, dest=dest)
-    # The fallback is per *field*: a provisioning run that failed on egress
-    # still measured the target, and the interpreter it named is the same file
-    # either way, so each answer comes from whichever run had one.
-    #
-    # `withheld` is the one case it must not fire on. The retry proved, with a
-    # DAP `initialize`, that no session can be started - and the first run's
-    # configurations name a port *it* never started a server on either, so
-    # falling back to them writes the closed port #218 is about, having just
-    # been told not to (measured on p47, 2026-08-24, §8.2).
-    return _Authored(
-        configurations=(
-            retried.configurations
-            if retried.configurations or retried.withheld
-            else first.configurations
-        ),
-        interpreter=retried.interpreter or first.interpreter,
-        withheld=retried.withheld,
-    )
 
 
 def _author(
@@ -1132,94 +930,70 @@ def _author(
     seat: ContainerRef,
     report: Callable[[str], None],
     *,
-    provision: bool,
     dest: str | None = None,
 ) -> _Authored:
-    """One ``debug-config`` run, read for everything it said.
+    """Ask the seat which debuggers fit, and read everything it said.
 
-    ``wants_provisioning`` is the thing :func:`_configurations` needs that a
-    list of configurations cannot carry: "empty" is the same answer for a
-    target with no debugger, a seat that could not run the verb at all, and a
-    Python workload one ``uv pip install`` away from working. Reading
-    :data:`PROVISION_FLAG` out of the seat's own stderr keeps the three apart
-    without this side of the wire guessing the target's language.
+    A target no debugger fits is not a failure of the editor: the folder, the
+    excludes and the terminals are the rest of the seat, and every mechanism
+    that said no was named on ``debug-config``'s stderr — which is relayed
+    whether or not a configuration came back with it. That narration is also
+    where a reader learns that the debug step will need ``--provision``, which
+    is the one thing this side of the wire cannot work out for itself.
 
-    Which is why it is read on a **successful** run too, and not only on a
-    refusal. Provisioning answers two blockers, not one: a target that cannot
-    import debugpy gets no configuration at all, and a target that *can* gets
-    one whose port has nothing behind it until the injection is run. Only the
-    first is a non-zero exit. Keying the retry on the exit code therefore left
-    the second — every Python workload shipping its own debugpy, which is most
-    of them — with a launch.json whose F5 met a closed port, from the one verb
-    that exists to hand over a debuggable target (measured against a Diamond
-    IOC, 2026-08-21). The flag in the narration is the seat's own request, and
-    it is the same request either way.
+    Nothing is provisioned from here, so there is no retry and no second run:
+    the assessment happens exactly once, and the extensions installed cannot
+    come from two measurements of the same target.
 
-    ``not provision`` is what keeps it from looping, and it is the whole of
-    that guarantee: a provisioning run's stderr names the flag on every line it
-    narrates, so the guard has to be here rather than in the caller.
+    ``dest`` is spelled ahead of nothing, for the reasons on
+    :data:`PROVISION_DEST_FLAG`: it is a *search* path on this run, not an
+    install destination, and it is what lets a window opened after the debug
+    step find the debugpy that step installed.
 
-    ``dest`` is spelled ahead of :data:`PROVISION_FLAG` and on both runs, for
-    the reasons on :data:`PROVISION_DEST_FLAG`. It cannot disturb the guard
-    above: ``wants_provisioning`` reads the seat's *stderr*, not the argv it was
-    sent.
-
-    The interpreter comes off the same stderr and for the same reason, one
-    layer further on: the seat measured it, ``--print-config``'s stdout may not
-    carry a key that is not a launch document's (see
-    :func:`podbench.vscode.launch_json_text`), and it is read on a failed run
-    too - a target no debugger fits still has an
-    interpreter, and the popup it answers is raised by the window regardless.
+    The interpreter comes off the same stderr and for the same reason:
+    ``--print-config``'s stdout may not carry a key that is not a launch
+    document's (see :func:`podbench.vscode.launch_json_text`), and it is read on
+    a failed run too — a target no debugger fits still has an interpreter, and
+    the popup it answers is raised by the window regardless.
     """
     argv = [
         *DEBUG_CONFIG_ARGV,
         *([PROVISION_DEST_FLAG, dest] if dest is not None else []),
-        *([PROVISION_FLAG] if provision else []),
     ]
-    if provision:
-        report(_PROVISION_NOTICE)
     result = kubectl.exec_(
         seat.pod.name,
         argv,
         container=seat.container,
         check=False,
-        # An assessment answers in a moment; a provisioning run installs.
-        timeout=PROVISION_TIMEOUT if provision else DEFAULT_CALL_TIMEOUT,
+        timeout=DEFAULT_CALL_TIMEOUT,
     )
     relayed = _relay(result.stderr, report)
-    wants_provisioning = not provision and PROVISION_FLAG in result.stderr
     interpreter = _narrated_interpreter(result.stderr)
-    # Read on a failed run too, and for the reason the exit code is not enough:
-    # a pod whose only candidate is the withdrawn one emits nothing at all, and
-    # that is exactly the run whose answer must not be replaced by an earlier
-    # one.
-    withheld = WITHHELD_NOTE in result.stderr
     if result.returncode != 0:
         # The last line only when there was nothing to relay - a `podbench` the
         # image does not resolve exits 127 with sh's message and no narration,
         # and that message is the whole diagnosis.
         report(
-            f"{WARN} no launch.json: nothing above could be turned into one"
+            f"{WARN} {_NO_EXTENSION}: nothing above could be turned into a "
+            "configuration"
             if relayed
-            else f"{WARN} no launch.json: {_detail(result.stderr)}"
+            else f"{WARN} {_NO_EXTENSION}: {_detail(result.stderr)}"
         )
-        return _Authored([], wants_provisioning, interpreter, withheld)
+        return _Authored([], interpreter)
     document: Any
     try:
         document = json.loads(result.stdout)
     except ValueError as error:
-        report(f"{WARN} no launch.json: debug-config printed no JSON ({error})")
-        return _Authored([], interpreter=interpreter, withheld=withheld)
+        report(f"{WARN} {_NO_EXTENSION}: debug-config printed no JSON ({error})")
+        return _Authored([], interpreter)
     if not isinstance(document, dict):
-        report(f"{WARN} no launch.json: debug-config printed no JSON object")
-        return _Authored([], interpreter=interpreter, withheld=withheld)
+        report(f"{WARN} {_NO_EXTENSION}: debug-config printed no JSON object")
+        return _Authored([], interpreter)
     raw: Any = as_dict(document).get("configurations")
     entries = cast("list[Any]", raw) if isinstance(raw, list) else []
     return _Authored(
         [as_dict(entry) for entry in entries if isinstance(entry, dict)],
-        wants_provisioning,
         interpreter,
-        withheld,
     )
 
 
@@ -1372,98 +1146,3 @@ Both say *unmeasured* rather than "fine" or "broken": this run could not see the
 file, and the copy that decides whether the next folder ends the seat was
 written by something else, at a different time.
 """
-
-
-def _merge_into(
-    kubectl: Kubectl,
-    seat: ContainerRef,
-    path: str,
-    merge: Callable[[str | None], str | None],
-    report: Callable[[str], None],
-) -> tuple[str, bool] | None:
-    """Apply ``merge`` to the seat's copy of ``path``, adding never replacing.
-
-    A refusal to parse is reported and the file left alone, which is
-    :func:`podbench.vscode.merge_machine_settings`'s rule and for its reason:
-    rewriting a file would discard whatever this parser could not see. These are
-    JSONC — the folder this opens on a hotfixed pod is the application's own
-    checkout, and it ships its ``.vscode`` committed — so a comment or a trailing
-    comma is read rather than refused, and only text that is not JSONC either
-    reaches this branch.
-
-    Returns the file's own name and whether it changed, rather than reporting
-    a line per file: three consecutive ``wrote …/.vscode/<name>.json`` lines,
-    each carrying the same directory, is three lines of one fact. The caller
-    says it once. Only the refusal is reported from here, because a file left
-    exactly as it is is the one outcome the reader has to act on.
-    """
-    try:
-        text = merge(_read(kubectl, seat, path))
-    except ValueError as error:
-        report(f"{WARN} {path} left exactly as it is: {error}")
-        return None
-    if text is None:
-        return path.rsplit("/", 1)[-1], False
-    _write(kubectl, seat, path, text)
-    return path.rsplit("/", 1)[-1], True
-
-
-def _read(kubectl: Kubectl, seat: ContainerRef, path: str) -> str | None:
-    """The seat's copy of ``path``, or ``None`` if it has none.
-
-    The ``test`` is what separates the two, and a bare ``cat`` cannot: it exits
-    non-zero both for a file that is not there and for one it could not read,
-    and reading the second as the first turns :func:`_merge_into`'s merge into a
-    replacement of whatever the seat was already carrying. Anything else is
-    raised rather than guessed at.
-    """
-    result = kubectl.exec_(
-        seat.pod.name,
-        ["sh", "-c", f"test -e {quote(path)} || exit {_ABSENT}; cat {quote(path)}"],
-        container=seat.container,
-        check=False,
-    )
-    if result.returncode == _ABSENT:
-        return None
-    if result.returncode != 0:
-        raise EditorError(
-            f"cannot read {path} in the seat: {_detail(result.stderr)}. podbench "
-            "adds to that file rather than replacing it, so one it cannot read "
-            "stops the run instead of being overwritten with podbench's own "
-            "copy."
-        )
-    return result.stdout
-
-
-def _write(kubectl: Kubectl, seat: ContainerRef, path: str, text: str) -> None:
-    """Put ``text`` at ``path`` in the seat, creating its directory.
-
-    The content goes over stdin rather than into the command line: these are
-    JSON documents, and an argv that has to survive both this shell and
-    ``kubectl``'s own handling is a quoting bug waiting for the first path with
-    a quote in it. Note what the shell does *not* do — no redirection of stderr,
-    which would tear down the CRI exec stream and truncate the write with a zero
-    exit (report 3.1).
-
-    A refusal ends the run with a sentence rather than with ``kubectl``'s
-    argv, and ends it *before* the folder opens: the first of these files is the
-    exclude list, and a window opened without it is the walk that OOMs a seat
-    which cannot be restarted.
-    """
-    directory = path.rsplit("/", 1)[0]
-    result = kubectl.exec_(
-        seat.pod.name,
-        ["sh", "-c", f"mkdir -p {quote(directory)} && cat > {quote(path)}"],
-        container=seat.container,
-        stdin=text,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise EditorError(
-            f"cannot write {path} in the seat: {_detail(result.stderr)}. A "
-            "read-only root filesystem, or a home owned by a uid this seat does "
-            "not run as, is the usual cause - `--mount` a writable volume, or "
-            "land a seat whose home it can write. Nothing is opened: without "
-            f"{VSCODE_DIR}/settings.json the window walks /proc/<pid>/root and "
-            "ends the seat."
-        )

@@ -2363,14 +2363,13 @@ def _hint(
     something authoring a launch.json may do on its own, since it ptraces the
     workload and leaves a server inside it.
 
-    ``--provision`` is named here, and that is load-bearing rather than
-    politeness: :func:`podbench.editor._author` reads the flag out of this
-    stderr to decide whether ``podbench vscode`` should answer the need itself.
-    Until it was named, a target that could *already* import debugpy took the
-    prerequisites-met path straight past ``Provision.IF_NEEDED`` — the trigger
-    was the install blocker alone — and the verb whose whole contract is a
-    debuggable target emitted a launch.json pointing at a closed port. Measured
-    on a Diamond IOC, 2026-08-21.
+    ``--provision`` is named here for a reader who has just run this verb
+    without it, and it is the *second* of debugpy's two blockers: a target that
+    can already import debugpy meets every prerequisite, so the configuration is
+    emitted and nothing is listening on the port it connects to. Both blockers
+    have one answer and it is this flag. Since #230 nothing on the laptop reads
+    this line to decide anything - ``podbench vscode`` offers the step and the
+    reader runs it - so what it owes is a person, not a parser.
 
     The seat is named too, because on this pod's shape it is ambiguous: the
     workload's venv and the seat's are both ``/app/.venv``, so the interpreter

@@ -52,7 +52,6 @@ from .editor import (
     OK,
     WARN,
     EditorError,
-    Provision,
     is_step,
     open_seat,
     resolve_editor,
@@ -103,7 +102,7 @@ from .model import (
     measured_rung,
 )
 from .proc import Credentials
-from .provision import PROVISION_DEST, claim_destination
+from .provision import claim_destination
 from .resize import (
     CPU,
     EDITOR_HEADROOM,
@@ -258,6 +257,8 @@ __all__ = [
     "is_hotfixed",
     "runs_hotfix_supervisor",
     "shares_workload_volume",
+    "DEBUG_COMMAND",
+    "debug_command",
     "DEV_SIDECAR_PROVISION_NOTE",
     "DEV_SIDECAR_REUSED_NOTE",
     "OTHER_MODES_NOTE",
@@ -876,27 +877,18 @@ does not mount it lands the same way. ``session.hotfixed`` is true in all three
 while there is nothing on the claim's path to open, and opening it anyway would
 put an editor on an empty directory in the seat's own rootfs."""
 
-PROVISION_DEST_CLAIM_NOTE = (
-    "any debugpy this run installs goes to {dest} on the claim, not {default}: "
-    "on a hotfixed pod that is the tree the seat shares with the target and can "
-    "write without being root"
-)
-"""Said when ``--provision`` is pointed at the claim rather than at ``/opt``.
+DEBUG_COMMAND = "podbench debug-config"
+"""The step that turns a seat into a debugger, and the whole of what it costs.
 
-The third unasked-for answer in this command, and it gets a line for
-:data:`HOTFIX_CLAIM_MOUNTED_NOTE`'s reason: a destination podbench chose is only
-acceptable if the output names it, and this one decides where 15 MB lands in
-somebody's PVC.
+Since #230 podbench authors no ``launch.json`` of its own: the verb writes one
+into ``.vscode/`` of whatever directory it is run from, which is the folder the
+window opened, and it writes it *when asked* rather than at window-open. That is
+what makes it correct across a restart — every configuration podbench can author
+is pid-keyed, and a restart changes the pid — and it is why this is an offer in
+``next`` rather than a step in ``editor``.
 
-Conditional, because the run is: ``--provision`` installs only where the seat
-says debugpy is the blocker, so a target that ships its own is never written to
-and a line promising an install would be reporting an event that did not
-happen. The destination still matters there - it is also the extra path
-``debug-config`` searches for the target's own copy.
-
-Only where the claim won. The default is what every pod without the layout has
-always used, and a line saying so on all of them would be an announcement that
-nothing happened."""
+:func:`debug_command` is what a caller that can see the pod spells it with.
+"""
 
 HOTFIX_CLAIM_UNMOUNTABLE_NOTE = (
     "this pod carries the hotfix layout, but the claim could not be mounted "
@@ -1192,8 +1184,8 @@ def seat_claim_path(
 
 def provision_destination(
     session: Session, seat_spec: Mapping[str, Any] | None
-) -> tuple[str | None, str | None]:
-    """Where ``--provision`` should install debugpy, and the line that says why.
+) -> str | None:
+    """Where the debug step should install debugpy on this pod.
 
     ``None`` is "whatever the seat's own default is"
     (:data:`podbench.provision.PROVISION_DEST`), and it is deliberately not the
@@ -1227,12 +1219,71 @@ def provision_destination(
     silently changed after a refusal would turn a permissions bug into a mystery
     about which path is live, and ``flavour._target_debugpy`` searches exactly
     one extra path on the next run.
+
+    Nothing podbench runs installs debugpy any more (#230), so this answers two
+    questions rather than one: it is spelled into the step
+    :func:`debug_command` offers, and it is passed to the *assessment* run as
+    the extra path ``debug-config`` searches for a copy an earlier step already
+    installed (``editor.PROVISION_DEST_FLAG``).
     """
     folder = seat_claim_path(session, seat_spec)
-    if not folder:
-        return None, None
-    dest = claim_destination(folder)
-    return dest, PROVISION_DEST_CLAIM_NOTE.format(dest=dest, default=PROVISION_DEST)
+    return claim_destination(folder) if folder else None
+
+
+def debug_command(
+    session: Session,
+    seat_spec: Mapping[str, Any] | None,
+    *,
+    dev_pod: bool = False,
+) -> str:
+    """The debug step for *this* pod, ready to paste into the seat's terminal.
+
+    Three shapes, and every difference between them is a fact only the launcher
+    holds:
+
+    >>> from dataclasses import replace
+    >>> from podbench.model import ContainerRef, PodRef, Rung
+    >>> seat = ContainerRef(PodRef("demo", "api"), "podbench-1")
+    >>> plain = Session(seat=seat, workload="app", rung=Rung.FULL, reused=False)
+    >>> debug_command(plain, None)
+    'podbench debug-config --provision'
+    >>> debug_command(plain, None, dev_pod=True)
+    'podbench debug-config'
+    >>> hotfixed = replace(plain, hotfixed=True)
+    >>> mount = {"volumeMounts": [{"name": HOTFIX_CLAIM_VOLUME, "mountPath": "/app"}]}
+    >>> debug_command(hotfixed, mount)
+    'podbench debug-config --provision --provision-dest /app/.podbench-debugpy'
+
+    ``--provision`` is spelled by default because the common target is a Python
+    workload that cannot import debugpy, and a step offered without it lands the
+    reader on the refusal rather than on a debugger. It is dropped on a dev pod
+    for :data:`DEV_SIDECAR_PROVISION_NOTE`'s reason — there is no live target to
+    inject into, and the launch configuration needs none.
+
+    ``--provision-dest`` is spelled only where podbench had to choose one
+    (:func:`provision_destination`), so the offer on a pod with no hotfix layout
+    is the shortest true command rather than one carrying podbench's own default
+    back to it.
+
+    Composed here rather than left to the reader because every part of it is
+    something the seat cannot work out and the user should not have to: on a
+    hotfixed pod the seat's own destination is a root-owned ``/opt`` that the
+    degraded rung cannot write, and the whole cascade behind that — no
+    importable debugpy, no configuration, no adapter — follows from one
+    ``EACCES``.
+
+    No pid. ``debug-config`` picks the best candidate itself, and ``podbench
+    pids`` is how a reader chooses another; naming one here would guess at the
+    moment the guess is least likely to survive, since a restart changes it.
+    """
+    dest = provision_destination(session, seat_spec)
+    return " ".join(
+        [
+            DEBUG_COMMAND,
+            *([] if dev_pod else ["--provision"]),
+            *([] if dest is None else ["--provision-dest", dest]),
+        ]
+    )
 
 
 def is_dev_pod(pod_json: Mapping[str, Any]) -> bool:
@@ -1815,12 +1866,12 @@ the user typed.
 """
 
 DEV_SIDECAR_PROVISION_NOTE = (
-    "not provisioning: this is Iterate mode's seat, where the application is "
-    "launched from the seat rather than found running in another container. "
-    "There is no live target to install debugpy into, and the launch "
-    "configuration needs none"
+    "the debug step below needs no `--provision` here: this is Iterate mode's "
+    "seat, where the application is launched from the seat rather than found "
+    "running in another container, so there is no live target to install "
+    "debugpy into and the launch configuration needs none"
 )
-"""Why ``vscode`` spends nothing on provisioning a dev pod.
+"""Why the offer :func:`debug_command` composes is shorter on a dev pod.
 
 Not a decline that could have gone the other way: provisioning targets a running
 process in the *workload* container, and :func:`podbench.spec.dev_pod_spec` idles
@@ -1831,6 +1882,10 @@ Both halves of provisioning - the debugpy install and the server injection - are
 "there is no live target", so the line says it once. That Iterate mode's launch
 configuration starts the interpreter under the debugger instead is
 :mod:`podbench.vscode`'s to author and the how-to's to explain.
+
+Said at all because an offer that quietly differs between two pods teaches the
+reader nothing: the flag is missing here for a reason, and the reason is not
+that podbench forgot it.
 """
 
 OTHER_OWNER_WARNING = (
@@ -4761,6 +4816,7 @@ def emit_ssh_config(
     user: str | None = None,
     print_config: bool = False,
     opening: bool = False,
+    debug_command: str = DEBUG_COMMAND,
 ) -> SshSeat:
     """Generate the client stanza for a landed seat, and write it.
 
@@ -4777,11 +4833,17 @@ def emit_ssh_config(
     when the seat was never asked, or answered with an image too old to know the
     flag.
 
-    ``opening`` drops the closing "run ``podbench debug-config`` in the seat"
-    line, because ``vscode`` is about to run it and say what it got. Only that
-    one line: the alias, the ``Include`` and the ssh command are what the reader
-    needs whether or not a window opens, and that verb's own exit code is not
-    evidence the window connected.
+    ``opening`` changes only the alias line's tense: ``vscode`` prints this
+    block *after* opening a window, so the alias is what a later reconnect
+    needs rather than what to do now.
+
+    ``debug_command`` is the debug step this pod's reader should paste, and it
+    is the caller's to compose because only the caller knows the pod: on a
+    hotfixed one the seat's own ``--provision`` destination is unwritable (see
+    :func:`debug_command`). It is offered on **every** path, including
+    ``opening``, which is the whole of issue #230's second half — the step used
+    to be suppressed here because ``vscode`` ran ``debug-config`` itself, and it
+    no longer does.
     """
     if session.ssh is not None and session.ssh.refused:
         # Nothing below can help: sshd resolves the login name before it looks
@@ -4859,21 +4921,15 @@ def emit_ssh_config(
                     else f"then:  ssh {alias}   "
                     f"(or Remote-SSH: Connect to Host -> {alias})"
                 ),
-                # The VS Code debugger needs a launch.json whose pid,
-                # sysroot-prefixed program and setup ordering are all things
-                # this launcher already knows and a human cannot guess; every
-                # wrong answer fails silently rather than erroring. Dropped
-                # under `vscode`, which runs that verb itself a few lines further
-                # down and reports what it actually got: a step the reader has
-                # already had done for them reads as a step that did not happen.
-                *(
-                    []
-                    if opening
-                    else [
-                        "to debug in VS Code, run `podbench debug-config` in the "
-                        "seat (writes .vscode/launch.json)"
-                    ]
-                ),
+                # An offer, in the shape `console` recognises: two spaces mark
+                # the right-hand half as pasteable, and it is printed verbatim
+                # however long it runs, because a wrap through a command is a
+                # command that cannot be selected. Nothing podbench runs writes
+                # a launch.json any more (#230), so this is the only place the
+                # debugger is named at all - and it is one line rather than the
+                # sentence it used to be, because the reader's next action is
+                # the whole of it.
+                f"to debug, in the seat:  {debug_command}",
             ]
         ),
         alias=alias,
@@ -6504,7 +6560,6 @@ def _open_editor(
     wiring: SshSeat,
     *,
     editor: str,
-    provision: Provision,
     runner: Runner | None,
     seat_spec: Mapping[str, Any] | None = None,
 ) -> None:
@@ -6526,6 +6581,11 @@ def _open_editor(
     Each line is printed as it arrives rather than collected: the extension
     install bootstraps vscode-server in the seat, which is a download, and a
     progress report that appears only once it has finished is not one.
+
+    Nothing here writes into that folder or installs anything into the target
+    (#230). The destination still travels, because on the assessment run it is
+    a *search* path rather than an install one; :func:`debug_command` spells the
+    same value into the step the reader is offered.
     """
     if wiring.alias is None:
         raise EditorError(
@@ -6536,7 +6596,6 @@ def _open_editor(
     emit("editor")
     home = seat_layout(session).home
     folder, why = editor_folder(session, seat_spec)
-    provision_dest, why_dest = provision_destination(session, seat_spec)
     if why is not None:
         # Before the steps rather than after: this is the decision every one of
         # them is carried out against, and `open_seat` reports the folder it
@@ -6547,12 +6606,6 @@ def _open_editor(
         # won, because nothing went wrong - the answer was simply not the one
         # the command line asked for.
         _editor_step(f"{WARN if folder == home else OK} {why}")
-    if why_dest is not None and provision is not Provision.NEVER:
-        # Beside the folder note and under the same rule, but silent under
-        # `--no-provision`: nothing will be installed on that run, and naming a
-        # destination nobody is going to write to is a step reporting an event
-        # that did not happen.
-        _editor_step(f"{OK} {why_dest}")
     open_seat(
         kubectl,
         session.seat,
@@ -6560,8 +6613,7 @@ def _open_editor(
         folder=folder,
         report=_editor_step,
         editor=editor,
-        provision=provision,
-        provision_dest=provision_dest,
+        provision_dest=provision_destination(session, seat_spec),
         runner=runner,
     )
 
@@ -6650,7 +6702,7 @@ def _build_app(
 
     @app.command(
         name="vscode",
-        help="land a seat sized and provisioned for an editor, and open it",
+        help="land a seat sized for an editor, and open a window on it",
     )
     def vscode_command(
         pod: _Pod = None,
@@ -6677,20 +6729,6 @@ def _build_app(
                 "one mutation this verb makes that `--resize MEMORY` would "
                 "otherwise have to be typed with a number. A pod that already "
                 "has the room is left alone either way",
-            ),
-        ] = False,
-        no_provision: Annotated[
-            bool,
-            typer.Option(
-                "--no-provision",
-                help="author whatever fits the target as it stands. Without it, "
-                "a Python workload gets debugpy installed where it cannot "
-                "import one, and its server started where nothing is listening "
-                "on the port the configuration connects to - the two ways a "
-                "target reaches F5 with no debugger behind it. Mutates the "
-                "workload: ~15 MB of shared ephemeral storage, needs egress "
-                "from the pod, ptraces the app for a few seconds, and no "
-                "restart survives it",
             ),
         ] = False,
         identity: _Identity = DEFAULT_IDENTITY,
@@ -6756,6 +6794,15 @@ def _build_app(
             print()
             emit("\n".join(paragraph(OTHER_MODES_NOTE, first="  ", indent="  ")))
         print()
+        # Iterate mode needs no provisioning at all: the seat launches the
+        # application itself, so debugpy is installed where the launch
+        # configuration needs it and there is no live process in the workload
+        # container to inject a server into - `dev_pod_spec` idles that
+        # container to `sleep` for exactly this reason. Injecting anyway would
+        # succeed against `sleep` and report a debugger nobody can reach. So the
+        # step this run offers is shorter here, and the note says why.
+        in_dev_pod = is_dev_pod(landed_pod)
+        seat_spec = ephemeral_container(landed_pod, session.seat.container)
         wiring = _wire(
             kube,
             session,
@@ -6765,15 +6812,9 @@ def _build_app(
             ssh_user=ssh_user,
             print_config=False,
             opening=True,
+            debug_command=debug_command(session, seat_spec, dev_pod=in_dev_pod),
         )
-        # Iterate mode is provisioned by construction, not by exec: the seat
-        # launches the application itself, so debugpy is installed where the
-        # launch configuration needs it and there is no live process in the
-        # workload container to inject a server into - `dev_pod_spec` idles that
-        # container to `sleep` for exactly this reason. Injecting anyway would
-        # succeed against `sleep` and report a debugger nobody can reach.
-        in_dev_pod = is_dev_pod(landed_pod)
-        if in_dev_pod and not no_provision:
+        if in_dev_pod:
             emit(
                 "\n".join(
                     paragraph(DEV_SIDECAR_PROVISION_NOTE, first="  ", indent="  ")
@@ -6786,13 +6827,8 @@ def _build_app(
                 kube,
                 session,
                 wiring,
-                seat_spec=ephemeral_container(landed_pod, session.seat.container),
+                seat_spec=seat_spec,
                 editor=editor,
-                provision=(
-                    Provision.NEVER
-                    if no_provision or in_dev_pod
-                    else Provision.IF_NEEDED
-                ),
                 runner=runner,
             )
             opened = True
@@ -7018,6 +7054,7 @@ def _wire(
     ssh_user: str | None,
     print_config: bool,
     opening: bool = False,
+    debug_command: str = DEBUG_COMMAND,
 ) -> SshSeat:
     """:func:`emit_ssh_config`, with the flags this CLI spells it with."""
     return emit_ssh_config(
@@ -7029,6 +7066,7 @@ def _wire(
         user=ssh_user,
         print_config=print_config,
         opening=opening,
+        debug_command=debug_command,
     )
 
 
