@@ -179,7 +179,7 @@ ssh config written to /home/you/.podbench/config.d/podbench-demo-web-6c9d7f4b8b-
 add this to ~/.ssh/config once:  Include /home/you/.podbench/config.d/*.conf
 or let podbench check and add it:  podbench doctor --fix
 then:  ssh podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1   (or Remote-SSH: Connect to Host -> podbench-podbench-demo-web-6c9d7f4b8b-hq2vn-1)
-to debug, in the seat:  podbench debug-config
+to debug, in the seat:  podbench debug-config --provision
 ```
 
 If you have not added the `Include` line yet, run `uvx podbench doctor --fix`

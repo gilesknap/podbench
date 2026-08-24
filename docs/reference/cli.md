@@ -566,9 +566,13 @@ Everything `attach` does, plus the things a VS Code session needs that a bare
 seat does not — which is why it is a verb and not a flag: `attach` adds a
 container to the pod and touches the workload not at all, and the resize does.
 
-Since #230 it **writes nothing into the folder it opens and installs nothing
-into the target**. Debugging is a step you run, and the run offers it: see
-`debug-config` below, and the offer line under `next`.
+Since #230 it **writes no project or claim file and installs nothing into the
+target**. The one file it writes is the seat's own machine settings,
+`~/.vscode-server/data/Machine/settings.json` — which on an ordinary pod is
+*below* the folder it opens, because that folder is the seat's home; the
+checkout, the claim and anything under them are untouched. Debugging is a step
+you run, and the run offers it: see `debug-config` below, and the offer line
+under `next`.
 
 ```
                                                                                                     

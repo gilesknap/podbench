@@ -34,7 +34,10 @@ took out of the filesystem. What the report keeps is what changes what the
 *editor* does: the extensions, the interpreter, and :data:`_UNASSESSED` when
 neither could be read.
 
-**This module writes nothing at all into the folder** (issue #230). D1b had
+**This module writes no project or claim file** (issue #230) - the one file it
+writes anywhere is :data:`MACHINE_SETTINGS`, the seat's own machine settings,
+which on a pod with no claim sits under the opened folder because that folder is
+the seat's home. D1b had
 already stopped ``settings.json`` and ``extensions.json``; ``launch.json`` was
 the remaining write, and it now happens only when the user asks for it by
 running ``podbench debug-config`` in the seat. What makes that more than

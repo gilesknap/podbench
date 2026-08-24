@@ -21,7 +21,7 @@ also **Python-only** and **single-replica only** — the claim is ReadWriteOnce
 and one checkout cannot serve two writers.
 :::
 
-Four verbs, in the order you run them:
+Five verbs, in the order you run them:
 
 ```text
 values   emit the chart values the mode needs, read off the target

@@ -624,7 +624,6 @@ podbench hotfix restart TARGET [--reinstall]
 │   mattering, which is what lets this work on a bare pod.         │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ▼
-                                  ▼
    cat /tmp/podbench-child.pid                       → the pid after
     │
     ▼
