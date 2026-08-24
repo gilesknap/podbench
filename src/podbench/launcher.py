@@ -418,11 +418,13 @@ EDITOR_RESIZE_NOTE = (
     "for the {needed} vscode-server measured. `--no-resize` declines it; "
     "`--resize MEMORY` chooses the number."
 )
-"""Why ``vscode`` raised a limit nobody typed, printed before it tries.
+"""Why ``vscode`` raised a limit nobody typed, standing in the report.
 
-Before, so that a refusal - which :func:`try_resize` reports on the next line -
-is read against the intent rather than as an act with no motive. The two are one
-mutation and they are two lines because the second is the one that can fail.
+The *intent*, which is the half that is still worth reading once the run is
+over: what came of the raise is printed by :func:`try_resize` at the moment it
+patches, above the report and before anything that could abort the run (D5).
+The two are one mutation and they are two lines because the second is the one
+that can fail.
 
 It states the intent and the new limit, not the shortfall that produced them:
 this line, :func:`try_resize`'s outcome and :data:`EDITOR_HEADROOM_WARNING` are
@@ -4891,6 +4893,12 @@ def try_resize(
     the controller that owns it (report R13): the raised limit is on the pod
     object alone, so the next thing to regenerate the pod from an unchanged
     template takes it away again with no other symptom than a seat that OOMs.
+
+    Returned rather than printed only so that the caller owns the stream. It is
+    printed *there and then* and not carried into the report: this is a mutation
+    to somebody's live pod, and a run that dies between the patch and the report
+    - which is what a lost conflict on the seat's write is (#136) - would
+    otherwise never mention it.
     """
     wants: dict[str, Want] = {}
     try:
@@ -6191,6 +6199,20 @@ _Timeout = Annotated[
 ]
 
 
+def _emit_warning(message: str) -> None:
+    """One warning, standing on its own rather than inside a report.
+
+    Same leader and hanging indent :func:`format_session` gives the ones it
+    carries, so a line printed before a report is read - and coloured, and
+    picked out of a paste - as the same kind of thing as the lines inside it.
+    """
+    emit(
+        "\n".join(
+            paragraph(message, first=f"{WARNING_LEAD}  ", indent=" " * WARNING_HANG)
+        )
+    )
+
+
 def _land(
     kubectl: Kubectl,
     pod: str,
@@ -6244,7 +6266,12 @@ def _land(
         # the pod as it stands at the moment it patches, and an explicit
         # `--resize` reaches here having read nothing at all.
         pod_json = kubectl.get_pod(pod)
-        warnings.append(
+        # Printed here, not folded into the report `attach` has yet to earn:
+        # `terminal-reports` puts a caveat about a mutation on the path that
+        # made it, and everything after this line can fail. The p47 run of
+        # 2026-08-24 raised a production pod from 256Mi to 6Gi, lost the seat to
+        # a conflict, and said nothing whatever about the 6Gi (#136).
+        _emit_warning(
             try_resize(
                 kubectl,
                 pod,
@@ -6710,15 +6737,7 @@ def _build_app(
             # true, and the readiness half is the one with no trace
             # afterwards.
             print()
-            emit(
-                "\n".join(
-                    paragraph(
-                        EDITOR_PROBE_REMINDER,
-                        first=f"{WARNING_LEAD}  ",
-                        indent=" " * WARNING_HANG,
-                    )
-                )
-            )
+            _emit_warning(EDITOR_PROBE_REMINDER)
         raise typer.Exit(0)
 
     @app.command(

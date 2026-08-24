@@ -6549,6 +6549,36 @@ def test_an_explicit_resize_beats_the_editors_default(
     assert "6Gi" not in out
 
 
+def test_a_resize_is_reported_by_the_run_that_made_it_not_by_the_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The mutation is announced before the seat that may never land (D5).
+
+    Measured on p47, 2026-08-24: a `vscode` run raised a production pod from
+    256Mi to 6Gi, lost its ephemeral-container write, and printed one line about
+    the write and nothing whatever about the 6Gi it had just spent - because the
+    outcome was a string folded into a report that was never reached. The
+    refusal here is an allow-listed uid rather than a conflict only because a
+    conflict is retried, and this test is about the reporting and not the wait.
+    """
+    cluster = FakeCluster(
+        limited_pod("4Gi"), top="target   1m   3Gi\n", allowed_uids=(36096,)
+    )
+    assert (
+        main(
+            vscode_argv(tmp_path, "--resize", "3Gi"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert "resized app to memory 3Gi" in " ".join(captured.out.split())
+    assert "--target-uid 36096" in captured.err
+    # No report at all: the seat never landed, which is the whole point.
+    assert "supports" not in captured.out
+
+
 def test_an_unmeasured_pod_is_told_that_nothing_sized_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
