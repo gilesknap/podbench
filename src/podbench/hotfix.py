@@ -1943,12 +1943,16 @@ def status_rows(
     and keep correct. Each pod is still read through a client bound to *its own*
     namespace: one ``-n`` wrong on an exec is a claim read out of the wrong pod.
     """
-    scope = ("get", "pods", "-o", "json")
     if all_namespaces:
-        # `--all-namespaces` wins over the `-n` in `base_argv`, which is
-        # kubectl's own rule and not a coincidence worth working around.
-        scope = ("get", "pods", "--all-namespaces", "-o", "json")
-    result = kube.run(*scope)
+        # No `-n` beside it. kubectl resolves `-n X --all-namespaces` in favour
+        # of the latter, so this is not a behaviour fix - it is what podbench
+        # can be quoted as having asked when the call is refused and its argv is
+        # relayed verbatim (evidence §5).
+        result = kube.run(
+            "get", "pods", "--all-namespaces", "-o", "json", cluster_wide=True
+        )
+    else:
+        result = kube.run("get", "pods", "-o", "json")
     rows: list[HotfixRow] = []
     for item in _as_list(_load_json(result.stdout).get("items")):
         pod_json = as_dict(item)

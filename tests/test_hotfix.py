@@ -125,7 +125,13 @@ class FakeRunner:
         # here rather than counted: this key is what every canned response is
         # matched on, and an offset that moved would match none of them.
         rest = [word for word in argv if not word.startswith("--request-timeout=")]
-        return " ".join(rest[3:])
+        # `-n demo` is matched rather than counted, because the one read that
+        # spans namespaces carries no `-n` at all: a fixed offset would leave
+        # `--all-namespaces` matching none of the canned responses.
+        rest = rest[1:]
+        if rest[:1] == ["-n"]:
+            rest = rest[2:]
+        return " ".join(rest)
 
     def __call__(
         self,
@@ -2121,6 +2127,26 @@ def test_status_across_namespaces_reads_each_pod_in_its_own() -> None:
     execs = [" ".join(argv) for argv in runner.calls if "exec" in argv]
     assert any("-n beam" in call and "api-7f9-abc" in call for call in execs)
     assert any("-n other" in call and "ioc-0" in call for call in execs)
+
+
+def test_the_cluster_wide_read_carries_no_namespace_flag() -> None:
+    """Evidence §5. The RBAC refusal relays the argv verbatim, and podbench's
+    carried both `-n p47-beamline` and `--all-namespaces`. kubectl resolves that
+    in favour of the latter, so the behaviour was right and the sentence was
+    not: the message read as podbench asking for two contradictory things."""
+    empty = json.dumps({"items": []})
+    runner = FakeRunner(
+        {"get pods --all-namespaces -o json": empty, "get pods -o json": empty}
+    )
+
+    hotfix.status_rows(kube(runner), probe=False, all_namespaces=True)
+
+    listing = next(argv for argv in runner.calls if "--all-namespaces" in argv)
+    assert "-n" not in listing
+    # And the namespace-scoped listing is unchanged.
+    hotfix.status_rows(kube(runner), probe=False)
+    scoped = [argv for argv in runner.calls if "--all-namespaces" not in argv]
+    assert ["-n", "demo"] == [word for word in scoped[-1] if word in ("-n", "demo")]
 
 
 def test_the_cluster_wide_listing_reassures_about_the_cluster() -> None:
