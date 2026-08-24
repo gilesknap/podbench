@@ -1539,6 +1539,27 @@ def test_a_row_that_is_ahead_still_names_the_base_it_is_ahead_of() -> None:
     assert HEAD_SHA[:7] in report
 
 
+def test_a_manifest_recording_no_sha_at_all_still_says_unknown() -> None:
+    """The equality is vacuous when neither sha is there.
+
+    Dropping the repeated sha keys on `commit == base_commit`, and a manifest
+    carrying neither satisfies that by accident - which turned `base ?`, the one
+    place the line admitted it could not say, into "on its base commit", an
+    identity nobody measured.
+    """
+    row = hotfix.HotfixRow(
+        pod=hotfix.PodRef("demo", "api-7f9-abc"),
+        manifest=a_manifest(commit="", base_commit=""),
+        health=hotfix.HotfixHealth.ACTIVE,
+        detail="",
+    )
+
+    report = hotfix.format_status([row])
+
+    assert "base ?" in report
+    assert "on its base commit" not in report
+
+
 def test_status_ignores_pods_without_a_hotfix() -> None:
     runner = FakeRunner({"get pods -o json": json.dumps({"items": [pod_json()]})})
     assert hotfix.status_rows(kube(runner)) == []

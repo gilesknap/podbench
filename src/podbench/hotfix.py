@@ -2088,10 +2088,15 @@ def format_status(rows: Sequence[HotfixRow], *, all_namespaces: bool = False) ->
             # column: at `+0` the claim is *at* its base, so repeating it says
             # nothing the column did not. What is left is the provenance, which
             # is the half of this line that appears nowhere else.
+            #
+            # Guarded on the sha being there at all: with neither recorded the
+            # two are equal by vacuity, and "on its base commit" would assert an
+            # identity nobody measured in the one place the old `base ?` said
+            # so.
             base = (
-                f"base {manifest.base_commit[:7] or '?'}"
-                if manifest.commit != manifest.base_commit
-                else "on its base commit"
+                "on its base commit"
+                if manifest.base_commit and manifest.commit == manifest.base_commit
+                else f"base {manifest.base_commit[:7] or '?'}"
             )
             lines.append(
                 f"{_ROW_INDENT}{base} · "
