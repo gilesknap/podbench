@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.7.3.dev50+g75e5ef79a documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.7.3.dev58+g5b135814a documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=70867c76"></script>
+    <script src="../_static/documentation_options.js?v=4251cbfd"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -672,9 +672,9 @@ your laptop. See <a class="reference internal" href="../reference/cli.html"><spa
 refusals.</p>
 <p><strong>It sizes the pod.</strong> vscode-server measured 1215 MiB live with one extension,
 and the headroom that decides is read on every attach anyway — so where this pod
-has less, the target’s memory limit is raised by the shortfall before the seat
-lands, rounded up to the next whole GiB, and the number and the reading are both
-printed. <code class="docutils literal notranslate"><span class="pre">--resize</span> <span class="pre">MEMORY</span></code> chooses the number yourself; <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> declines
+has less, the target’s memory limit is raised to a flat 6Gi before the seat
+lands, and the number and the reading are both printed. Flat, so a second
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> against the same pod is a no-op rather than another raise. <code class="docutils literal notranslate"><span class="pre">--resize</span> <span class="pre">MEMORY</span></code> chooses the number yourself; <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> declines
 the raise and keeps the warning. Read <a class="reference internal" href="attach-to-a-pod.html"><span class="std std-doc">Attach to a pod</span></a> on
 what an in-place resize costs — chiefly that it lives on the pod and not on its
 controller, so the next rollout takes it away.</p>
@@ -817,6 +817,21 @@ since without the server there is nothing to connect to.</p>
 <p>Baking <code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> into the app is the durable answer, and the only one
 that survives a restart. Provisioning is for the pod that is already
 misbehaving.</p>
+<p>On a <strong>hotfixed</strong> pod the default destination is not <code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code>,
+and cannot be. The seat there runs at the target’s own uid with no capabilities,
+<code class="docutils literal notranslate"><span class="pre">/opt</span></code> in the target is a root-owned <code class="docutils literal notranslate"><span class="pre">0755</span></code> directory, and the install is
+refused by ordinary file permissions — which costs the whole cascade behind it:
+no importable debugpy, no configurations, no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>, and no debug adapter
+installed into the seat either. So <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> installs into
+<code class="docutils literal notranslate"><span class="pre">&lt;claim&gt;/.podbench-debugpy</span></code> instead, where the claim is mounted, and names it in
+the <code class="docutils literal notranslate"><span class="pre">editor</span></code> block beside the folder it opened. That path is writable by the
+seat, is the same directory in both mount namespaces, and is a volume, so this
+is also the case where the install outlives a restart. There is deliberately no
+fallback in either direction: a destination that changed after a refusal would
+leave you guessing which one is live. A seat in a hotfixed pod that does not
+carry the claim mount keeps <code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code> — the claim is the same
+directory in both mount namespaces only where both containers mount it, and
+podbench decides this on the mount rather than on the assumption.</p>
 <p>A <strong>bare</strong> <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> in the seat, with no <code class="docutils literal notranslate"><span class="pre">--provision</span></code>, still only prints
 the injection command rather than running it: that really is authoring a
 <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> and nothing more, and ptracing the workload is not something it
@@ -1153,11 +1168,13 @@ from a folder at <code class="docutils literal notranslate"><span class="pre">$H
 absolute paths and do work from either scope. Machine scope is what covers the
 folder you open <em>next</em> — including the <code class="docutils literal notranslate"><span class="pre">/</span></code> that starts the walk with no bottom —
 which is why both copies exist.</p>
-<p>Settings you have written yourself are never overwritten. The agent adds only
-the keys that are missing, so a deliberate <code class="docutils literal notranslate"><span class="pre">&quot;**/proc/**&quot;:</span> <span class="pre">false</span></code> survives, and a
-file it cannot parse — VS Code allows comments in <code class="docutils literal notranslate"><span class="pre">settings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">json</span></code> does
-not — is left exactly as it is, with the reason reported by
-<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span> <span class="pre">--self-check</span></code> and in the container’s start-up output.</p>
+<p>Settings you have written yourself are never overwritten. The file is read as
+JSONC — comments and a trailing comma, which is what VS Code writes and what a
+real project commits — and edited in place, so the agent adds only the keys that
+are missing and everything else, comments included, stays where you put it. A
+deliberate <code class="docutils literal notranslate"><span class="pre">&quot;**/proc/**&quot;:</span> <span class="pre">false</span></code> survives. A file that is not JSONC either is
+left exactly as it is, with the reason reported by <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span> <span class="pre">--self-check</span></code>
+and in the container’s start-up output.</p>
 <p>The one thing that removes them is Remote-SSH’s <strong>Kill/Uninstall VS Code Server
 on Host</strong>, which deletes <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> wholesale. Nothing rewrites the file
 until the agent next starts, so re-attach (<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--new</span></code>) or re-create

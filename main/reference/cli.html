@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.7.3.dev50+g75e5ef79a documentation</title>
+    <title>Command-line reference &#8212; podbench 0.7.3.dev58+g5b135814a documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=70867c76"></script>
+    <script src="../_static/documentation_options.js?v=4251cbfd"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1208,12 +1208,17 @@ below are its own. (<code class="docutils literal notranslate"><span class="pre"
 <p>vscode-server measured <strong>1215 MiB</strong> live with a single extension, which does not
 fit in most of the pods it is aimed at. The headroom that decides is read on
 every attach already, so the verb uses it rather than asking for it back: where
-the free memory is under that figure, the <em>target’s</em> memory limit is raised by
-the shortfall, rounded up to the next whole GiB, before the seat lands.</p>
+the free memory is under that figure, the <em>target’s</em> memory limit is raised to a
+flat <strong>6Gi</strong> before the seat lands.</p>
 <p>The target’s limit, because it is the only one a seat can move — an ephemeral
 container may not declare <code class="docutils literal notranslate"><span class="pre">resources</span></code> at all (report 3.9), so it lives in the
 pod’s cgroup and the pod’s ceiling is the sum of its containers’ limits. Raising
-the target by the shortfall therefore raises that ceiling by the same amount.</p>
+the target therefore raises that ceiling by the same amount.</p>
+<p>The target is flat rather than computed, because the memory a computed one reads
+is the memory the editor is spending: the shortfall arithmetic this replaces
+took one pod from 1Gi to 2Gi over two runs, and would have gone again on a
+third. A pod already at or above 6Gi is left alone rather than shrunk, and a
+second <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> against a pod the first one sized changes nothing.</p>
 <p>It says both the reading and the number it chose, and the raise carries every
 caveat <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--resize</span></code> carries — chiefly that the raised limit lives on the
 pod and not on its controller, so the next rollout silently reverts it.</p>
@@ -1336,8 +1341,9 @@ the report above prints); and a restart of the target container ends the
 debugging. The two halves do not expire together: the <strong>server</strong> never
 survives a restart, being a live process in the container that died, while the
 <strong>install</strong> survives one where <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> names a volume mounted into
-the target — an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> is pod-scoped and outlives a container — and not at
-the default <code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code>, which is the container’s own writable
+the target — an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> is pod-scoped and outlives a container, and so does a
+hotfixed pod’s claim, which is where this verb installs on one — and not at the
+default <code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code>, which is the container’s own writable
 layer. Either way the next step is another <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code>, since without the
 server nothing is listening. Installing debugpy into the app image, or baking
 <code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> into the app, is the durable answer.</p>
@@ -2326,9 +2332,10 @@ pod still gets its configurations, and the file is still written.</p>
 importable <strong>by the target</strong>: the bootstrap runs in the target’s interpreter,
 and the path debugpy injects is the one the <em>driver</em> sees, so
 <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root/...</span></code> is the only spelling valid in both mount namespaces. The
-seat can supply it — it ships <code class="docutils literal notranslate"><span class="pre">uv</span></code>, live attach already requires <code class="docutils literal notranslate"><span class="pre">runAsUser:</span> <span class="pre">0</span></code>,
-and <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is the target’s own filesystem — so the refusal prints
-the command rather than asking for an image rebuild:</p>
+seat can supply it — it ships <code class="docutils literal notranslate"><span class="pre">uv</span></code>, and <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is the target’s own
+filesystem, which the seat writes into wherever the target’s own ownership and
+modes let it — so the refusal prints the command rather than asking for an image
+rebuild:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">uv</span> <span class="n">pip</span> <span class="n">install</span> <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">cache</span> <span class="o">--</span><span class="n">python</span><span class="o">-</span><span class="n">version</span> <span class="mf">3.12</span> <span class="o">--</span><span class="n">target</span> <span class="o">/</span><span class="n">proc</span><span class="o">/</span><span class="mi">1</span><span class="o">/</span><span class="n">root</span><span class="o">/</span><span class="n">opt</span><span class="o">/</span><span class="n">podbench</span><span class="o">-</span><span class="n">debugpy</span> <span class="n">debugpy</span>
 </pre></div>
 </div>
@@ -2355,11 +2362,11 @@ the flag it probes the destination for writability first and names what refuses:
 <tr class="row-even"><td><p>network egress from the pod</p></td>
 <td><p>uv resolves and downloads from an index; a locked-down namespace refuses it, and the fallback is a copy of the seat’s tree with the accelerator caveat above</p></td>
 </tr>
-<tr class="row-odd"><td><p>no restart survives it</p></td>
-<td><p>neither the install nor the injection — a restart brings back the app image exactly as built</p></td>
+<tr class="row-odd"><td><p>no restart survives the injection</p></td>
+<td><p>the server is a live process in the container that died; whether the <em>install</em> survives one depends on the destination, below</p></td>
 </tr>
 <tr class="row-even"><td><p>~15 MB of ephemeral storage</p></td>
-<td><p>on a budget the seat <strong>shares with the workload and cannot reserve</strong>, because an ephemeral container may not carry <code class="docutils literal notranslate"><span class="pre">resources</span></code></p></td>
+<td><p>on a budget the seat <strong>shares with the workload and cannot reserve</strong>, because an ephemeral container may not carry <code class="docutils literal notranslate"><span class="pre">resources</span></code> — unless <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> names a volume, which is also the case whose install outlives a restart</p></td>
 </tr>
 </tbody>
 </table>
@@ -2370,16 +2377,61 @@ are different filesystems, so no hardlink is possible and both copies would
 exist — against the one pod-level budget. The install is also echoed before it
 runs, because uv’s output is captured for the failure message and a resolve
 against an unroutable index is otherwise silence indistinguishable from a hang.</p>
+<p><strong>The success line is a measurement, not an exit code.</strong> When the injector
+returns, <code class="docutils literal notranslate"><span class="pre">--provision</span></code> connects to the port the emitted configuration names and
+sends a DAP <code class="docutils literal notranslate"><span class="pre">initialize</span></code> — the first thing VS Code itself sends — and reports
+success only when the adapter answers it. Measured on a live target on
+2026-08-24: the injector exited 0, the port was open and in <code class="docutils literal notranslate"><span class="pre">LISTEN</span></code>, and the
+adapter accepted the connection and never answered, so a session could not
+start. Three outcomes are reported as three different things, because the half
+to chase differs in each:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>what the port did</p></th>
+<th class="head"><p>what it means</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>answered <code class="docutils literal notranslate"><span class="pre">initialize</span></code></p></td>
+<td><p>the app is debuggable; F5 on the emitted configuration reaches it</p></td>
+</tr>
+<tr class="row-odd"><td><p>refused the connection</p></td>
+<td><p>the injector returned 0 and left no server behind, so the configuration points at a closed port</p></td>
+</tr>
+<tr class="row-even"><td><p>accepted, then said nothing</p></td>
+<td><p>the injection ran and the port is open, and <strong>no debug session could be started</strong>; <code class="docutils literal notranslate"><span class="pre">DEBUGPY_LOG_DIR</span></code> in the target is where the adapter and the debuggee record what they said to each other</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The handshake is bounded at five seconds, against an injection measured at 8.7 s
+and an adapter that answered nothing in fifteen. It costs the workload nothing:
+the adapter replies to <code class="docutils literal notranslate"><span class="pre">initialize</span></code> from a fixed table of capabilities without
+consulting the debuggee, and podbench closes the socket rather than sending a
+DAP <code class="docutils literal notranslate"><span class="pre">disconnect</span></code>, which is what would close the adapter’s listener for good.</p>
 <p><code class="docutils literal notranslate"><span class="pre">readOnlyRootFilesystem:</span> <span class="pre">true</span></code> is the one genuinely new precondition, and it is
 not readable from the seat: the mount flag lives in the target’s mount
-namespace, so it arrives as <code class="docutils literal notranslate"><span class="pre">EROFS</span></code> on the write. Uid 0 in the seat carries
-<code class="docutils literal notranslate"><span class="pre">CAP_DAC_OVERRIDE</span></code>, so the target’s own uid and file modes are never the
-explanation — a <code class="docutils literal notranslate"><span class="pre">permission</span> <span class="pre">denied</span></code> here is the <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> traversal,
-which takes <code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_READ</span></code> and is refused to a root seat with no
-<code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> (report 3.11), or an LSM denying the cross-container write.
-Where the rootfs is read-only there is usually still a writable
-<code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> or tmpfs in the pod — <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> puts the copy there instead,
-and is also the extra path <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> searches on a later run.</p>
+namespace, so it arrives as <code class="docutils literal notranslate"><span class="pre">EROFS</span></code> on the write. Where the rootfs is read-only
+there is usually still a writable <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> or tmpfs in the pod —
+<code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> puts the copy there instead, and is also the extra path
+<code class="docutils literal notranslate"><span class="pre">debug-config</span></code> searches on a later run.</p>
+<p>A <code class="docutils literal notranslate"><span class="pre">permission</span> <span class="pre">denied</span></code> has two explanations and the seat’s own uid picks between
+them, which is why the message names it. On the <strong>full</strong> rung the seat is uid 0
+and <code class="docutils literal notranslate"><span class="pre">CAP_DAC_OVERRIDE</span></code> rules the target’s file modes out, leaving the
+<code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> traversal — which takes <code class="docutils literal notranslate"><span class="pre">PTRACE_MODE_READ</span></code> and is refused to
+a root seat with no <code class="docutils literal notranslate"><span class="pre">CAP_SYS_PTRACE</span></code> (report 3.11) — or an LSM denying the
+cross-container write. On the <strong>degraded</strong> rung the seat is the target’s own uid
+with an empty effective capability set, nothing bridges the target’s ownership
+and modes, and they are the whole of the check: <code class="docutils literal notranslate"><span class="pre">/opt</span></code> is <code class="docutils literal notranslate"><span class="pre">drwxr-xr-x</span> <span class="pre">root</span> <span class="pre">root</span></code>
+in a stock image, which is exactly how a beamline pod refused this install while
+<code class="docutils literal notranslate"><span class="pre">ls</span> <span class="pre">/proc/&lt;pid&gt;/root</span></code> succeeded (2026-08-24).</p>
+<p>Which is why the destination is chosen from the pod on a <strong>hotfixed</strong> one.
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> there installs into <code class="docutils literal notranslate"><span class="pre">&lt;claim&gt;/.podbench-debugpy</span></code> rather than
+<code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code> — writable by a non-root seat, the same directory in
+both mount namespaces, and a volume — and says which it chose in its <code class="docutils literal notranslate"><span class="pre">editor</span></code>
+block. A hotfixed pod whose seat carries no claim mount keeps the default.
+There is no fallback between the two: it is chosen before the install, not after
+a refusal.</p>
 <p>At that destination “already installed” is not a refusal: an installed tree
 records no version, and <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> is searched <strong>first</strong>, so a copy
 resolved for the wrong <code class="docutils literal notranslate"><span class="pre">X.Y</span></code> would otherwise shadow the target’s own correct one
@@ -2398,8 +2450,10 @@ refused rather than emitted — gdb re-applies a root substitution on display an
 the editor is handed <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root/proc/&lt;pid&gt;/root/...</span></code>.</p>
 <p>Re-running replaces its own entries by name and leaves a hand-written
 configuration beside them untouched — which is why every generated name carries
-its flavour. A <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> it cannot parse — VS Code permits comments, <code class="docutils literal notranslate"><span class="pre">json</span></code>
-does not — is refused rather than rewritten. See
+its flavour. The file is read as JSONC and edited textually: an application’s
+own committed <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>, comments and trailing commas and all, comes back
+with podbench’s entry added and nothing else moved. One that is not JSONC either
+is refused rather than rewritten. See
 <a class="reference internal" href="../how-to/debug-with-gdb.html"><span class="std std-doc">Debug with gdb</span></a>.</p>
 </section>
 </section>

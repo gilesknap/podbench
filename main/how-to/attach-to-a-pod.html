@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.7.3.dev50+g75e5ef79a documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.7.3.dev58+g5b135814a documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=70867c76"></script>
+    <script src="../_static/documentation_options.js?v=4251cbfd"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -880,8 +880,8 @@ of them. That is one beamline at one moment, so the threshold stays — a 100Mi
 pod really using 80 is a real case — but it does not fire on a pod that is fine.</p>
 <p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> is checked against the other number. vscode-server measured
 1215 MiB live with a single extension, which does not fit in most of those pods
-— so that verb raises the target’s limit to cover the shortfall before the seat
-lands, and warns where the raise did not take. Connecting VS Code by hand after
+— so that verb raises the target’s limit to 6Gi before the seat lands, and warns
+where the raise did not take. Connecting VS Code by hand after
 a plain <code class="docutils literal notranslate"><span class="pre">attach</span></code> gets neither, because there is no moment at which podbench
 learns you did — see <a class="reference internal" href="vscode-remote-ssh.html"><span class="std std-doc">VS Code over Remote-SSH</span></a>.</p>
 </section>

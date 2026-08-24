@@ -164,9 +164,9 @@ refusals.
 
 **It sizes the pod.** vscode-server measured 1215 MiB live with one extension,
 and the headroom that decides is read on every attach anyway — so where this pod
-has less, the target's memory limit is raised by the shortfall before the seat
-lands, rounded up to the next whole GiB, and the number and the reading are both
-printed. `--resize MEMORY` chooses the number yourself; `--no-resize` declines
+has less, the target's memory limit is raised to a flat 6Gi before the seat
+lands, and the number and the reading are both printed. Flat, so a second
+`podbench vscode` against the same pod is a no-op rather than another raise. `--resize MEMORY` chooses the number yourself; `--no-resize` declines
 the raise and keeps the warning. Read [Attach to a pod](attach-to-a-pod.md) on
 what an in-place resize costs — chiefly that it lives on the pod and not on its
 controller, so the next rollout takes it away.
@@ -331,6 +331,22 @@ since without the server there is nothing to connect to.
 Baking `debugpy.listen()` into the app is the durable answer, and the only one
 that survives a restart. Provisioning is for the pod that is already
 misbehaving.
+
+On a **hotfixed** pod the default destination is not `/opt/podbench-debugpy`,
+and cannot be. The seat there runs at the target's own uid with no capabilities,
+`/opt` in the target is a root-owned `0755` directory, and the install is
+refused by ordinary file permissions — which costs the whole cascade behind it:
+no importable debugpy, no configurations, no `launch.json`, and no debug adapter
+installed into the seat either. So `podbench vscode` installs into
+`<claim>/.podbench-debugpy` instead, where the claim is mounted, and names it in
+the `editor` block beside the folder it opened. That path is writable by the
+seat, is the same directory in both mount namespaces, and is a volume, so this
+is also the case where the install outlives a restart. There is deliberately no
+fallback in either direction: a destination that changed after a refusal would
+leave you guessing which one is live. A seat in a hotfixed pod that does not
+carry the claim mount keeps `/opt/podbench-debugpy` — the claim is the same
+directory in both mount namespaces only where both containers mount it, and
+podbench decides this on the mount rather than on the assumption.
 
 A **bare** `debug-config` in the seat, with no `--provision`, still only prints
 the injection command rather than running it: that really is authoring a
@@ -643,11 +659,13 @@ absolute paths and do work from either scope. Machine scope is what covers the
 folder you open *next* — including the `/` that starts the walk with no bottom —
 which is why both copies exist.
 
-Settings you have written yourself are never overwritten. The agent adds only
-the keys that are missing, so a deliberate `"**/proc/**": false` survives, and a
-file it cannot parse — VS Code allows comments in `settings.json`, `json` does
-not — is left exactly as it is, with the reason reported by
-`podbench agent --self-check` and in the container's start-up output.
+Settings you have written yourself are never overwritten. The file is read as
+JSONC — comments and a trailing comma, which is what VS Code writes and what a
+real project commits — and edited in place, so the agent adds only the keys that
+are missing and everything else, comments included, stays where you put it. A
+deliberate `"**/proc/**": false` survives. A file that is not JSONC either is
+left exactly as it is, with the reason reported by `podbench agent --self-check`
+and in the container's start-up output.
 
 The one thing that removes them is Remote-SSH's **Kill/Uninstall VS Code Server
 on Host**, which deletes `~/.vscode-server` wholesale. Nothing rewrites the file

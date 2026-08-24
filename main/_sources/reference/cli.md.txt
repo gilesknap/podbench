@@ -652,13 +652,19 @@ below are its own. (`attach --print-config` is the one option `vscode` does
 vscode-server measured **1215 MiB** live with a single extension, which does not
 fit in most of the pods it is aimed at. The headroom that decides is read on
 every attach already, so the verb uses it rather than asking for it back: where
-the free memory is under that figure, the *target's* memory limit is raised by
-the shortfall, rounded up to the next whole GiB, before the seat lands.
+the free memory is under that figure, the *target's* memory limit is raised to a
+flat **6Gi** before the seat lands.
 
 The target's limit, because it is the only one a seat can move — an ephemeral
 container may not declare `resources` at all (report 3.9), so it lives in the
 pod's cgroup and the pod's ceiling is the sum of its containers' limits. Raising
-the target by the shortfall therefore raises that ceiling by the same amount.
+the target therefore raises that ceiling by the same amount.
+
+The target is flat rather than computed, because the memory a computed one reads
+is the memory the editor is spending: the shortfall arithmetic this replaces
+took one pod from 1Gi to 2Gi over two runs, and would have gone again on a
+third. A pod already at or above 6Gi is left alone rather than shrunk, and a
+second `podbench vscode` against a pod the first one sized changes nothing.
 
 It says both the reading and the number it chose, and the raise carries every
 caveat `attach --resize` carries — chiefly that the raised limit lives on the
@@ -788,8 +794,9 @@ the report above prints); and a restart of the target container ends the
 debugging. The two halves do not expire together: the **server** never
 survives a restart, being a live process in the container that died, while the
 **install** survives one where `--provision-dest` names a volume mounted into
-the target — an `emptyDir` is pod-scoped and outlives a container — and not at
-the default `/opt/podbench-debugpy`, which is the container's own writable
+the target — an `emptyDir` is pod-scoped and outlives a container, and so does a
+hotfixed pod's claim, which is where this verb installs on one — and not at the
+default `/opt/podbench-debugpy`, which is the container's own writable
 layer. Either way the next step is another `podbench vscode`, since without the
 server nothing is listening. Installing debugpy into the app image, or baking
 `debugpy.listen()` into the app, is the durable answer.
@@ -1775,9 +1782,10 @@ A stock Python image has no debugpy, and debugpy's pid-injection needs it
 importable **by the target**: the bootstrap runs in the target's interpreter,
 and the path debugpy injects is the one the *driver* sees, so
 `/proc/<pid>/root/...` is the only spelling valid in both mount namespaces. The
-seat can supply it — it ships `uv`, live attach already requires `runAsUser: 0`,
-and `/proc/<pid>/root` is the target's own filesystem — so the refusal prints
-the command rather than asking for an image rebuild:
+seat can supply it — it ships `uv`, and `/proc/<pid>/root` is the target's own
+filesystem, which the seat writes into wherever the target's own ownership and
+modes let it — so the refusal prints the command rather than asking for an image
+rebuild:
 
 ```
 uv pip install --no-cache --python-version 3.12 --target /proc/1/root/opt/podbench-debugpy debugpy
@@ -1801,8 +1809,8 @@ the flag it probes the destination for writability first and names what refuses:
 | cost | why it cannot be ignored |
 |---|---|
 | network egress from the pod | uv resolves and downloads from an index; a locked-down namespace refuses it, and the fallback is a copy of the seat's tree with the accelerator caveat above |
-| no restart survives it | neither the install nor the injection — a restart brings back the app image exactly as built |
-| ~15 MB of ephemeral storage | on a budget the seat **shares with the workload and cannot reserve**, because an ephemeral container may not carry `resources` |
+| no restart survives the injection | the server is a live process in the container that died; whether the *install* survives one depends on the destination, below |
+| ~15 MB of ephemeral storage | on a budget the seat **shares with the workload and cannot reserve**, because an ephemeral container may not carry `resources` — unless `--provision-dest` names a volume, which is also the case whose install outlives a restart |
 
 `--no-cache` is what keeps that last number true. uv downloads into its cache in
 the *seat's* writable layer and materialises from there into `--target`; the two
@@ -1811,16 +1819,52 @@ exist — against the one pod-level budget. The install is also echoed before it
 runs, because uv's output is captured for the failure message and a resolve
 against an unroutable index is otherwise silence indistinguishable from a hang.
 
+**The success line is a measurement, not an exit code.** When the injector
+returns, `--provision` connects to the port the emitted configuration names and
+sends a DAP `initialize` — the first thing VS Code itself sends — and reports
+success only when the adapter answers it. Measured on a live target on
+2026-08-24: the injector exited 0, the port was open and in `LISTEN`, and the
+adapter accepted the connection and never answered, so a session could not
+start. Three outcomes are reported as three different things, because the half
+to chase differs in each:
+
+| what the port did | what it means |
+|---|---|
+| answered `initialize` | the app is debuggable; F5 on the emitted configuration reaches it |
+| refused the connection | the injector returned 0 and left no server behind, so the configuration points at a closed port |
+| accepted, then said nothing | the injection ran and the port is open, and **no debug session could be started**; `DEBUGPY_LOG_DIR` in the target is where the adapter and the debuggee record what they said to each other |
+
+The handshake is bounded at five seconds, against an injection measured at 8.7 s
+and an adapter that answered nothing in fifteen. It costs the workload nothing:
+the adapter replies to `initialize` from a fixed table of capabilities without
+consulting the debuggee, and podbench closes the socket rather than sending a
+DAP `disconnect`, which is what would close the adapter's listener for good.
+
 `readOnlyRootFilesystem: true` is the one genuinely new precondition, and it is
 not readable from the seat: the mount flag lives in the target's mount
-namespace, so it arrives as `EROFS` on the write. Uid 0 in the seat carries
-`CAP_DAC_OVERRIDE`, so the target's own uid and file modes are never the
-explanation — a `permission denied` here is the `/proc/<pid>/root` traversal,
-which takes `PTRACE_MODE_READ` and is refused to a root seat with no
-`CAP_SYS_PTRACE` (report 3.11), or an LSM denying the cross-container write.
-Where the rootfs is read-only there is usually still a writable
-`emptyDir` or tmpfs in the pod — `--provision-dest` puts the copy there instead,
-and is also the extra path `debug-config` searches on a later run.
+namespace, so it arrives as `EROFS` on the write. Where the rootfs is read-only
+there is usually still a writable `emptyDir` or tmpfs in the pod —
+`--provision-dest` puts the copy there instead, and is also the extra path
+`debug-config` searches on a later run.
+
+A `permission denied` has two explanations and the seat's own uid picks between
+them, which is why the message names it. On the **full** rung the seat is uid 0
+and `CAP_DAC_OVERRIDE` rules the target's file modes out, leaving the
+`/proc/<pid>/root` traversal — which takes `PTRACE_MODE_READ` and is refused to
+a root seat with no `CAP_SYS_PTRACE` (report 3.11) — or an LSM denying the
+cross-container write. On the **degraded** rung the seat is the target's own uid
+with an empty effective capability set, nothing bridges the target's ownership
+and modes, and they are the whole of the check: `/opt` is `drwxr-xr-x root root`
+in a stock image, which is exactly how a beamline pod refused this install while
+`ls /proc/<pid>/root` succeeded (2026-08-24).
+
+Which is why the destination is chosen from the pod on a **hotfixed** one.
+`podbench vscode` there installs into `<claim>/.podbench-debugpy` rather than
+`/opt/podbench-debugpy` — writable by a non-root seat, the same directory in
+both mount namespaces, and a volume — and says which it chose in its `editor`
+block. A hotfixed pod whose seat carries no claim mount keeps the default.
+There is no fallback between the two: it is chosen before the install, not after
+a refusal.
 
 At that destination "already installed" is not a refusal: an installed tree
 records no version, and `--provision-dest` is searched **first**, so a copy
@@ -1843,8 +1887,10 @@ the editor is handed `/proc/<pid>/root/proc/<pid>/root/...`.
 
 Re-running replaces its own entries by name and leaves a hand-written
 configuration beside them untouched — which is why every generated name carries
-its flavour. A `launch.json` it cannot parse — VS Code permits comments, `json`
-does not — is refused rather than rewritten. See
+its flavour. The file is read as JSONC and edited textually: an application's
+own committed `launch.json`, comments and trailing commas and all, comes back
+with podbench's entry added and nothing else moved. One that is not JSONC either
+is refused rather than rewritten. See
 [Debug with gdb](../how-to/debug-with-gdb.md).
 
 ### `dev-bootstrap`

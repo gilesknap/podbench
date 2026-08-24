@@ -444,8 +444,8 @@ pod really using 80 is a real case — but it does not fire on a pod that is fin
 
 `podbench vscode` is checked against the other number. vscode-server measured
 1215 MiB live with a single extension, which does not fit in most of those pods
-— so that verb raises the target's limit to cover the shortfall before the seat
-lands, and warns where the raise did not take. Connecting VS Code by hand after
+— so that verb raises the target's limit to 6Gi before the seat lands, and warns
+where the raise did not take. Connecting VS Code by hand after
 a plain `attach` gets neither, because there is no moment at which podbench
 learns you did — see [VS Code over Remote-SSH](vscode-remote-ssh.md).
 
