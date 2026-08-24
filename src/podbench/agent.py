@@ -41,6 +41,7 @@ import typer
 
 from .cli import new_app, run
 from .model import (
+    CLAIM_PATH_ENV,
     HOTFIX_INTERPRETER_PATH,
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
@@ -74,6 +75,8 @@ __all__ = [
     "NSS_WAY_OUT",
     "PASSWD_PATH",
     "PUBKEY_ENV",
+    "SEAT_GITCONFIG",
+    "SEAT_GITCONFIG_INCLUDE",
     "SEAT_NSS_PATH",
     "SESSION_ENV_NAMES",
     "UV_PYTHON_INSTALL_DIR_ENV",
@@ -97,6 +100,7 @@ __all__ = [
     "ensure_host_key",
     "ensure_passwd_entry",
     "ensure_privsep_dir",
+    "ensure_seat_gitconfig",
     "ensure_sshd_config",
     "hotfix_interpreter_store",
     "ensure_vscode_settings",
@@ -1211,6 +1215,115 @@ def ensure_vscode_settings(layout: SshdLayout, *, home: str | None = None) -> bo
     return _write_if_changed(path, merged, 0o644)
 
 
+SEAT_GITCONFIG = "/etc/gitconfig"
+"""git's system config, **baked by the image and never written here**.
+
+The system config rather than ``~/.gitconfig`` because it is the container's
+own: it dies with the container, it is on no volume - so nothing podbench wrote
+can outlive a seat on a ``podbench-home`` PVC - and it cannot drift, because the
+image is rebuilt each release.
+
+It carries ``core.excludesFile``, which needs no runtime knowledge at all: it
+names a fixed path holding a pattern for a fixed directory *name*
+(:data:`podbench.provision.CLAIM_DEST_NAME`), and a gitignore pattern matches at
+any depth, so the mountPath varying does not reach it. That is what keeps the
+~15 MB ``--provision`` installs out of the SCM pane while putting **nothing**
+inside the user's repository - no ``.gitignore``, no ``.git/info/exclude``, no
+metadata at all (#216).
+
+Named here rather than only in the Dockerfile because the other half of the
+pair is written from this module, and one of the two is no use without the
+other.
+"""
+
+SEAT_GITCONFIG_INCLUDE = "/tmp/podbench-gitconfig"
+"""The half of the pair the agent writes: :data:`SEAT_GITCONFIG`'s ``include.path``.
+
+``safe.directory`` cannot be baked - it names the claim's mountPath, which is
+the application's choice and is not known until attach time
+(:data:`podbench.model.CLAIM_PATH_ENV`) - and the agent that would have to write
+it *cannot write ``/etc``*: a degraded seat is a non-root uid with an empty
+effective capability set (37887 on p47) and ``/etc`` is root-owned. So the image
+bakes an include and the agent writes only the file it points at. ``/tmp`` is
+world-writable on every rung, container-local and on no volume, which is the
+same set of properties that made the system config the right home for the
+baked half.
+
+This is the shape ``chmod g=u /etc/passwd`` and the 0666 extrausers database
+solve twice in the Dockerfile, and it costs the same argument. A path under
+world-writable ``/tmp`` is read by git on the ``full`` rung, where the seat is
+root - but a root seat has no unprivileged principal: every process in it, the
+``kubectl exec`` carrying ssh included, is already uid 0, so there is nobody to
+plant a config for root to read. On the non-root rungs the reader is the same
+uid as any possible writer. What must not ship is the combination in between,
+which is #98's shape, and there is no counterpart of
+:func:`restrict_seat_nss_database` here only because there is no mode to take
+off: the file is created by the agent, at the agent's own uid.
+
+Two things this rests on, either of which would fail by silently reinstating the
+defect, and both **measured** on git 2.53.0 rather than assumed from
+``git-config(1)``:
+
+* a missing ``include.path`` is ignored without error - the run goes straight on
+  to the ownership check - which is what every seat with no claim relies on;
+* ``safe.directory`` reached through an include of the *system* config still
+  counts as protected configuration, which is the only scope git honours it in.
+  ``config --list --show-scope`` attributes the included value to ``system``.
+
+Still unmeasured: the seat's own git (bookworm ships 2.39) and a real cross-uid
+checkout - the bench used ``GIT_TEST_ASSUME_DIFFERENT_OWNER``, which skips the
+ownership check and leaves the ``safe.directory`` lookup real.
+``git -C <claim> status --porcelain`` in a seat on the hotfixed pod closes both.
+"""
+
+
+def _git_config_value(value: str) -> str:
+    r"""Quote a value for a git config file.
+
+    Not decoration: an unquoted value ends at a ``#`` or a ``;`` and loses its
+    trailing whitespace, and a mountPath is somebody else's string.
+
+    >>> _git_config_value("/podbench/app")
+    '"/podbench/app"'
+    >>> _git_config_value('/srv/a"b\\c')
+    '"/srv/a\\"b\\\\c"'
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def ensure_seat_gitconfig(*, env: Mapping[str, str] | None = None) -> bool:
+    """Authorise the user's own git in the claim this seat has, if it has one.
+
+    The first thing a user does in the folder ``podbench vscode`` opens is the
+    thing that failed: the claim is a git checkout owned by the application's
+    uid, the seat is not that uid on the rungs where it is not root, so
+    ``git status`` in it dies with ``fatal: detected dubious ownership`` (#217,
+    measured on ``bl47p-ea-fastcs-01-0``, 2026-08-24).
+
+    This does **not** replace :func:`podbench.hotfix.git_argv`'s
+    ``-c safe.directory=``, and the two are not in tension: ``-c`` is for
+    podbench's own invocations in *any* seat, a hotfix spanning several of them,
+    and this is for the human in *this* one, who types no flags.
+
+    Nothing is written for a seat with no claim. Absence of
+    :data:`podbench.model.CLAIM_PATH_ENV` is how an ordinary ``attach`` seat -
+    and every seat an older launcher landed - says so, and inventing a path for
+    one would authorise a directory that is not there:
+
+    >>> ensure_seat_gitconfig(env={})
+    False
+    """
+    claim = (os.environ if env is None else env).get(CLAIM_PATH_ENV)
+    if not claim:
+        return False
+    return _write_if_changed(
+        Path(SEAT_GITCONFIG_INCLUDE),
+        f"[safe]\n\tdirectory = {_git_config_value(claim)}\n",
+        0o644,
+    )
+
+
 @dataclass(frozen=True)
 class EnsureReport:
     """What start-up changed, and what it could not do.
@@ -1326,6 +1439,15 @@ def ensure_all(
         "vscode-settings",
         f"wrote {session_home(layout)}/{MACHINE_SETTINGS_PATH}",
         lambda: ensure_vscode_settings(layout),
+    )
+    # Beside the vscode settings, and for the same reason: both are what stands
+    # between a landed seat and the user's first move in the folder podbench
+    # opened. Nothing else here depends on it, and it depends on nothing here -
+    # the claim is a mount, not something start-up creates.
+    step(
+        "gitconfig",
+        f"wrote {SEAT_GITCONFIG_INCLUDE}",
+        lambda: ensure_seat_gitconfig(env=env),
     )
     return EnsureReport(tuple(changes), tuple(failures))
 

@@ -2196,6 +2196,14 @@ def git_argv(checkout: str, *args: str) -> list[str]:
     Measured on the beamline, 2026-08-22. Without this every ``apply`` fails at
     the commit - after the edit has been made, which is the worst moment.
 
+    The seat now also carries a ``safe.directory`` for its claim in
+    ``/etc/gitconfig`` (:func:`podbench.agent.ensure_seat_gitconfig`), and that
+    does **not** make this redundant - the argument above is unchanged. That one
+    is the container's own config, written per seat for the *human* typing
+    ``git status`` in the folder an editor opened; this one is for podbench's own
+    invocations in **any** seat, including the later one a hotfix is committed
+    from and including a seat whose image is older than that config.
+
     >>> git_argv("/podbench/app", "status", "--porcelain")[:4]
     ['git', '-c', 'safe.directory=/podbench/app', '-C']
     """

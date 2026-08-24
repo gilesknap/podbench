@@ -265,6 +265,47 @@ RUN set -eu; \
         fi; \
     done >> /etc/passwd
 
+# git in the seat, for the human rather than for podbench. The system config
+# rather than ~/.gitconfig because it is the container's own: it dies with the
+# container, it is on no volume - so nothing podbench wrote can outlive a seat on
+# a podbench-home PVC - and it cannot drift, since this image is rebuilt each
+# release. Two settings, and only one of them can be baked.
+#
+#   core.excludesFile  `--provision` installs ~15 MB of debugpy into
+#                      <claim>/.podbench-debugpy (provision.CLAIM_DEST_NAME), and
+#                      on a hotfixed pod the claim *is* the application's own
+#                      checkout - so it arrives untracked in a repository podbench
+#                      was never asked to write into (#216). An ignore file
+#                      podbench owns takes it out of the SCM pane while putting
+#                      nothing inside that repository: no .gitignore, no
+#                      .git/info/exclude, no metadata at all. Bakeable because it
+#                      names two fixed paths: its own, and a pattern for a fixed
+#                      directory *name*. The pattern is unanchored, so it matches
+#                      at whatever depth the application chose to mount the claim.
+#   include.path       safe.directory cannot be baked - it names the claim's
+#                      mountPath, which is the application's choice and is not
+#                      known until attach time - and the agent that would write it
+#                      cannot write /etc at all: a degraded seat is a non-root uid
+#                      with an empty effective set and /etc is root-owned. So the
+#                      agent writes only the included file, under world-writable,
+#                      container-local, volume-free /tmp. Same shape as `chmod g=u
+#                      /etc/passwd` and the 0666 database above, and
+#                      agent.SEAT_GITCONFIG_INCLUDE carries the same argument for
+#                      why the mode is not an escalation on either kind of rung.
+#
+# Two things this rests on, both of which would fail by silently reinstating the
+# defect, and both measured on git 2.53.0 rather than assumed from git-config(1):
+# a missing include.path is ignored without error, which is what every seat with
+# no claim relies on; and safe.directory reached through an include of the
+# *system* config still counts as protected configuration, which git honours it
+# nowhere else - `config --list --show-scope` attributes the included value to
+# `system`. Not yet measured on the seat's own git (bookworm's 2.39), nor with a
+# real cross-uid checkout: the bench used GIT_TEST_ASSUME_DIFFERENT_OWNER, which
+# skips the ownership check and leaves the safe.directory lookup real.
+RUN printf '[core]\n\texcludesFile = %s\n[include]\n\tpath = %s\n' \
+        /etc/podbench/gitignore /tmp/podbench-gitconfig > /etc/gitconfig \
+    && printf '%s\n' '.podbench-debugpy/' > /etc/podbench/gitignore
+
 # Symbols, but never sources, on Debian targets: S3 got a fully symbolised
 # glibc + coreutils backtrace for 4.7 MB of client cache, and every source fetch
 # 404'd (report 3.2). Debian already falls back to this same URL via

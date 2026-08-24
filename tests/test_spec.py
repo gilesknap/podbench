@@ -13,6 +13,9 @@ import pytest
 
 from podbench.agent import extrausers_serves
 from podbench.model import (
+    CLAIM_PATH_ENV,
+    HOTFIX_APP_PATH,
+    HOTFIX_CLAIM_VOLUME,
     SEAT_HOME_PATH,
     SEAT_HOME_VOLUME,
     SEAT_IDENTITY_VOLUME,
@@ -545,6 +548,41 @@ def test_whole_volume_mounts_are_authored_unchanged() -> None:
         volume_mounts=mounts,
     )
     assert spec["volumeMounts"] == mounts
+
+
+def test_a_seat_that_mounts_the_claim_is_told_where_it_landed() -> None:
+    """The seat cannot work out that a directory is on a volume, and it has to
+    know: the claim is a checkout owned by another uid, so git needs a
+    ``safe.directory`` naming it before the user's first command (#217).
+
+    The value comes off the mounts being authored, so the two cannot disagree -
+    and it is the *application's* mountPath, never
+    :data:`podbench.model.HOTFIX_APP_PATH`. Podbench matches where the claim was
+    mounted, it does not choose it.
+    """
+    spec = ephemeral_container_spec(
+        name="podbench-1",
+        image="podbench:dev",
+        rung=Rung.SEAT,
+        volume_mounts=[{"name": HOTFIX_CLAIM_VOLUME, "mountPath": "/srv/checkout"}],
+    )
+
+    assert {"name": CLAIM_PATH_ENV, "value": "/srv/checkout"} in spec["env"]
+    assert not any(HOTFIX_APP_PATH in str(entry) for entry in spec["env"])
+
+
+def test_a_seat_with_no_claim_mount_is_told_nothing_about_one() -> None:
+    """Absence is the signal, so it has to stay absent: an ordinary ``attach``
+    seat mounts no claim, and a variable naming a path it cannot see would have
+    the agent authorise a directory that is not there."""
+    spec = ephemeral_container_spec(
+        name="podbench-1",
+        image="podbench:dev",
+        rung=Rung.SEAT,
+        volume_mounts=[{"name": "podbench-home", "mountPath": "/home/podbench"}],
+    )
+
+    assert not any(CLAIM_PATH_ENV == entry["name"] for entry in spec.get("env", []))
 
 
 def test_an_empty_sub_path_is_not_a_sub_path() -> None:
