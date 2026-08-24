@@ -294,10 +294,14 @@ at the next restart instead.
 ```
 $ podbench hotfix status -n p47-beamline
   [ok]    p47-beamline/bl47p-ea-fastcs-01-0  +1 commit(s)  9c1f2ab  active — hotfixed, base image unchanged
-    1 commit(s) ahead of the image
     base 4d9a1c2 · giles · 2026-08-23T10:14:02Z
       9c1f2ab  clamp the setpoint before the ramp
 ```
+
+The row's own columns carry the count and the sha, so nothing under it repeats
+them. On a claim carrying no commits at all the line below reads `on its base
+commit · …`, because at `+0` the claim *is* its base and the only thing left to
+say is who seeded it and when.
 
 It exits **0** only when every row is `active` and unheld, which is what makes it
 usable as an assertion rather than a report:

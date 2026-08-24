@@ -484,9 +484,12 @@ def test_probe_reports_an_interpreter_that_will_not_run() -> None:
 
 
 def test_assess_active_when_the_image_has_not_moved() -> None:
+    """And it adds no detail: `format_status`'s own columns carry the count and
+    the verdict, and a healthy row said the same number twice until it did
+    not - see `test_a_healthy_row_says_its_commit_count_and_its_sha_once`."""
     health, detail = hotfix.assess(a_manifest(ahead=2), current_digest=BASE_DIGEST)
     assert health is hotfix.HotfixHealth.ACTIVE
-    assert "2 commit(s) ahead" in detail
+    assert detail == ""
 
 
 def test_assess_flags_an_image_upgrade_under_the_mount() -> None:
@@ -1486,6 +1489,54 @@ def test_status_says_when_the_drift_is_counted_from_an_assumed_base() -> None:
     assert "+2 commit(s) from an assumed base" in hotfix.format_status([row])
     measured = replace(row, manifest=a_manifest(ahead=2))
     assert "assumed" not in hotfix.format_status([measured])
+
+
+def test_a_healthy_row_says_its_commit_count_and_its_sha_once() -> None:
+    """The plan's own "measured before starting" row, finally closed.
+
+    A healthy row read `+0 commit(s)  3d55455  active - hotfixed, base image
+    unchanged`, then `0 commit(s) ahead of the image` under it, then `base
+    3d55455`: one number twice and one sha twice, on the row a shutdown
+    checklist scans most often. The columns already carry both, and at `+0` the
+    claim is *at* its base - so the line below keeps only the provenance, which
+    appears nowhere else.
+    """
+    manifest = a_manifest(ahead=0)
+    row = hotfix.HotfixRow(
+        pod=hotfix.PodRef("demo", "api-7f9-abc"),
+        manifest=manifest,
+        health=hotfix.HotfixHealth.ACTIVE,
+        detail=hotfix.assess(manifest, current_digest=BASE_DIGEST)[1],
+    )
+
+    report = hotfix.format_status([row])
+
+    assert report.count("+0 commit(s)") == 1
+    assert "ahead of the image" not in report
+    assert report.count(BASE_SHA[:7]) == 1
+    # The provenance survives - it is the only thing this line ever added.
+    assert "Ada <ada@example.invalid>" in report
+    assert "2026-08-15T09:00:00+00:00" in report
+    # Layout rule 9e: the row is still an authored set of columns.
+    first = report.splitlines()[0]
+    assert first.startswith("  [ok]")
+    assert "  +0 commit(s)  " in first
+
+
+def test_a_row_that_is_ahead_still_names_the_base_it_is_ahead_of() -> None:
+    """The other side: two different shas are two facts, and both stay."""
+    manifest = a_manifest(ahead=2, commit=HEAD_SHA)
+    row = hotfix.HotfixRow(
+        pod=hotfix.PodRef("demo", "api-7f9-abc"),
+        manifest=manifest,
+        health=hotfix.HotfixHealth.ACTIVE,
+        detail="",
+    )
+
+    report = hotfix.format_status([row])
+
+    assert f"base {BASE_SHA[:7]}" in report
+    assert HEAD_SHA[:7] in report
 
 
 def test_status_ignores_pods_without_a_hotfix() -> None:

@@ -1738,7 +1738,11 @@ def assess(
             "The claim's venv shadows the new image's, so the upgrade has not "
             "reached the running code.",
         )
-    return HotfixHealth.ACTIVE, f"{manifest.ahead} commit(s) ahead of the image"
+    # No detail. The row's own columns already carry `+N commit(s)` and
+    # `active - hotfixed, base image unchanged`, and a healthy row saying the
+    # same number twice was the last of the three repetitions this phase set out
+    # to remove. Every other branch here returns the sentence the columns cannot.
+    return HotfixHealth.ACTIVE, ""
 
 
 @dataclass(frozen=True)
@@ -2077,10 +2081,20 @@ def format_status(rows: Sequence[HotfixRow], *, all_namespaces: bool = False) ->
             f"  {flag}".ljust(_FLAG) + f"{row.pod}  {drift}  {commit}  "
             f"{row.health.value} — {row.health.summary}{held}"
         )
-        lines.extend(paragraph(row.detail, first=_ROW_INDENT, indent=_ROW_INDENT))
+        if row.detail:
+            lines.extend(paragraph(row.detail, first=_ROW_INDENT, indent=_ROW_INDENT))
         if manifest is not None:
+            # The sha is dropped where it is the one already in the row's own
+            # column: at `+0` the claim is *at* its base, so repeating it says
+            # nothing the column did not. What is left is the provenance, which
+            # is the half of this line that appears nowhere else.
+            base = (
+                f"base {manifest.base_commit[:7] or '?'}"
+                if manifest.commit != manifest.base_commit
+                else "on its base commit"
+            )
             lines.append(
-                f"{_ROW_INDENT}base {manifest.base_commit[:7] or '?'} · "
+                f"{_ROW_INDENT}{base} · "
                 f"{manifest.author or 'unknown author'} · "
                 f"{manifest.timestamp or 'no timestamp'}"
             )
