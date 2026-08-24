@@ -453,6 +453,11 @@ class FakeCluster:
         # all, which is where every attach starts; `""` is one opened before
         # `--forward-agent` was passed, which is what silently swallows it.
         self.ssh_master = ssh_master
+        # A laptop with no `ssh` on PATH. `run_subprocess` lets
+        # `subprocess.run`'s FileNotFoundError straight out, so this is what the
+        # launcher actually meets there - and `--forward-agent` is the first
+        # thing that spawns the binary at all.
+        self.no_ssh_binary = False
 
     # -- Runner protocol ---------------------------------------------------
 
@@ -470,6 +475,8 @@ class FakeCluster:
             # test never starts an editor.
             return CommandResult(tuple(argv), 0, "", "")
         if argv[0] == "ssh":
+            if self.no_ssh_binary:
+                raise FileNotFoundError(2, "No such file or directory", "ssh")
             if "-O" in argv:
                 # `ssh -O check`, which talks to the ControlPath and not to the
                 # network. 255 is what it exits with when no master is there,
@@ -7660,6 +7667,28 @@ def test_no_master_means_nothing_is_said_and_nothing_is_asked(
 
     assert "ssh -O exit" not in capsys.readouterr().out
     assert not [call for call in cluster.calls if call[-1] == AGENT_SOCKET_PROBE]
+
+
+def test_a_laptop_with_no_ssh_binary_still_gets_its_seat_and_its_stanza(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`run_subprocess` lets `subprocess.run`'s FileNotFoundError out untouched
+    and `main` catches five exception types, none of them that one - so the
+    master probe used to end the run in a traceback, *after* the seat had landed
+    and the stanza had been written. An ssh that cannot be reached is unknown
+    rather than a stale master, and an ssh that is not installed is the same
+    answer."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN, ssh_master="")
+    cluster.no_ssh_binary = True
+
+    code = main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "ssh config written to" in out
+    # Nothing is claimed about a master nothing could ask about.
+    assert "ssh -O exit" not in out
 
 
 def test_without_the_flag_the_master_is_not_asked_about_at_all(

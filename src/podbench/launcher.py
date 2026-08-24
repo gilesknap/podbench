@@ -4875,6 +4875,14 @@ def master_without_agent(
     the answer is unknown, the connection is broken in a way the reader's next
     command will say out loud, and inventing a remedy for it would send them to
     ``ssh -O exit`` for a socket that is not the problem.
+
+    An ssh binary that is not *there* is the same answer, and it is caught here
+    rather than left to ``main``. ``runner`` is :func:`run_subprocess`, which
+    lets :class:`OSError` out of :func:`subprocess.run` untouched, and
+    ``--forward-agent`` is the first thing that makes ``attach`` and
+    ``ssh-config`` spawn ``ssh`` at all - so on a laptop without one the
+    traceback would land *after* the seat had landed and the stanza had been
+    written, which is the one moment this function must not fail loudly.
     """
     base = [ssh, "-F", str(config)]
     try:
@@ -4885,7 +4893,7 @@ def master_without_agent(
         session = runner(
             [*base, alias, AGENT_SOCKET_PROBE], timeout=DEFAULT_CALL_TIMEOUT
         )
-    except KubectlError:
+    except (KubectlError, OSError):
         return False
     return session.returncode == 0 and not session.stdout.strip()
 
