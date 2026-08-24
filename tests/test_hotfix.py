@@ -4484,6 +4484,12 @@ def test_a_source_label_the_images_own_name_corroborates_is_ok(
     an unseeded claim, where there is no checkout and so no `origin`. It is a
     correspondence and not an equality: a `-debug` variant is built from the
     unsuffixed source.
+
+    The row says what *corresponds*, and no more. "An inherited label would
+    not" was a universal claim on a test with a hole in it - an image named
+    after its base corresponds to the base's own label - and the same sentence
+    invited the reader to expect the image's *revision* to be believed
+    downstream, which `init` still does not do.
     """
     image = "ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1"
     digest = "ghcr.io/diamondlightsource/fastcs-example-debug@sha256:e803"
@@ -4498,7 +4504,8 @@ def test_a_source_label_the_images_own_name_corroborates_is_ok(
 
     source = rows(capsys.readouterr().out)["source"]
     assert source.startswith("[ok]")
-    assert "corroborates" in source
+    assert "corresponds to" in source
+    assert "an inherited label would not" not in source
 
 
 def test_an_already_seeded_claim_is_not_blocked_on_rows_init_never_reads(

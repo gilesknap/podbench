@@ -148,11 +148,9 @@ $ podbench hotfix check bl47p-ea-fastcs-01-0 -n p47-beamline
                          https://github.com/DiamondLightSource/ubuntu-devcontainer,
                          which its own repository
                          ghcr.io/diamondlightsource/fastcs-example-debug
-                         does not correspond to. OCI labels are
-                         inherited from the base image unless the build
-                         overrides them, and `hotfix init` with no
-                         `--repo` clones whatever the label names: pass
-                         `--repo URL` if that is not this application's
+                         does not correspond to: `hotfix init` with no
+                         `--repo` would clone that repository, so pass
+                         `--repo URL` if it is not this application's
                          source.
 ------------------------------------------------------------------------
 VERDICT: nothing measured here blocks `podbench hotfix init` (exit 0)
@@ -168,6 +166,14 @@ image cannot have written that — so a label the path corresponds to (a `-debug
 or `-runtime` variant counts as corresponding) is `[ok]`, and one it does not is
 this `warn`. It is a warning rather than a blocker because `init` does not refuse
 the state; `--repo` is what settles it.
+
+Two things that `[ok]` does **not** mean. It is a correspondence and not a
+proof: an image named *after its base* — `ubuntu-devcontainer-python` built from
+`ubuntu-devcontainer` — inherits the base's label and corresponds to it. And it
+speaks for the **repository only**. The image's
+`org.opencontainers.image.revision` is a separate question, gated separately,
+and `init` records an `ASSUMED` base unless `--repo` or a seeded checkout's
+`origin` agrees with the label — as the next section shows on this very image.
 
 It is read-only, it lands no seat, and it exits **1** while anything blocks — so
 run it, fix what it names, run it again. Each blocker it reports is a chart
@@ -221,10 +227,23 @@ seeded /podbench/app from /proc/1/root/app
 copied the interpreter to /podbench/app/.python
 claim seeded, venv interpreter 3.12.7
 cloned https://github.com/DiamondLightSource/fastcs-example to /podbench/app
-base commit 4d9a1c2, from the image's org.opencontainers.image.revision
+the image's labels name https://github.com/DiamondLightSource/ubuntu-devcontainer,
+not https://github.com/DiamondLightSource/fastcs-example: inherited from its
+base image, so its revision is not this repository's
+base commit 8f21c04 ASSUMED (the image names 603392d, but nothing outside the
+image confirms its labels are this repository's); pass --base-commit SHA
 rebuilt the venv at /podbench/app/.venv
 wrote /podbench/app/.podbench-hotfix.json
 ```
+
+That is the `check` warning above, arriving where it costs something. `--repo`
+disagrees with the label, so nothing corroborates the labels, so the
+`org.opencontainers.image.revision` is not believed either and the base falls
+back to the clone's `HEAD` — honestly marked. On this IOC the truth is the tag:
+`2025.10.1` is `3d55455` in `fastcs-example`, and passing
+`--base-commit 3d55455` is what turns every later `+N commit(s)` into a
+measurement. On an image whose own labels are correct, the same line reads
+`base commit 4d9a1c2, from the image's org.opencontainers.image.revision`.
 
 `init` is the one verb that lands a seat for you if none is running — the verbs
 after it refuse instead, because by then one should exist. Useful flags:

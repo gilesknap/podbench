@@ -308,7 +308,12 @@ and each has a failure mode behind it:
   so cannot have been inherited; a `-debug` or `-runtime` variant of the named
   repository counts as corresponding. What it cannot take on an unseeded claim is the
   checkout's `origin` — there is no checkout — so the row says which corroboration it
-  had, and a label nothing corroborates is a `warn` and not a blocker.
+  had, and a label nothing corroborates is a `warn` and not a blocker. It settles the
+  **repository** and nothing else: the suffix is tolerated in one direction only, an
+  image named *after its base* corresponds to the base's own inherited label, and
+  `init`'s revision label stays gated on `corroborate_source`, which deliberately does
+  not take this naming. So the row says what corresponds, never that the labels are
+  this image's own.
 * **A claim that is already seeded retires three rows.** `init` short-circuits its
   whole seed on `{checkout}/pyproject.toml`, which makes the target root, the project
   and the interpreter moot — so `check` does not ask them either. This is the state a

@@ -1203,7 +1203,10 @@ Notes:
   where the image's own registry path corresponds to the repository the label names
   (a `-debug` or `-runtime` variant counts), and a `warn` otherwise. It is a warning
   and not a blocker because `init` does not refuse the state — it clones the label's
-  repository and records an `ASSUMED` base. On a claim that is already seeded the three rows only
+  repository and records an `ASSUMED` base. The `[ok]` speaks for the **repository**
+  alone: it is a correspondence rather than a proof — an image named after its base
+  corresponds to the base's own label — and `init`'s revision label is gated
+  separately, on `--repo` or the seeded checkout's `origin`. On a claim that is already seeded the three rows only
   a seed reads — the target root, the project and the interpreter — are **not
   asked**, because `init` does not read them either. Where no seat is running yet,
   the seat's view of the target's root is reported **unmeasured** rather than

@@ -2309,10 +2309,8 @@ only where something that did not come from the image agrees with it.
 
 SOURCE_LABEL_UNCORROBORATED = (
     "the image names {source}, which its own repository {image} does not "
-    "correspond to. OCI labels are inherited from the base image unless the "
-    "build overrides them, and `hotfix init` with no `--repo` clones whatever "
-    "the label names: pass `--repo URL` if that is not this application's "
-    "source."
+    "correspond to: `hotfix init` with no `--repo` would clone that "
+    "repository, so pass `--repo URL` if it is not this application's source."
 )
 """``check``'s ``source`` row when the only thing naming the repository is a
 label the image's own name contradicts.
@@ -2324,6 +2322,11 @@ clones the label's repository and records an ``ASSUMED`` base
 ``check`` *more* confident than the verb it exists to speak for. Measured
 2026-08-23 on ``fastcs-example-debug:2025.10.1``, whose labels are
 ``ubuntu-devcontainer``'s throughout - see :data:`LABELS_FROM_BASE_IMAGE`.
+
+Three beats and no fourth: *why* an image advertises another project's
+repository is the mechanism, and it is said once in
+``docs/how-to/hotfix-a-running-pod.md`` and ``docs/reference/cli.md`` rather
+than in ten wrapped lines in front of somebody with a broken IOC.
 """
 
 
@@ -2375,12 +2378,27 @@ def image_name_agrees(image: str, source: str) -> bool:
     It is a correspondence and not an equality, because a debug or a runtime
     variant is built from the same source under a suffixed name: measured
     2026-08-23, ``fastcs-example-debug`` is built from ``fastcs-example``, and
-    an equality test would cry wolf on every image built that way.
+    an equality test would cry wolf on every image built that way. The suffix
+    is tolerated in **one** direction only - the image's name may extend the
+    repository's, not the other way about - because that is the only direction
+    the variant case describes, and every widening of this test is a widening
+    of what a base image's label can be believed for.
+
+    **It is a corroborator and not a proof**, which is why the row that uses it
+    says what corresponds rather than that the label is this image's own: an
+    image named *after its base* (``ubuntu-devcontainer-python`` built from
+    ``ubuntu-devcontainer``) inherits the base's label and corresponds to it.
+    Nothing free distinguishes that from a variant, so ``--repo`` remains the
+    only settlement and :func:`corroborate_source` - ``init``'s gate on the
+    revision label - deliberately does not take this naming.
 
     >>> image_name_agrees("ghcr.io/dls/fastcs-example-debug:2025.10.1",
     ...                   "https://github.com/DiamondLightSource/fastcs-example")
     True
     >>> image_name_agrees("ghcr.io/dls/fastcs-example-debug:2025.10.1",
+    ...                   "https://github.com/DiamondLightSource/ubuntu-devcontainer")
+    False
+    >>> image_name_agrees("ghcr.io/dls/ubuntu:1",
     ...                   "https://github.com/DiamondLightSource/ubuntu-devcontainer")
     False
     >>> image_name_agrees("", "https://github.com/acme/api")
@@ -2393,7 +2411,7 @@ def image_name_agrees(image: str, source: str) -> bool:
     repo = _repo_key(source).rpartition("/")[2]
     if not named or not repo:
         return False
-    return named == repo or named.startswith(f"{repo}-") or repo.startswith(f"{named}-")
+    return named == repo or named.startswith(f"{repo}-")
 
 
 def corroborate_source(
@@ -4390,11 +4408,16 @@ def _source_check(target: HotfixTarget, repo: str | None) -> PreflightCheck:
     # row on a version nothing here read.
     named_image = f"{ref.registry}/{ref.repository}" if ref is not None else reference
     if image_name_agrees(reference, source):
+        # What corresponds, and not "so the label is this image's own": the
+        # naming is a corroborator with a hole in it (:func:`image_name_agrees`),
+        # and this row speaks for the repository `init` will clone - not for the
+        # revision label, which `init` still gates on `corroborate_source` and
+        # still records as ASSUMED here.
         return PreflightCheck(
             "source",
             CheckStatus.OK,
             f"the image names {source}, which its own repository "
-            f"{named_image} corroborates - an inherited label would not",
+            f"{named_image} corresponds to",
         )
     return PreflightCheck(
         "source",
