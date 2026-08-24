@@ -8,7 +8,7 @@ Accepted
 
 ## Context
 
-`podbench hotfix --print-values` emitted a fragment. Two of its keys —
+`podbench hotfix values` emitted a fragment. Two of its keys —
 `volumes:` and `volumeMounts:` — are a whole key each in helm, so pasting them
 over a values file that already sets one drops whatever it declared. Read from a
 live pod that is undecidable: a chart-generated volume and one the service

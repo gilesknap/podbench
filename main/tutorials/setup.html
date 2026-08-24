@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Setup &#8212; podbench 0.7.3.dev12+g21960c70f documentation</title>
+    <title>Setup &#8212; podbench 0.7.3.dev50+g75e5ef79a documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d66b565b"></script>
+    <script src="../_static/documentation_options.js?v=70867c76"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -773,7 +773,7 @@ having it. Asking costs one line in that service’s values:</p>
 <span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </pre></div>
 </div>
-<p>That renders <code class="docutils literal notranslate"><span class="pre">&lt;release&gt;-podbench-project</span></code>, which is the name <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span></code> puts in the pod’s <code class="docutils literal notranslate"><span class="pre">volumes:</span></code> entry. <code class="docutils literal notranslate"><span class="pre">size</span></code> and
+<p>That renders <code class="docutils literal notranslate"><span class="pre">&lt;release&gt;-podbench-project</span></code>, which is the name <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">values</span></code> puts in the pod’s <code class="docutils literal notranslate"><span class="pre">volumes:</span></code> entry. <code class="docutils literal notranslate"><span class="pre">size</span></code> and
 <code class="docutils literal notranslate"><span class="pre">storageClassName</span></code> are the only other keys; <code class="docutils literal notranslate"><span class="pre">claimName</span></code> exists for a claim that
 already exists under another name. Its schema is attached to every release as
 <code class="docutils literal notranslate"><span class="pre">podbench-hotfix-claim.values.schema.json</span></code>.</p>
@@ -781,7 +781,7 @@ already exists under another name. Its schema is attached to every release as
 <code class="docutils literal notranslate"><span class="pre">podSecurityContext</span></code> are fields inside the target’s <em>own</em> pod template — a
 subchart cannot reach into a sibling’s StatefulSet, and a pod’s volumes are
 immutable once it exists — so those are in the target’s values at deploy time or
-not at all. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span></code> is what makes writing them cost
+not at all. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">values</span></code> is what makes writing them cost
 nothing.</p>
 </section>
 </section>

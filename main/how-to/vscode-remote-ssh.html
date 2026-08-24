@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.7.3.dev12+g21960c70f documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.7.3.dev50+g75e5ef79a documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d66b565b"></script>
+    <script src="../_static/documentation_options.js?v=70867c76"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -425,6 +425,7 @@
 <li class="toctree-l1"><a class="reference internal" href="attach-to-a-pod.html">Attach to a pod</a></li>
 <li class="toctree-l1"><a class="reference internal" href="contribute.html">Contribute to the project</a></li>
 <li class="toctree-l1"><a class="reference internal" href="debug-with-gdb.html">Debug with gdb</a></li>
+<li class="toctree-l1"><a class="reference internal" href="hotfix-a-running-pod.html">Hotfix a running pod</a></li>
 <li class="toctree-l1"><a class="reference internal" href="iterate-on-python.html">Iterate on Python</a></li>
 <li class="toctree-l1"><a class="reference internal" href="run-container.html">The container image</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">VS Code Remote-SSH</a></li>
@@ -694,10 +695,10 @@ at. <code class="docutils literal notranslate"><span class="pre">--new</span></c
 the sidecar is non-root and the cluster admits <code class="docutils literal notranslate"><span class="pre">SYS_PTRACE</span></code>.</p>
 <p><strong>It names the other two modes once</strong>, on the run that landed a seat where there
 was none, and asks nothing:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  other modes are their own verbs: `podbench hotfix init` for a venv on a
-  claim that survives restarts, `podbench dev` for a clone the application
-  relaunches from. Both change the workload in ways this verb was given no
-  arguments for, so neither is offered as a choice here.
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  other modes are their own verbs: `podbench hotfix init` for a venv on
+  a claim that survives restarts, `podbench dev` for a clone the
+  application relaunches from. Both change the workload, so neither is
+  offered here
 </pre></div>
 </div>
 <p>Said rather than asked, because with no seat in the pod there is nothing

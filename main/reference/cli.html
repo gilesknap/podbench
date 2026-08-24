@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.7.3.dev12+g21960c70f documentation</title>
+    <title>Command-line reference &#8212; podbench 0.7.3.dev50+g75e5ef79a documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=d66b565b"></script>
+    <script src="../_static/documentation_options.js?v=70867c76"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -959,8 +959,8 @@ container may mount the volumes its pod <strong>already declares</strong> and ma
 introduce one — <code class="docutils literal notranslate"><span class="pre">spec.volumes</span></code> is immutable once the pod exists — so a name
 the pod does not carry is refused with that explanation rather than submitted.
 That immutability is the whole reason Hotfix mode asks for the chart’s
-cooperation at deploy time; <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">--print-values</span></code> emits the volume,
-the volumeMount, the supervisor entrypoint and the fsGroup that put it there.</p>
+cooperation at deploy time; <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">values</span></code> emits the volume, the
+volumeMount, the supervisor entrypoint and the fsGroup that put it there.</p>
 <ul>
 <li><p>The argument is a <strong>claim</strong> name or the pod’s <strong>volume</strong> name; a claim is
 resolved to the volume entry that references it.</p></li>
@@ -1559,7 +1559,7 @@ hotfixed pod go unnoticed.</p>
 code with <code class="docutils literal notranslate"><span class="pre">restartCount</span></code> unchanged and both seats alive. Two things about it are
 still undemonstrated — survival across pod replacement, which needs a real claim
 rather than the generic ephemeral volume that run used, and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, which
-no cluster has run. <code class="docutils literal notranslate"><span class="pre">--print-values</span> <span class="pre">--from-pod</span></code> was measured against the live
+no cluster has run. <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">values</span> <span class="pre">--from-pod</span></code> was measured against the live
 <code class="docutils literal notranslate"><span class="pre">bl47p-ea-fastcs-01</span></code> and <code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code> targets, and is where the volume and
 probe warnings below came from.</p>
 </div>
@@ -1579,58 +1579,16 @@ seat, where the claim is already in this process’s own mount namespace.</p>
  a status command that will not let a hotfixed pod go unnoticed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --print-values                       emit the helm values an application&#39;s chart needs, and exit │
-│ --app                     NAME       application name, for --print-values                        │
-│ --entrypoint              CMD        the command the container runs today, which the supervisor  │
-│                                      wraps, for --print-values                                   │
-│ --liveness                CMD        the target&#39;s existing exec livenessProbe command, for       │
-│                                      --no-from-pod; emitted wrapped to honour the hold. Carries  │
-│                                      no timings, so prefer --liveness-probe - or --from-pod,     │
-│                                      which carries them without being asked                      │
-│ --liveness-probe          JSON       the target&#39;s whole livenessProbe as json, for               │
-│                                      --no-from-pod. --from-pod reads it off the target itself,   │
-│                                      which is what this flag existed to make you do by hand:     │
-│                                      `kubectl get pod POD -o                                     │
-│                                      jsonpath=&#39;{.spec.containers[0].livenessProbe}&#39;`. Its exec   │
-│                                      command is wrapped and its timings are carried over; a      │
-│                                      chart renders a supplied probe wholesale, so a timing left  │
-│                                      out becomes the k8s default                                 │
-│ --size                    SIZE       claim size, for --print-values [default: 2Gi]               │
-│ --gid                     GID        the application container&#39;s gid, for --print-values         │
-│                                      (default: read from the target)                             │
-│                                      [default: &lt;the application&#39;s runAsGroup&gt;]                   │
-│ --from-pod                POD        read the entrypoint, livenessProbe and gid off this pod, so │
-│                                      the emitted values need no hand-editing (the default;       │
-│                                      --no-from-pod turns it off)                                 │
-│ --no-from-pod                        do not read any pod: emit from the flags alone, for CI, an  │
-│                                      offline machine, or a pod that does not exist yet           │
-│ --values                  PATH       the target service&#39;s own values file: emit it back whole    │
-│                                      with podbench&#39;s keys merged in, rather than a fragment to   │
-│                                      merge by hand                                               │
-│ --parent-values           PATH       a shared values file the service inherits from. A helm list │
-│                                      replaces rather than merges, so this is what stops a        │
-│                                      service declaring `volumes:` for the first time silently    │
-│                                      dropping the shared ones                                    │
-│ --values-under            KEY        dotted path to the mapping the target chart keeps its pod   │
-│                                      template keys under (`ioc-instance`). Read from the files   │
-│                                      when not given, and the output says where they went         │
-│ --central-claim                      emit the older namespace-wide `hotfixProject.claims[]`      │
-│                                      entry instead of the podbench-hotfix-claim chart dependency │
-│ --claim-venv              NAME       the venv&#39;s directory name on the claim, which the emitted   │
-│                                      runtime switch looks for (default: .venv). Must match       │
-│                                      `hotfix init --claim-venv`                                  │
-│                                      [default: .venv]                                            │
-│ --container               NAME       the application container (default: first)                  │
-│ --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)           │
-│ --context                 NAME       kubeconfig context                                          │
-│ --kubectl                 BIN        kubectl binary to use [default: kubectl]                    │
-│ --help                               Show this message and exit.                                 │
+│ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ values       emit the helm values an application&#39;s chart needs                                   │
+│ check        say what would stop a hotfix on this target, before starting one                    │
 │ init         seed the claim from the running container, clone the source, rebuild the venv       │
 │ apply        commit the change on the claim and relaunch the running child                       │
 │ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim&#39;s checkout as a branch for the rebuild                               │
+│ retire       what is left of retiring this hotfix, and the one step podbench can take            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 </pre></div>
 </div>
@@ -1641,28 +1599,46 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">init</span> <span class="pre">--repo</span> <span class="pre">URL</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">values</span> <span class="pre">--app</span> <span class="pre">NAME</span> <span class="pre">--from-pod</span> <span class="pre">POD</span></code></p></td>
+<td><p>read the target and emit the helm values its chart needs, which is what makes the claim exist in the first place</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">check</span> <span class="pre">TARGET</span></code></p></td>
+<td><p>every prerequisite <code class="docutils literal notranslate"><span class="pre">init</span></code> has, measured in one read-only pass, with a verdict and an exit code</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">init</span> <span class="pre">TARGET</span></code></p></td>
 <td><p>seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apply</span> <span class="pre">-m</span> <span class="pre">MSG</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apply</span> <span class="pre">-m</span> <span class="pre">MSG</span> <span class="pre">TARGET</span></code></p></td>
 <td><p>commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application’s own child so the fix is what runs</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">status</span></code></p></td>
-<td><p>every hotfixed pod in the namespace, its drift, and what is wrong with it</p></td>
+<td><p>every hotfixed pod in the namespace — or, with <code class="docutils literal notranslate"><span class="pre">-A</span></code>, the cluster — its drift, and what is wrong with it</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">consolidate</span> <span class="pre">--branch</span> <span class="pre">B</span> <span class="pre">--venv</span> <span class="pre">PATH</span> <span class="pre">TARGET</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">consolidate</span> <span class="pre">--branch</span> <span class="pre">B</span> <span class="pre">TARGET</span></code></p></td>
 <td><p>push the checkout as a branch and print the retirement checklist</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">retire</span> <span class="pre">TARGET</span></code></p></td>
+<td><p>which steps of that checklist have landed, measured against the cluster, and <code class="docutils literal notranslate"><span class="pre">--delete-claim</span></code> to take the last one</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">TARGET</span></code> is <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, <code class="docutils literal notranslate"><span class="pre">deployment/NAME</span></code> or <code class="docutils literal notranslate"><span class="pre">statefulset/NAME</span></code>. Shared flags:
-<code class="docutils literal notranslate"><span class="pre">--venv</span></code> (the mountPath the claim is mounted at, beside the application’s own
-project and never over it), <code class="docutils literal notranslate"><span class="pre">--container</span></code>, <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, <code class="docutils literal notranslate"><span class="pre">--local</span></code>, <code class="docutils literal notranslate"><span class="pre">--author</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">TARGET</span></code> is <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, <code class="docutils literal notranslate"><span class="pre">deployment/NAME</span></code> or <code class="docutils literal notranslate"><span class="pre">statefulset/NAME</span></code>. Shared flags
+across <code class="docutils literal notranslate"><span class="pre">init</span></code>, <code class="docutils literal notranslate"><span class="pre">apply</span></code> and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code>: <code class="docutils literal notranslate"><span class="pre">--container</span></code>, <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, <code class="docutils literal notranslate"><span class="pre">--local</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--author</span></code>, and <code class="docutils literal notranslate"><span class="pre">--venv</span></code> — which is the mountPath the claim is mounted at,
+beside the application’s own project and never over it, and which is <strong>read off
+the pod</strong> rather than asked for. <code class="docutils literal notranslate"><span class="pre">check</span></code> takes <code class="docutils literal notranslate"><span class="pre">--container</span></code> and <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">retire</span></code> takes <code class="docutils literal notranslate"><span class="pre">--container</span></code>. <code class="docutils literal notranslate"><span class="pre">values</span></code> runs before any of that exists, so it
+takes a <code class="docutils literal notranslate"><span class="pre">--from-pod</span> <span class="pre">POD</span></code> rather than a <code class="docutils literal notranslate"><span class="pre">TARGET</span></code> and has its own flags, listed
+below.</p>
 <p>Notes:</p>
-<ul class="simple">
+<ul>
 <li><p><strong>Single replica only</strong>, refused otherwise: the claim is <code class="docutils literal notranslate"><span class="pre">ReadWriteOnce</span></code>, so a
-second replica either fails to schedule or races on one checkout.</p></li>
+second replica either fails to schedule or races on one checkout. <code class="docutils literal notranslate"><span class="pre">retire</span></code> is
+the exception, because the refusal guards a <em>write</em> and the state a retirement
+report exists to confirm is the one after the wiring came out and the team
+scaled back up. Where it finds several live pods it measures the one that
+still carries the wiring, so a rollout in flight cannot tick that step.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">init</span></code> <strong>performs</strong> the seed. It copies the project and the interpreter out of
 the running application container through <code class="docutils literal notranslate"><span class="pre">/proc/1/root</span></code>, and never out of the
 seat’s own <code class="docutils literal notranslate"><span class="pre">/app</span></code>: the seat is a different image and its venv is podbench’s,
@@ -1693,17 +1669,151 @@ the thing to fix is a Python support module in its venv or the ibek <code class=
 beside it is a design question this does not settle.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">--claim-venv</span></code> must match on both ends.</strong> It names the venv directory on the
 claim, which the supervisor’s runtime switch looks for and which <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span></code>
-builds, so <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">init</span> <span class="pre">--claim-venv</span></code> and <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">--print-values</span> <span class="pre">--claim-venv</span></code>
+builds, so <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">init</span> <span class="pre">--claim-venv</span></code> and <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">values</span> <span class="pre">--claim-venv</span></code>
 have to agree. <code class="docutils literal notranslate"><span class="pre">init</span></code> sets <code class="docutils literal notranslate"><span class="pre">UV_PROJECT_ENVIRONMENT</span></code> whenever it is not uv’s own
 <code class="docutils literal notranslate"><span class="pre">.venv</span></code>, because otherwise the rebuild lands beside the venv the supervisor is
-looking for and the pod goes on quietly running the image’s code.</p></li>
+looking for and the pod goes on quietly running the image’s code. <code class="docutils literal notranslate"><span class="pre">init</span></code>
+records it in the manifest and <code class="docutils literal notranslate"><span class="pre">apply</span></code> reads it from there; <code class="docutils literal notranslate"><span class="pre">apply</span></code> has no such
+flag, because a rebuild that has to be told twice is one that gets told once
+(<a class="reference external" href="https://github.com/gilesknap/podbench/issues/209">#209</a>).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--venv</span></code> is read off the pod, and a value that disagrees is refused.</strong> The
+claim is podbench’s own <code class="docutils literal notranslate"><span class="pre">podbench-app</span></code> volume, so its <code class="docutils literal notranslate"><span class="pre">mountPath</span></code> in the
+application container <em>is</em> the answer. <code class="docutils literal notranslate"><span class="pre">status</span></code> finds a hotfixed pod by
+scanning for a <code class="docutils literal notranslate"><span class="pre">mountPath</span></code> of <code class="docutils literal notranslate"><span class="pre">/podbench/app</span></code>, so any other value wrote a
+manifest <code class="docutils literal notranslate"><span class="pre">status</span></code> could not see — a hotfixed pod nobody can list, which is the
+failure the mode exists to prevent. A claim genuinely mounted elsewhere is
+still accepted by the flag, with a warning saying both that <code class="docutils literal notranslate"><span class="pre">status</span></code> will not
+list it and that <code class="docutils literal notranslate"><span class="pre">init</span></code> will refuse it — the seed, the copied interpreter and
+the supervisor’s runtime switch all name <code class="docutils literal notranslate"><span class="pre">/podbench/app</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--base-commit</span></code> and <code class="docutils literal notranslate"><span class="pre">--repo</span></code> default to what the image says about itself.</strong>
+podbench reads <code class="docutils literal notranslate"><span class="pre">org.opencontainers.image.revision</span></code> and
+<code class="docutils literal notranslate"><span class="pre">org.opencontainers.image.source</span></code> off the target image over the registry API,
+anonymously and with a short timeout. The old default for the base was
+<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">rev-parse</span> <span class="pre">HEAD</span></code> of the fresh clone, which without <code class="docutils literal notranslate"><span class="pre">--ref</span></code> is the default
+branch’s tip and is almost never what the released image was built from —
+while <code class="docutils literal notranslate"><span class="pre">status</span></code>’s <code class="docutils literal notranslate"><span class="pre">+N</span> <span class="pre">commit(s)</span></code> and everything <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> pushes are
+differences against it. A revision the clone does not contain is not believed.</p>
+<p><strong>The labels themselves are corroborated first.</strong> OCI labels are inherited, so
+a derived image advertises its base image’s repository and revision unless the
+build overrides them — measured on
+<code class="docutils literal notranslate"><span class="pre">ghcr.io/diamondlightsource/fastcs-example-debug:2025.10.1</span></code>, which names
+<code class="docutils literal notranslate"><span class="pre">…/ubuntu-devcontainer</span></code>. Checking the revision against the clone cannot catch
+that, because the clone came from the same label. podbench asks the seeded
+checkout’s <code class="docutils literal notranslate"><span class="pre">origin</span></code> instead, and where it disagrees <code class="docutils literal notranslate"><span class="pre">origin</span></code> wins.</p>
+<p>Where nothing corroborates them the base is recorded as <strong>assumed</strong> and <code class="docutils literal notranslate"><span class="pre">status</span></code>
+prints <code class="docutils literal notranslate"><span class="pre">+N</span> <span class="pre">commit(s)</span> <span class="pre">from</span> <span class="pre">an</span> <span class="pre">assumed</span> <span class="pre">base</span></code> rather than a derived count wearing
+a measurement’s clothes.</p>
+</li>
 <li><p>The editable install runs in the <strong>application</strong> container, not the seat: the
 venv is shared but its interpreter is not. <code class="docutils literal notranslate"><span class="pre">--no-install</span></code> skips it.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">consolidate</span></code> does not open a PR; it prints the <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">pr</span> <span class="pre">create</span></code> line.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> exits <strong>1</strong> when any pod needs attention, so “no unretired hotfixes” is
-a testable shutdown assertion.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> exits <strong>1</strong> when any pod needs attention, so “no hotfix here needs somebody
+today” is a testable shutdown assertion. It is <strong>not</strong> the assertion “nothing here is
+still to be retired”: a consolidated fix whose image has not moved is a live hotfix
+doing its job, so retirement is not part of a row’s <code class="docutils literal notranslate"><span class="pre">ok</span></code> and <code class="docutils literal notranslate"><span class="pre">status</span></code> can exit 0 on a
+pod <code class="docutils literal notranslate"><span class="pre">retire</span></code> reports several steps short. <code class="docutils literal notranslate"><span class="pre">retire</span></code> is the verb that stays red until a
+retirement is finished. <code class="docutils literal notranslate"><span class="pre">-A</span></code>/<code class="docutils literal notranslate"><span class="pre">--all-namespaces</span></code> is that assertion for the
+whole cluster, with the same exit code — the facility-wide form used to be a shell
+loop the operator had to write and keep correct. Every pod is still read through a
+client bound to its own namespace.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">retire</span></code> is the retirement checklist as a measurement rather than as prose. Four
+rows — <code class="docutils literal notranslate"><span class="pre">branch</span></code>, <code class="docutils literal notranslate"><span class="pre">image</span></code>, <code class="docutils literal notranslate"><span class="pre">wiring</span></code>, <code class="docutils literal notranslate"><span class="pre">claim</span></code> — because those are the four a cluster
+can be asked about, and <code class="docutils literal notranslate"><span class="pre">[x]</span></code> goes on <strong>only</strong> a step that was measured done: an
+unmeasured one is <code class="docutils literal notranslate"><span class="pre">[</span> <span class="pre">]</span></code> with a detail saying why, and it moves the exit code in
+neither direction. It is read-only and lands no seat unless <code class="docutils literal notranslate"><span class="pre">--delete-claim</span></code> is
+given, and that flag declines while <strong>anything in the namespace</strong> still mounts the
+claim — the second pod of a rollout holds it just as hard — because a claim deleted
+out from under a running pod stays <code class="docutils literal notranslate"><span class="pre">Terminating</span></code> and then fails to bind on the next
+reschedule. A pod listing that could not be read declines too. Deleting it prints both things podbench cannot verify about the
+deletion: nothing mounted the claim, so what was on it went unread, and a chart that
+still declares the claim will have the next sync recreate it. Exit <strong>1</strong> while any
+measured step is outstanding.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">retire</span></code>’s <code class="docutils literal notranslate"><span class="pre">branch</span></code> step is <strong>done</strong> on a claim that records no commits: a seeded
+claim nobody ever <code class="docutils literal notranslate"><span class="pre">apply</span></code>-ed has nothing to consolidate and nothing that retiring it
+discards, and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> refuses that same claim.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">retire</span></code>’s <code class="docutils literal notranslate"><span class="pre">wiring</span></code> row names both volumes, the mount and the supervisor loop in
+<code class="docutils literal notranslate"><span class="pre">command</span></code> and <code class="docutils literal notranslate"><span class="pre">args</span></code>, and it says to take those <em>entries</em> out of the application’s
+values rather than the whole <code class="docutils literal notranslate"><span class="pre">volumes</span></code> and <code class="docutils literal notranslate"><span class="pre">volumeMounts</span></code> keys — a helm list replaces
+across the parent/child merge rather than merging into it, so a key deleted wholesale
+takes the service’s own mounts with it. A <code class="docutils literal notranslate"><span class="pre">podSecurityContext.fsGroup</span></code> is <strong>named,
+not counted</strong>: <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">values</span></code> emits one, an application may have declared its own,
+and the pod cannot say which.</p></li>
+<li><p><strong>Turning the claim off is not retiring the hotfix</strong>, and this is the state <code class="docutils literal notranslate"><span class="pre">retire</span></code>
+exists to name. <code class="docutils literal notranslate"><span class="pre">podbench-hotfix-claim.enabled:</span> <span class="pre">false</span></code> disables the subchart — the
+PVC — while the <code class="docutils literal notranslate"><span class="pre">volumes</span></code>, <code class="docutils literal notranslate"><span class="pre">volumeMounts</span></code>, <code class="docutils literal notranslate"><span class="pre">command</span></code>, <code class="docutils literal notranslate"><span class="pre">args</span></code> and <code class="docutils literal notranslate"><span class="pre">podSecurityContext</span></code>
+that wire the pod are the <em>application’s</em> own values. Measured on p47-beamline on 2026-08-23:
+with the boolean off, every pod in the namespace deleted, and the workloads
+recreated from git, the target came back still mounting the claim and still running
+the supervisor loop.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">check</span></code> exits <strong>1</strong> when anything it measured would block an <code class="docutils literal notranslate"><span class="pre">init</span></code>, and it is
+read-only: it writes nothing and lands no seat, because an ephemeral container
+cannot be taken back off a pod and a verb run to ask a question must not spend
+one. A non-exec <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> is <code class="docutils literal notranslate"><span class="pre">warn</span></code> rather than a blocker by design: it
+breaks <code class="docutils literal notranslate"><span class="pre">apply</span></code>’s hold rather than <code class="docutils literal notranslate"><span class="pre">init</span></code>. <code class="docutils literal notranslate"><span class="pre">check</span></code> takes <code class="docutils literal notranslate"><span class="pre">--repo</span></code> because <code class="docutils literal notranslate"><span class="pre">init</span></code>
+does — an image naming no source repository is a state <code class="docutils literal notranslate"><span class="pre">init</span></code> refuses, so it is
+a blocker here, and a check that could not hear the flag would refuse a target
+the next command accepts. A label that <em>is</em> there is corroborated rather than
+believed: OCI labels are inherited from the base image, so the row is <code class="docutils literal notranslate"><span class="pre">[ok]</span></code> only
+where the image’s own registry path corresponds to the repository the label names
+(a <code class="docutils literal notranslate"><span class="pre">-debug</span></code> or <code class="docutils literal notranslate"><span class="pre">-runtime</span></code> variant counts), and a <code class="docutils literal notranslate"><span class="pre">warn</span></code> otherwise. It is a warning
+and not a blocker because <code class="docutils literal notranslate"><span class="pre">init</span></code> does not refuse the state — it clones the label’s
+repository and records an <code class="docutils literal notranslate"><span class="pre">ASSUMED</span></code> base. The <code class="docutils literal notranslate"><span class="pre">[ok]</span></code> speaks for the <strong>repository</strong>
+alone: it is a correspondence rather than a proof — an image named after its base
+corresponds to the base’s own label — and <code class="docutils literal notranslate"><span class="pre">init</span></code>’s revision label is gated
+separately, on <code class="docutils literal notranslate"><span class="pre">--repo</span></code> or the seeded checkout’s <code class="docutils literal notranslate"><span class="pre">origin</span></code>. On a claim that is already seeded the three rows only
+a seed reads — the target root, the project and the interpreter — are <strong>not
+asked</strong>, because <code class="docutils literal notranslate"><span class="pre">init</span></code> does not read them either. Where no seat is running yet,
+the seat’s view of the target’s root is reported <strong>unmeasured</strong> rather than
+either way, and the verdict says “nothing measured here”.</p></li>
 </ul>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix --print-values --app myapp --from-pod myapp-0
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+ Usage: podbench hotfix values [OPTIONS]
+
+ emit the helm values an application&#39;s chart needs
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  --app                     NAME       application name [required]                              │
+│    --entrypoint              CMD        the command the container runs today, which the          │
+│                                         supervisor wraps (default: read from the target)         │
+│    --liveness-probe          JSON       the target&#39;s whole livenessProbe as json, overriding the │
+│                                         one read off the target. Its exec command is wrapped and │
+│                                         its timings are carried over; a chart renders a supplied │
+│                                         probe wholesale, so a timing left out becomes the k8s    │
+│                                         default                                                  │
+│    --size                    SIZE       claim size [default: 2Gi]                                │
+│    --gid                     GID        the application container&#39;s gid (default: read from the  │
+│                                         target)                                                  │
+│                                         [default: &lt;the application&#39;s runAsGroup&gt;]                │
+│    --from-pod                POD        read the entrypoint, livenessProbe and gid off this pod, │
+│                                         so the emitted values need no hand-editing               │
+│    --values                  PATH       the target service&#39;s own values file: emit it back whole │
+│                                         with podbench&#39;s keys merged in, rather than a fragment   │
+│                                         to merge by hand                                         │
+│    --parent-values           PATH       a shared values file the service inherits from. A helm   │
+│                                         list replaces rather than merges, so this is what stops  │
+│                                         a service declaring `volumes:` for the first time        │
+│                                         silently dropping the shared ones                        │
+│    --values-under            KEY        dotted path to the mapping the target chart keeps its    │
+│                                         pod template keys under (`ioc-instance`). Read from the  │
+│                                         files when not given, and the output says where they     │
+│                                         went                                                     │
+│    --central-claim                      emit the older namespace-wide `hotfixProject.claims[]`   │
+│                                         entry instead of the podbench-hotfix-claim chart         │
+│                                         dependency                                               │
+│    --claim-venv              NAME       the venv&#39;s directory name on the claim, which the        │
+│                                         runtime switch looks for and `uv sync` builds (default:  │
+│                                         .venv). `values` and `init` have to be given the same    │
+│                                         name                                                     │
+│                                         [default: .venv]                                         │
+│    --container               NAME       the application container (default: first)               │
+│    --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)        │
+│    --context                 NAME       kubeconfig context                                       │
+│    --kubectl                 BIN        kubectl binary to use [default: kubectl]                 │
+│    --help                               Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix values --app myapp --from-pod myapp-0
 </pre></div>
 </div>
 <p>emits both halves of the chart wiring: <code class="docutils literal notranslate"><span class="pre">hotfixProject</span></code> values for the podbench
@@ -1713,32 +1823,36 @@ project at <code class="docutils literal notranslate"><span class="pre">/podbenc
 <code class="docutils literal notranslate"><span class="pre">command</span></code>/<code class="docutils literal notranslate"><span class="pre">args</span></code>, <code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> under <code class="docutils literal notranslate"><span class="pre">podSecurityContext</span></code>, and — where the target
 declares an exec one — its <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> wrapped to honour the hold.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--from-pod</span></code> reads the entrypoint, the whole <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> and the gid off
-that pod, and reading is the <strong>default</strong>: naming no pod and not passing
-<code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> is a refusal that asks for one. Supplying those three by hand is
-how issue #176 happened — a chart renders a supplied <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> wholesale,
-so a timing left out becomes the Kubernetes default, and a compiled IOC went
-from <code class="docutils literal notranslate"><span class="pre">initialDelaySeconds:</span> <span class="pre">120</span></code> and <code class="docutils literal notranslate"><span class="pre">periodSeconds:</span> <span class="pre">30</span></code> to 0s and 10s: probed
-from the moment it started, before it had reached its hardware. Reading the pod
-removes the whole class, and the timings arrive without anyone typing them. It
+that pod, and reading is <strong>all there is</strong>: naming no pod is a refusal that asks
+for one, and there is no offline emission to fall back to
+(<a class="reference external" href="https://github.com/gilesknap/podbench/issues/205">#205</a> item 6). Supplying
+those three by hand is how issue #176 happened — a chart renders a supplied
+<code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> wholesale, so a timing left out becomes the Kubernetes default,
+and a compiled IOC went from <code class="docutils literal notranslate"><span class="pre">initialDelaySeconds:</span> <span class="pre">120</span></code> and <code class="docutils literal notranslate"><span class="pre">periodSeconds:</span> <span class="pre">30</span></code>
+to 0s and 10s: probed from the moment it started, before it had reached its
+hardware. Reading the pod removes the whole class, and the timings arrive
+without anyone typing them. It
 reaches the cluster the way every other verb does — <code class="docutils literal notranslate"><span class="pre">-n</span></code>/<code class="docutils literal notranslate"><span class="pre">--namespace</span></code>,
 <code class="docutils literal notranslate"><span class="pre">--context</span></code> and <code class="docutils literal notranslate"><span class="pre">--kubectl</span></code>, with the namespace coming from the kubeconfig
 context when <code class="docutils literal notranslate"><span class="pre">-n</span></code> is not given — and <code class="docutils literal notranslate"><span class="pre">--container</span> <span class="pre">NAME</span></code> picks the application
 container where the pod has more than one, defaulting to the first.</p>
-<p>Notes on <code class="docutils literal notranslate"><span class="pre">--print-values</span></code>:</p>
+<p>Notes on <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">values</span></code>:</p>
 <ul>
-<li><p><code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> is the way to emit without a cluster — CI, an offline machine,
-or a pod that does not exist yet — and it is the only way <code class="docutils literal notranslate"><span class="pre">--entrypoint</span></code>,
-<code class="docutils literal notranslate"><span class="pre">--gid</span></code>, <code class="docutils literal notranslate"><span class="pre">--liveness</span></code> and <code class="docutils literal notranslate"><span class="pre">--liveness-probe</span></code> have to carry the whole snippet
-between them. <code class="docutils literal notranslate"><span class="pre">--liveness-probe</span></code> takes the JSON the pod would have given you,
-<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">get</span> <span class="pre">pod</span> <span class="pre">POD</span> <span class="pre">-o</span> <span class="pre">jsonpath='{.spec.containers[0].livenessProbe}'</span></code>, which
-is exactly the paste <code class="docutils literal notranslate"><span class="pre">--from-pod</span></code> exists to spare you; <code class="docutils literal notranslate"><span class="pre">--liveness</span></code> takes the
-exec command alone and carries <strong>no timings</strong>, which is the shape of #176.</p></li>
-<li><p><strong>A flag you pass beats the pod.</strong> That is what makes <code class="docutils literal notranslate"><span class="pre">--entrypoint</span></code> a usable
-answer to a target whose command lives in the image’s <code class="docutils literal notranslate"><span class="pre">ENTRYPOINT</span></code> — a
-container declaring neither <code class="docutils literal notranslate"><span class="pre">command</span></code> nor <code class="docutils literal notranslate"><span class="pre">args</span></code> has it nowhere in the pod
-spec, so nothing read from the cluster will find it — without giving up the
-gid and the probe as well. The refusal says so, rather than sending you to
-<code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> for all three.</p></li>
+<li><p><strong>There is no offline emission.</strong> <code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> emitted from <code class="docutils literal notranslate"><span class="pre">--entrypoint</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--gid</span></code>, <code class="docutils literal notranslate"><span class="pre">--liveness</span></code> and <code class="docutils literal notranslate"><span class="pre">--liveness-probe</span></code> alone; it went with <code class="docutils literal notranslate"><span class="pre">--liveness</span></code>
+in #205 item 6, and neither is deprecated or hidden — a flag whose help had to
+talk you out of using it had already failed. “A pod that does not exist yet”
+is close to vacuous for a mode applied to something running and broken, and
+the offline emission was strictly the lower-fidelity one: hand-supplied fields
+lose the probe’s timings, the gid and the real entrypoint. <code class="docutils literal notranslate"><span class="pre">--liveness-probe</span></code>
+survives because it carries a whole probe with its timings; <code class="docutils literal notranslate"><span class="pre">--liveness</span></code>
+carried an exec command and <strong>no timings</strong>, which is the shape of #176.</p></li>
+<li><p><strong>A flag you pass beats the pod</strong>, and that is now the only thing the three
+override flags do. It is what makes <code class="docutils literal notranslate"><span class="pre">--entrypoint</span></code> a usable answer to a target
+whose command lives in the image’s <code class="docutils literal notranslate"><span class="pre">ENTRYPOINT</span></code> — a container declaring
+neither <code class="docutils literal notranslate"><span class="pre">command</span></code> nor <code class="docutils literal notranslate"><span class="pre">args</span></code> has it nowhere in the pod spec, so nothing read
+from the cluster will find it — without giving up the gid and the probe as
+well. The refusal names that one flag rather than the read it cannot avoid.</p></li>
 <li><p><strong>A target with no <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> is not an error.</strong> 7 of 18 containers on a
 real beamline declare one and the canonical fastcs target is not among them,
 so no probe block is emitted and nothing is said about it.</p></li>
@@ -1752,8 +1866,13 @@ identical to the fastcs case, and the difference is whether a held pod
 survives.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">--values</span> <span class="pre">PATH</span></code> emits the whole file, not a fragment.</strong> Given the service’s
 own values file, podbench merges its keys into it and prints the result — the
-same file, its comments intact, ready to be pasted back or redirected over
-itself. The notes go to stderr so stdout stays exactly the file.</p>
+same file, its comments intact, ready to be pasted back or redirected to a
+new name and moved over the input. The notes go to stderr so stdout stays
+exactly the file — but do not redirect straight over the input: a shell
+truncates a redirect target before podbench starts, so the merge reads an
+empty file, and the output that lands is the snippet alone with everything
+the service declared silently gone. Exit 2 from a failed read leaves the
+same emptied file behind.</p>
 <p>Three things it decides, and it says which on stderr each time:</p>
 <ul class="simple">
 <li><p><strong>where the keys go.</strong> <code class="docutils literal notranslate"><span class="pre">ioc-instance</span></code> nests all five under an
@@ -1804,17 +1923,22 @@ the chart renders them. Prefer it; the warning is what is left for a target
 whose values file you do not have.</p>
 </li>
 <li><p><code class="docutils literal notranslate"><span class="pre">fsGroup</span></code> stays the literal placeholder <code class="docutils literal notranslate"><span class="pre">&lt;the</span> <span class="pre">application's</span> <span class="pre">runAsGroup&gt;</span></code> only
-where nothing could say what it should be: under <code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> with no
-<code class="docutils literal notranslate"><span class="pre">--gid</span></code>, or against a pod that states <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> and no <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code>, which a
-hardened workload routinely does. It is deliberately not a number — a snippet
+where nothing could say what it should be: a pod that states <code class="docutils literal notranslate"><span class="pre">runAsUser</span></code> and
+no <code class="docutils literal notranslate"><span class="pre">runAsGroup</span></code>, which a hardened workload routinely does, and no <code class="docutils literal notranslate"><span class="pre">--gid</span></code> to
+say otherwise. It is deliberately not a number — a snippet
 pasted unread then fails at <code class="docutils literal notranslate"><span class="pre">helm</span> <span class="pre">install</span></code> rather than deploying an fsGroup the
 application does not run as. It must never become 0: a claim that is present
 and unwritable starts and <em>then</em> fails, in the dark.</p></li>
-<li><p><strong>Every failure reading the pod names <code class="docutils literal notranslate"><span class="pre">--no-from-pod</span></code> and what taking it
-costs</strong>, quoting #176, because making a cluster read the default lands each of
-these on somebody who did not ask for one. kubectl tells a missing kubeconfig,
-an absent pod and a forbidden <code class="docutils literal notranslate"><span class="pre">get</span> <span class="pre">pods</span></code> apart only in the text of its own
-message, so podbench relays that verbatim rather than guessing at a category.</p></li>
+<li><p><strong>Every failure reading the pod says why the read is not optional</strong>, quoting
+#176, and names what will get you going: <code class="docutils literal notranslate"><span class="pre">--from-pod</span> <span class="pre">POD</span></code>, <code class="docutils literal notranslate"><span class="pre">-n</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--context</span></code> to make the read work, or one override where the read reached the
+pod and the pod could not answer. Making a cluster read the only way lands
+each of these on somebody who did not ask for one, and #176 is the reason
+there is nothing to fall back to — without it the reader’s next move is to
+hand-write the five keys into the chart anyway. kubectl tells a missing
+kubeconfig, an absent pod and a forbidden <code class="docutils literal notranslate"><span class="pre">get</span> <span class="pre">pods</span></code> apart only in the text of
+its own message, so podbench relays that verbatim rather than guessing at a
+category.</p></li>
 </ul>
 </section>
 </section>
@@ -2500,7 +2624,7 @@ session inherits the image’s value regardless, where <code class="docutils lit
 <td><p>success — including a degraded seat, which is an honest outcome and not a failure</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
-<td><p>an Iterate-mode operation failed (<code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>); <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> found a pod needing attention; or <code class="docutils literal notranslate"><span class="pre">doctor</span></code> found something blocking an attach</p></td>
+<td><p>an Iterate-mode operation failed (<code class="docutils literal notranslate"><span class="pre">dev</span></code>, <code class="docutils literal notranslate"><span class="pre">dev-bootstrap</span></code>, <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>); <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> found a pod needing attention; <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">check</span></code> found something blocking an <code class="docutils literal notranslate"><span class="pre">init</span></code>; <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">retire</span></code> found a step of a retirement still outstanding; or <code class="docutils literal notranslate"><span class="pre">doctor</span></code> found something blocking an attach</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
 <td><p>a launcher error, a <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> error, an unanswerable <code class="docutils literal notranslate"><span class="pre">POD</span></code> (see <a class="reference internal" href="#naming-the-pod"><span class="std std-ref">Naming the pod</span></a>), a <code class="docutils literal notranslate"><span class="pre">doctor</span></code> usage error, or <code class="docutils literal notranslate"><span class="pre">podbench</span></code> with no verb</p></td>

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>S7 — The hold loop: relaunching without restarting the container &#8212; podbench 0.7.3.dev12+g21960c70f documentation</title>
+    <title>S7 — The hold loop: relaunching without restarting the container &#8212; podbench 0.7.3.dev50+g75e5ef79a documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../../_static/documentation_options.js?v=d66b565b"></script>
+    <script src="../../_static/documentation_options.js?v=70867c76"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -778,7 +778,7 @@ session. This is a correctness requirement, not an optimisation: the failure is
 silent and leaves the old code serving.</p></li>
 <li><p>Verification must be <strong>“did the port change owner”</strong>. A changed pid file and an
 answering port both pass while broken.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--print-values</span></code> must emit the <strong>wrapped</strong> probe wherever the target declares
+<li><p><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">values</span></code> must emit the <strong>wrapped</strong> probe wherever the target declares
 one, and the wrapper must short-circuit on the hold file.</p></li>
 <li><p>Relaunch costs ~6.8s to full service against 15–45s of kubelet ladder, and
 costs the seat nothing rather than SIGKILLing it.</p></li>
