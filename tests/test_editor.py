@@ -26,6 +26,7 @@ from podbench.editor import (
     PROVISION_FLAG,
     SERVER_CLI_ATTEMPTS,
     SERVER_CLI_INTERVAL,
+    UNREACHABLE_CAUSES,
     EditorError,
     Provision,
     is_step,
@@ -304,12 +305,29 @@ def test_an_unreachable_seat_is_reported_rather_than_opened() -> None:
     # on the last, names a port that does not exist.
     assert "sshd_config: No such file or directory" in message
     assert "kex_exchange_identification" in message
-    assert "attach --new" in message, "a named way out, not just a diagnosis"
+    assert "`--new` lands a fresh seat" in message, (
+        "a named way out, not just a diagnosis"
+    )
     assert [call[0] for call in seat.calls] == ["ssh"], (
         "nothing may run after the probe fails - the extension install reports "
         "success without a connection, and the window would too"
     )
     assert seat.files == {}
+
+
+def test_the_ways_out_name_a_flag_and_never_another_verb() -> None:
+    """``UNREACHABLE_CAUSES`` is reached only from ``check_reachable``.
+
+    Which makes it ``vscode``'s block and nobody else's — ``attach`` never
+    prints it. Two of its bullets used to hard-code ``podbench attach --new``,
+    including the one that fires in the field, so a user who ran ``podbench
+    vscode`` was told to run a different verb. ``--new`` is spelled the same on
+    both, so the remedy is the flag alone.
+    """
+    assert "podbench attach" not in UNREACHABLE_CAUSES
+    assert UNREACHABLE_CAUSES.count("`--new`") == 2, (
+        "both seat-replacing bullets still have to name a way out"
+    )
 
 
 def test_the_alias_is_proven_before_the_first_thing_that_needs_it() -> None:

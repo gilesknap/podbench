@@ -394,11 +394,28 @@ UNREACHABLE_CAUSES = """\
     sign for it - nothing in the pod is involved. `IdentityAgent none` in a
     `Host podbench-*` block, below the Include line
   - `sshd_config: No such file or directory`: the seat has no ssh transport,
-    because its agent never wrote one. `podbench attach --new` lands a fresh
-    seat; the exec helpers work on this one meanwhile
+    because its agent never wrote one. `--new` lands a fresh seat; the exec
+    helpers work on this one meanwhile
   - `Permission denied (publickey)`: this seat's authorized_keys was written
-    when it started and does not carry the key in the stanza. `podbench
-    attach --new` is the only way to change it"""
+    when it started and does not carry the key in the stanza. `--new` is the
+    only way to change it"""
+"""The four ways ``ssh <alias> true`` fails, and what each one means.
+
+The remedies name a **flag, not a verb**. This block is reached only from
+:func:`check_reachable`, which only ``vscode`` reaches — and the two
+seat-replacing bullets used to say ``podbench attach --new``, so a reader who
+had just run ``podbench vscode`` was told to go and run a different verb (seen
+on the live p47 target, 2026-08-24). Naming the verb instead would mean
+threading the invoked name down here from the launcher for one word; ``--new``
+is spelled the same on both verbs, so the flag alone says it with no machinery
+and stays true if a third verb ever lands a seat. The launcher's
+``_KEY_REMEDY_SEAT`` reached the same wording from the same constraint.
+
+The last bullet is not an invitation to mutate ``authorized_keys``: an
+ephemeral container's spec is immutable once added, so the key genuinely
+arrives only with a new container, and replacing a seat a colleague may be
+using stays the user's decision to take.
+"""
 
 
 class EditorError(RuntimeError):
