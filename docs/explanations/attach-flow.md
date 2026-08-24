@@ -123,11 +123,12 @@ podbench attach [POD] [--target NAME] [--new] [--resize 6Gi] [--resize-cpu 4]
 │ DRIVE THE CLIENT                                                 │
 │                                                                  │
 │   exec -c SEAT -- podbench debug-config --print-config           │
-│        one assessment; its adapter types name the extensions     │
+│        one assessment; its adapter types name the extensions.    │
+│        Prints, so it writes and probes nothing                   │
 │   ssh <alias> > ~/.vscode-server/data/Machine/settings.json      │
 │        the /proc excludes and the target's interpreter,          │
-│        BEFORE the window: the walk starts when it opens          │
-│   write <home>/.vscode/launch.json    ← the only folder file     │
+│        BEFORE the window: the walk starts when it opens.         │
+│        The only file this run writes anywhere                    │
 │   code --remote ssh-remote+<alias> --install-extension …         │
 │        only this flavour's, and attempted rather than believed:  │
 │        it answers from THIS machine's install list               │
@@ -474,12 +475,13 @@ trade one wrong report for another.
 
 Then, inside the seat, `podbench debug-config` writes a `.vscode/launch.json`
 whose pid, sysroot-prefixed program path and setup ordering are things the
-launcher knows and a human cannot guess. `podbench vscode` runs that same
-command over `kubectl exec` and follows it with the two steps nobody should have
-to get right by hand: which folder to open — a verb that picks the folder is a verb
-that cannot pick `/` — and installing the extension in the *remote* window,
-where the debug adapter has to run for any `/proc/<pid>/root` path to mean
-anything.
+launcher knows and a human cannot guess. It is a step you run when you want a
+debugger, and `podbench vscode` offers the command rather than running it: every
+entry it authors is keyed on a pid, and a restart changes the pid. What `vscode`
+does take on are the two steps nobody should have to get right by hand: which
+folder to open — a verb that picks the folder is a verb that cannot pick `/` —
+and installing the extension in the *remote* window, where the debug adapter has
+to run for any `/proc/<pid>/root` path to mean anything.
 
 ## See also
 

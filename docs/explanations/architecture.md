@@ -270,7 +270,7 @@ worked yesterday" is explicable.
 | Resources | none possible — shares the workload's limits | its own requests and limits |
 | Storage | the container's writable layer, against the pod's ephemeral-storage budget | an `emptyDir` workspace (4 Gi); the chart's scratch PVC exists but the launcher cannot mount it yet |
 | Risk to the workload | real: OOM, eviction | none; the origin pod is untouched |
-| Debugging | attach to the live process, read-only inspection, or debugpy where `podbench vscode` provisions it into the target | gdb-launch, debugpy, the relaunch loop |
+| Debugging | attach to the live process, read-only inspection, or debugpy where `podbench debug-config --provision` installs it into the target | gdb-launch, debugpy, the relaunch loop |
 
 Hotfix mode — a PVC mounted *beside* the app's project so a fix survives
 restarts and reschedules — is the one mode that requires deploy-time

@@ -22,7 +22,7 @@ $ podbench --help
 ╭─ On your machine ────────────────────────────────────────────────────────────────────────────────╮
 │ doctor         check this machine can attach, and name what stops it                             │
 │ attach         add or reconnect a podbench container and print the report                        │
-│ vscode         land a seat sized and provisioned for an editor, and open it                      │
+│ vscode         land a seat sized for an editor, and open a window on it                          │
 │ ssh-config     regenerate the ssh stanza for an existing session                                 │
 │ status         the podbench containers in one pod and what each supports                         │
 │ list           every pod in the namespace carrying a podbench container                          │
@@ -527,17 +527,20 @@ Notes:
 
 ### `vscode`
 
-Land a seat, size the pod for an editor, make the target debuggable, and open
-VS Code on it over Remote-SSH. Everything `attach` does, plus the three things a
-VS Code session needs that a bare seat does not — which is why it is a verb and
-not a flag: `attach` adds a container to the pod and touches the workload not at
-all, and two of these steps change it.
+Land a seat, size the pod for an editor, and open VS Code on it over Remote-SSH.
+Everything `attach` does, plus the things a VS Code session needs that a bare
+seat does not — which is why it is a verb and not a flag: `attach` adds a
+container to the pod and touches the workload not at all, and the resize does.
+
+Since #230 it **writes nothing into the folder it opens and installs nothing
+into the target**. Debugging is a step you run, and the run offers it: see
+`debug-config` below, and the offer line under `next`.
 
 ```
                                                                                                     
  Usage: podbench vscode [OPTIONS] [POD]                                                             
                                                                                                     
- land a seat sized and provisioned for an editor, and open it                                       
+ land a seat sized for an editor, and open a window on it                                          
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
@@ -614,14 +617,6 @@ all, and two of these steps change it.
 │                                              this verb makes that `--resize MEMORY` would        │
 │                                              otherwise have to be typed with a number. A pod     │
 │                                              that already has the room is left alone either way  │
-│ --no-provision                               author whatever fits the target as it stands.       │
-│                                              Without it, a Python workload that cannot import    │
-│                                              debugpy has it installed and its server started,    │
-│                                              because that target gets no launch.json at all      │
-│                                              otherwise. Mutates the workload: ~15 MB of shared   │
-│                                              ephemeral storage, needs egress from the pod,       │
-│                                              ptraces the app for a few seconds, and no restart   │
-│                                              survives it                                         │
 │ --identity                  KEY              ssh key to authorise in the seat and name in the    │
 │                                              generated stanza                                    │
 │                                              [default: ~/.ssh/id_ed25519]                        │
@@ -736,10 +731,11 @@ In order it:
   interpreter is in another mount namespace and the seat's file at that path
   is a different one, so no key is written and the extension's own picker
   decides. It is `machine-overridable`, so a value you set wins;
-* runs `podbench debug-config --print-config` in the seat and merges the result
-  into `<home>/.vscode/launch.json`, matching on configuration name, so a
-  second run updates its own entries rather than appending copies;
-* installs **only** the extensions the emitted configurations name, with
+* runs `podbench debug-config --print-config` in the seat and **writes nothing
+  with the answer**. `--print-config` neither writes a file nor probes the
+  target, so this is a measurement and not a mutation; what it is for is the
+  two lines below;
+* installs **only** the extensions the assessed configurations name, with
   `code --remote ssh-remote+<alias> --install-extension` — which is the
   "Install in SSH: `<alias>`" button as a flag. A locally installed extension
   runs the debug adapter on your laptop, where no `/proc/<pid>/root` path
@@ -768,59 +764,54 @@ terminals are the rest of the seat.
 
 `debug-config`'s own stderr is relayed line by line rather than summarised.
 It is the only thing in the run that can see the target, so its narration is
-the diagnosis — it names every mechanism that said no, and on success it also
-carries the injection command, which the emitted debugpy configuration needs
-and cannot state: the entry is written once the *prerequisites* are met, and
-nothing is listening until that command is run.
+the diagnosis — it names every mechanism that said no, and it is where you
+learn that the debug step below will need `--provision`.
 
-#### Provisioning
+#### The debug step, offered rather than taken
 
-Provisioning means *make this target debuggable*, and it is what the verb does
-unless `--no-provision` says otherwise. It is the answer to the commonest
-empty-handed case: a Python target whose image has no debugpy. The injection
-bootstrap runs inside the target's interpreter, so debugpy has to be importable
-*there*; without it no configuration can be emitted and the verb writes no
-`launch.json` at all.
+`next` ends with an offer, and it is the only place this run names a debugger:
 
-It does both halves. The seat installs debugpy into the target with `uv`,
-resolved for the *target's* Python version rather than the seat's, and then
-starts the debugpy server inside the app — so the emitted configuration has
-something to connect to and F5 works when the command finishes. The two are
-one step because issue #45 ordered these mutations and put *installing* above
-*injecting*: a run already allowed the larger one has been allowed the
-smaller, and asking twice left the configuration emitted, the port closed and
-the first F5 at `ECONNREFUSED`.
+```
+  to debug, in the seat:  podbench debug-config --provision
+```
 
-It is a mutation and is reported as one. It writes ~15 MB into the workload's
-writable layer, on an ephemeral-storage budget the seat shares with the workload and
-**cannot reserve** — an ephemeral container may not declare `resources`
-(report 3.9); it needs egress from the pod, since uv resolves and downloads
-from an index; starting the server ptraces the app, so it stops answering
-probes for the few seconds that takes (~3 s measured, against the deadlines
-the report above prints); and a restart of the target container ends the
-debugging. The two halves do not expire together: the **server** never
-survives a restart, being a live process in the container that died, while the
-**install** survives one where `--provision-dest` names a volume mounted into
-the target — an `emptyDir` is pod-scoped and outlives a container, and so does a
-hotfixed pod's claim, which is where this verb installs on one — and not at the
-default `/opt/podbench-debugpy`, which is the container's own writable
-layer. Either way the next step is another `podbench vscode`, since without the
-server nothing is listening. Installing debugpy into the app image, or baking
-`debugpy.listen()` into the app, is the durable answer.
+Run it in the window's own terminal. `debug-config` writes `.vscode/launch.json`
+into the directory it is run from, which is the folder VS Code just opened.
 
-A **bare** `debug-config` still only prints the injection command. That is
-`injection_command`'s rule unchanged — authoring a `launch.json` may not
-ptrace the workload on its own — and `--provision` is what revokes it.
+Three reasons it is a step and not something this verb does for you:
 
-It happens only where the seat says it is the blocker. `debug-config` names
-`--provision` in its own refusal when debugpy is what is missing and for no
-other flavour — there is no `--provision` for a missing delve — so the retry is
-keyed on the seat's own words rather than on this side guessing the target's
-language a second time. A target that already has a debugger is not touched,
-and `--no-provision` gets the offer instead of the act. Where the target's
-rootfs is read-only the write fails with `EROFS` — the mount flag lives in the target's
-mount namespace — and the seat's own `podbench debug-config --provision-dest`
-is what points it at a writable volume instead.
+* **a restart changes the pid**, and every configuration podbench can author is
+  pid-named and pid-keyed. Measured across restarts on the p47 replica, the same
+  process was pid 12, then 2446, then 13 — so anything written at window-open is
+  stale as soon as the inner loop turns once;
+* **the folder is often a committed checkout** on a shared volume, where a
+  written file is a permanent line in somebody's `git status`;
+* **provisioning is a mutation on somebody else's container** — ~15 MB in the
+  workload's writable layer, egress from the pod, and a ptrace that stops the
+  app answering its probes for a few seconds. Editing needs none of it, and most
+  runs never debug.
+
+The offer is composed for *this* pod, because two of its parts are facts only
+the launcher holds:
+
+* on a **hotfixed** pod it carries `--provision-dest <claim>/.podbench-debugpy`.
+  The seat there runs at the target's own uid with no capabilities and `/opt` in
+  the target is root-owned `0755`, so the seat's own default is refused by
+  ordinary file permissions — and the whole cascade behind it (no importable
+  debugpy, no configuration, no `launch.json`, no adapter) follows from that one
+  `EACCES`. The claim is writable, is the same directory in both mount
+  namespaces, and is a volume, so the install outlives a restart there;
+* on a **dev pod** it drops `--provision` altogether, and the run says why:
+  Iterate mode launches the application from the seat, so there is no live
+  target to inject into and the launch configuration needs none.
+
+A later `podbench vscode` passes that same destination to its assessment run, as
+an extra path `debug-config` searches for the target's own debugpy — so a window
+opened after the step knows this is a Python seat.
+
+`podbench attach` prints the same offer, without `--provision` and without a
+destination: it touches the workload not at all, and neither flag is one of
+its own.
 
 Each extension unpacks into the seat's `~/.vscode-server`, which in Observe
 mode is on the **workload's** ephemeral-storage budget: a server plus one

@@ -337,11 +337,13 @@ automatically and prints why.
   it by default, sized from the measured headroom, with `--resize MEMORY` to
   choose the number and `--no-resize` to decline. The raise lands on the pod and
   not on its controller, so a rollout reverts it.
-* **`podbench vscode` installs debugpy into the target, by default.** ~15 MB into
-  the workload's writable layer through `/proc/<pid>/root`, needing egress from
-  the pod, and it ptraces the app for a few seconds to start the server.
-  `--no-provision` declines; a read-only target rootfs gets `EROFS`. See
-  *Provisioning* in the [command-line reference](../reference/cli.md).
+* **`podbench debug-config --provision` installs debugpy into the target.** ~15
+  MB into the workload's writable layer through `/proc/<pid>/root`, needing
+  egress from the pod, and it ptraces the app for a few seconds to start the
+  server. It is a step run in the seat, by hand, and nothing podbench runs on
+  your behalf does it: `podbench vscode` offers the command and stops there. A
+  read-only target rootfs gets `EROFS`. See *The debug step* in the
+  [command-line reference](../reference/cli.md).
 * **Availability, not confidentiality, is the real risk in Observe mode.**
   podbench cannot reserve resources on a live pod, so the plausible incident is
   an OOM-killed or evicted workload, not a data breach. See
