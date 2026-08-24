@@ -27,6 +27,7 @@ from typing import Any, cast
 import pytest
 
 from podbench import vscode
+from podbench.dap import Answer, Handshake
 from podbench.execfile import gdb_exec_file
 from podbench.flavour import DEBUGPY_PORT, Language, Mode, Seat, Target
 from podbench.gdbcmd import EXIT_USAGE, RUST_PRETTY_PRINTERS, attach_commands
@@ -1257,6 +1258,23 @@ def fixed_port() -> int:
     return INJECT_PORT
 
 
+def answered(_port: int) -> Answer:
+    """A ``prover`` that says the adapter answered. The real one opens a socket.
+
+    Passed at every ``--provision`` call site below rather than left to default,
+    for the reason ``fixed_port`` is: the unit suite may not reach the network,
+    and a handshake against whatever holds that port on the machine the suite
+    happens to run on is not a test of anything.
+    """
+    return Answer(Handshake.ANSWERED, "success: true", 0.01)
+
+
+def never_answers(_port: int) -> Answer:
+    """A ``prover`` in the state the live target was in on 2026-08-24: the port
+    is open, the connection is accepted, and no session can be started."""
+    return Answer(Handshake.SILENT, "nothing arrived in 5s", 5.0)
+
+
 def ss_line(port: int, *, pid: int | None = PID, inode: int = 90210) -> str:
     """One ``ss -lntpe`` row, with the two fields the port filter used to drop.
 
@@ -1623,6 +1641,7 @@ def test_provision_installs_into_the_target_and_then_emits_debugpy(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1669,6 +1688,7 @@ def test_a_named_destination_beats_the_seats_default_all_the_way_through(
     dest = "/podbench/app/.podbench-debugpy"
     code = main(
         [str(PID), "--print-config", "--provision", "--provision-dest", dest],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1694,6 +1714,7 @@ def test_provision_leaves_a_server_listening_rather_than_a_command_to_paste(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1711,6 +1732,41 @@ def test_provision_leaves_a_server_listening_rather_than_a_command_to_paste(
     assert "injected in" in captured.err
 
 
+def test_an_injection_whose_adapter_never_answers_is_relayed_as_such(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The live target's state on 2026-08-24, driven end to end through the verb.
+
+    Two things have to hold at once and they pull in opposite directions. The
+    report may not claim a working debugger, because none was proved; and it may
+    not print "nothing is listening" either, because the port genuinely is open
+    and the configuration this run emits has to connect to it. Naming only one of
+    those is how the sentence goes back to being untrue in the other direction.
+    """
+    proc, root = provision_seat(tmp_path)
+    uv = InstallingUv()
+    code = main(
+        [str(PID), "--print-config", "--provision"],
+        prover=never_answers,
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        port_chooser=fixed_port,
+        debugpy_root=root,
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["configurations"][0]["connect"] == {
+        "host": "127.0.0.1",
+        "port": INJECT_PORT,
+    }
+    said = " ".join(captured.err.split())
+    assert "no debug session could be started" in said
+    assert "debuggable" not in said
+    assert "nothing is listening" not in said
+
+
 def test_a_target_that_already_has_debugpy_still_gets_a_server(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1726,6 +1782,7 @@ def test_a_target_that_already_has_debugpy_still_gets_a_server(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1748,6 +1805,7 @@ def test_a_refused_injection_is_reported_and_not_claimed(
     uv = InstallingUv(inject_rc=1)
     main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1828,6 +1886,7 @@ def test_provision_probes_writability_before_it_runs_uv(
     uv = InstallingUv()
     main(
         [str(PID), "--print-config", "--provision", "--provision-dest", "/readonly/x"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1851,6 +1910,7 @@ def test_provision_refuses_where_no_wheel_could_help(
     uv = InstallingUv()
     main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1875,6 +1935,7 @@ def test_provision_says_no_in_dev_mode_rather_than_installing_anyway(
     uv = InstallingUv()
     main(
         [str(PID), "--print-config", "--provision", "--mode", "dev"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1903,6 +1964,7 @@ def test_provision_installs_over_its_own_previous_copy(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1926,6 +1988,7 @@ def test_the_targets_own_complete_copy_is_never_written_over(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1950,6 +2013,7 @@ def test_an_incomplete_target_copy_gets_a_complete_one_beside_it(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -1970,6 +2034,7 @@ def test_provision_without_uv_says_what_uv_was_for(
     proc, root = provision_seat(tmp_path)
     main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench"),
         runner=no_listeners,
@@ -1989,6 +2054,7 @@ def test_provision_refuses_to_guess_the_targets_version(
     uv = InstallingUv()
     main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -2013,6 +2079,7 @@ def test_provision_on_a_capless_but_readable_seat_installs_and_emits(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -2047,6 +2114,7 @@ def test_provision_into_an_unreadable_target_names_the_credentials(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,
@@ -2226,6 +2294,7 @@ def test_the_server_this_run_starts_gets_a_port_the_kernel_chose(
     uv = InstallingUv()
     code = main(
         [str(PID), "--print-config", "--provision"],
+        prover=answered,
         proc=proc,
         which=which_of("gdb", "gdb-podbench", "uv"),
         runner=uv,

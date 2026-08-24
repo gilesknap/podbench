@@ -53,6 +53,17 @@ means "make this target debuggable", and :func:`inject_debugpy` is the second
 half of it. A bare ``debug-config`` still only prints, because that really is
 authoring a launch.json and nothing more.
 
+**And "debuggable" is now asserted rather than inferred.** The success line used
+to be returned on the injector's exit code alone; measured on the live target
+that code was 0, the port was open and in ``LISTEN``, and a session still could
+not start, because the adapter accepted the connection and never answered
+``initialize``. So :func:`inject_debugpy` finishes by asking it — one DAP
+handshake through :mod:`podbench.dap` — and reports three genuinely different
+things instead of one: the injector failed, the injector succeeded and the
+adapter answered, or the injector succeeded and no session could be started
+anyway. The third of those is what the live target was, and it is not a success
+line.
+
 The one genuinely new precondition is a **writable rootfs**, so it is probed
 rather than assumed (brief, "Diagnose, don't mystify"): ``readOnlyRootFilesystem:
 true`` lives in the *target's* mount namespace, so it surfaces here only as
@@ -69,6 +80,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .dap import HANDSHAKE_TIMEOUT_SECONDS, LOOPBACK, Answer, Handshake
+from .dap import initialize as dap_initialize
 from .kubectl import CommandResult, Runner, run_subprocess
 from .proc import DEFAULT_PROC, Credentials, read_credentials, sysroot_path
 
@@ -77,6 +90,7 @@ __all__ = [
     "CLAIM_DEST_NAME",
     "PROVISION_DEST",
     "Injected",
+    "Prover",
     "Provisioned",
     "blocker_sentence",
     "claim_destination",
@@ -408,11 +422,32 @@ not put words in gdb's mouth.
 """
 
 
+Prover = Callable[[int], Answer]
+"""How the injection is proved: a port in, a DAP :class:`~podbench.dap.Answer` out.
+
+A seam rather than a direct call for the reason ``port_chooser`` is one in
+:func:`podbench.vscode.main` — the default really opens a socket, and a unit
+suite that may not do that still has to exercise every outcome. It is also what
+lets the DAP client be tested on its own, against a loopback server the test
+owns.
+"""
+
+
 @dataclass(frozen=True)
 class Injected:
-    """What the injection did, and how long the target was held to do it."""
+    """What the injection did, how long the target was held, and whether it took."""
 
     ok: bool
+    """Whether the injector returned cleanly, and **not** whether the app is
+    debuggable.
+
+    Kept as the injector's own verdict on purpose. The caller uses it to decide
+    where to re-probe for a listener, and a run that started a wedged adapter has
+    still moved the server off the conventional port — reporting it as a failure
+    would put "nothing is listening" over the top of a port that genuinely is.
+    Whether a debug session can be started is :attr:`session`, and the two
+    disagreeing is exactly the 2026-08-24 measurement.
+    """
 
     seconds: float
     """Wall clock for the whole ptrace attach.
@@ -429,6 +464,23 @@ class Injected:
 
     messages: tuple[str, ...] = ()
 
+    session: Answer | None = None
+    """What the adapter said when the seat asked it to ``initialize``.
+
+    ``None`` means no handshake was attempted, which is every path where the
+    injector itself failed: there is nothing to ask, and a refusal invented here
+    would read as a second failure rather than as the absence of a question.
+    """
+
+    @property
+    def proved(self) -> bool:
+        """Whether a debug session was actually started against the target.
+
+        The only claim this module is entitled to make about F5 working, and the
+        only one the 2026-08-24 redo could not falsify.
+        """
+        return self.session is not None and self.session.ok
+
 
 def inject_debugpy(
     command: str,
@@ -437,6 +489,7 @@ def inject_debugpy(
     port: int,
     timeout: int = INJECTION_TIMEOUT_SECONDS,
     clock: Callable[[], float] = time.monotonic,
+    prove: Prover = dap_initialize,
 ) -> Injected:
     """Run the injection ``command`` this seat would otherwise have printed.
 
@@ -458,6 +511,13 @@ def inject_debugpy(
     the group, so the thing actually holding the app is what receives the
     signal. The ``command`` inside the wrapper is still untouched, which is what
     keeps it character for character what was printed.
+
+    **An exit code of 0 ends the injection and does not end the question.** On
+    the live target it was 0, the port was open, and the adapter never answered
+    ``initialize`` — so a success line returned here was a claim about F5 that
+    nothing had checked. ``prove`` is what checks it: a DAP handshake against the
+    port the emitted configuration names, whose four outcomes are reported as
+    four different things because the reader chases a different half in each.
     """
     run = runner if runner is not None else run_subprocess
     started = clock()
@@ -511,13 +571,52 @@ def inject_debugpy(
                 "on the way out - so this costs the pause and nothing else",
             ),
         )
-    return Injected(
-        True,
-        seconds,
-        (
-            f"injected in {seconds:.1f}s; the app now serves debugpy on "
-            f"127.0.0.1:{port}",
-        ),
+    # The injector is done and the app is running again; everything below is a
+    # question asked of the server it left behind, at the cost of one loopback
+    # socket and nothing the workload pays for.
+    answer = prove(port)
+    return Injected(True, seconds, _proof(answer, seconds=seconds, port=port), answer)
+
+
+def _proof(answer: Answer, *, seconds: float, port: int) -> tuple[str, ...]:
+    """What to say about an injection that returned 0, given what the adapter said.
+
+    Four sentences and not one, because the reader's next move differs in every
+    case and three of them were a success line until 2026-08-24. What they share
+    is the injection's own duration: the app was stopped for it whatever came of
+    it, and on a probed pod that is the number the pod cares about.
+    """
+    if answer.outcome is Handshake.ANSWERED:
+        return (
+            f"injected in {seconds:.1f}s and the adapter answered a DAP "
+            f"`initialize` on {LOOPBACK}:{port} in {answer.seconds:.2f}s, so the "
+            "app is debuggable rather than merely listening - F5 on the "
+            "configuration this run emitted reaches it",
+        )
+    if answer.outcome is Handshake.REFUSED:
+        return (
+            f"injected in {seconds:.1f}s, but nothing is listening on "
+            f"{LOOPBACK}:{port} ({answer.detail}): the injector returned 0 and "
+            "left no server behind, so no debug session can be started and a "
+            "configuration pointing here connects to a closed port. The "
+            "injection command printed below runs the same thing by hand",
+        )
+    if answer.outcome is Handshake.REJECTED:
+        return (
+            f"injected in {seconds:.1f}s, and something on {LOOPBACK}:{port} "
+            f"answered without being a debug adapter ({answer.detail}), so no "
+            "debug session can be started and what holds that port is not this "
+            "run's server. Pass `--port` to put the server somewhere nothing "
+            "else is",
+        )
+    return (
+        f"injected in {seconds:.1f}s and {LOOPBACK}:{port} accepts a connection, "
+        "but the adapter did not answer a DAP `initialize` within "
+        f"{HANDSHAKE_TIMEOUT_SECONDS:.0f}s ({answer.detail}), so no debug "
+        "session could be started. What is established is that the injection ran "
+        "and the port is open; what is not is a session of any kind, and F5 will "
+        "hang here the same way. DEBUGPY_LOG_DIR in the target is where the "
+        "adapter and the debuggee record what they said to each other",
     )
 
 

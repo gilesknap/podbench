@@ -1819,6 +1819,27 @@ exist — against the one pod-level budget. The install is also echoed before it
 runs, because uv's output is captured for the failure message and a resolve
 against an unroutable index is otherwise silence indistinguishable from a hang.
 
+**The success line is a measurement, not an exit code.** When the injector
+returns, `--provision` connects to the port the emitted configuration names and
+sends a DAP `initialize` — the first thing VS Code itself sends — and reports
+success only when the adapter answers it. Measured on a live target on
+2026-08-24: the injector exited 0, the port was open and in `LISTEN`, and the
+adapter accepted the connection and never answered, so a session could not
+start. Three outcomes are reported as three different things, because the half
+to chase differs in each:
+
+| what the port did | what it means |
+|---|---|
+| answered `initialize` | the app is debuggable; F5 on the emitted configuration reaches it |
+| refused the connection | the injector returned 0 and left no server behind, so the configuration points at a closed port |
+| accepted, then said nothing | the injection ran and the port is open, and **no debug session could be started**; `DEBUGPY_LOG_DIR` in the target is where the adapter and the debuggee record what they said to each other |
+
+The handshake is bounded at five seconds, against an injection measured at 8.7 s
+and an adapter that answered nothing in fifteen. It costs the workload nothing:
+the adapter replies to `initialize` from a fixed table of capabilities without
+consulting the debuggee, and podbench closes the socket rather than sending a
+DAP `disconnect`, which is what would close the adapter's listener for good.
+
 `readOnlyRootFilesystem: true` is the one genuinely new precondition, and it is
 not readable from the seat: the mount flag lives in the target's mount
 namespace, so it arrives as `EROFS` on the write. Where the rootfs is read-only

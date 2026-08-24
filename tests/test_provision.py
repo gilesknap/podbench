@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import errno
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
 
+from podbench.dap import HANDSHAKE_TIMEOUT_SECONDS, Answer, Handshake
 from podbench.kubectl import CommandResult
 from podbench.proc import Capabilities, Credentials
 from podbench.provision import (
@@ -251,6 +252,16 @@ def test_an_unwritable_destination_is_reported_not_raised(tmp_path: Path) -> Non
 INJECTION = "PYTHONPATH=/proc/597/root/dbg \\\n  /app/.venv/bin/python -m debugpy"
 
 
+def answering(outcome: Handshake, detail: str = "detail") -> Callable[[int], Answer]:
+    """A handshake seam that says what the test needs it to say.
+
+    Injected rather than served: what these assert on is the *sentence* each
+    outcome produces, and a real socket per case would make the failure of one
+    of them a networking question.
+    """
+    return lambda _port: Answer(outcome, detail, 0.2)
+
+
 class FakeShell:
     """The shell the injection runs in, with a returncode chosen by the test."""
 
@@ -280,7 +291,13 @@ def test_the_injection_is_bounded_and_the_command_is_still_verbatim() -> None:
     has to stay character for character what the seat printed.
     """
     shell = FakeShell()
-    injected = inject_debugpy(INJECTION, runner=shell, port=5678, clock=lambda: 0.0)
+    injected = inject_debugpy(
+        INJECTION,
+        runner=shell,
+        port=5678,
+        clock=lambda: 0.0,
+        prove=answering(Handshake.ANSWERED),
+    )
 
     assert injected.ok
     assert shell.argv[0] == "timeout"
@@ -320,3 +337,106 @@ def test_a_missing_timeout_binary_is_reported_rather_than_raised() -> None:
 
     assert not injected.ok
     assert "not stopped" in injected.messages[0]
+
+
+def test_an_answered_initialize_is_what_the_success_line_asserts() -> None:
+    """The success line used to be returned on the injector's exit code, and on
+    the live target that code was 0 while no session could start. What it now
+    says is the thing the redo could not falsify: a DAP `initialize` that got an
+    answer."""
+    injected = inject_debugpy(
+        INJECTION,
+        runner=FakeShell(),
+        port=37189,
+        clock=lambda: 0.0,
+        prove=answering(Handshake.ANSWERED),
+    )
+
+    assert injected.ok
+    assert injected.proved
+    said = injected.messages[0]
+    assert "injected in" in said
+    assert "initialize" in said
+    assert "debuggable" in said
+
+
+def test_an_open_port_that_never_answers_is_not_reported_as_success() -> None:
+    """**The live target's own state**, and the test that matters most here.
+
+    The injector exited 0 and the port was genuinely open and in LISTEN, so
+    everything podbench used to measure was satisfied. The line has to name the
+    half that is established - the injection ran, the port is open - and the half
+    that is not, which is a session of any kind.
+    """
+    injected = inject_debugpy(
+        INJECTION,
+        runner=FakeShell(),
+        port=37189,
+        clock=lambda: 0.0,
+        prove=answering(Handshake.SILENT, "nothing arrived in 5s"),
+    )
+
+    assert not injected.proved
+    said = injected.messages[0]
+    assert "injected in" in said
+    assert "accepts a connection" in said
+    assert "no debug session could be started" in said
+    assert f"within {HANDSHAKE_TIMEOUT_SECONDS:.0f}s" in said
+    # And it must not read as the success it replaced.
+    assert "debuggable" not in said
+
+
+def test_a_refused_connection_is_told_apart_from_a_silent_one() -> None:
+    """Different halves to chase, so different sentences: here the injector
+    returned 0 and left nothing listening at all, which is a closed port under
+    the configuration rather than a wedged adapter behind an open one."""
+    injected = inject_debugpy(
+        INJECTION,
+        runner=FakeShell(),
+        port=37189,
+        clock=lambda: 0.0,
+        prove=answering(Handshake.REFUSED, "Connection refused"),
+    )
+
+    assert not injected.proved
+    said = injected.messages[0]
+    assert "nothing is listening" in said
+    assert "Connection refused" in said
+    assert "accepts a connection" not in said
+
+
+def test_a_peer_that_is_not_an_adapter_names_the_port_rather_than_the_session() -> None:
+    """Under `hostNetwork` the port is the node's, so something else answering
+    is a real case - and the remedy is a different port, not a debugpy log."""
+    injected = inject_debugpy(
+        INJECTION,
+        runner=FakeShell(),
+        port=37189,
+        clock=lambda: 0.0,
+        prove=answering(Handshake.REJECTED, "not DAP framing"),
+    )
+
+    assert not injected.proved
+    assert "`--port`" in injected.messages[0]
+
+
+def test_a_failed_injection_asks_the_adapter_nothing() -> None:
+    """There is no server to ask, and a refusal invented here would read as a
+    second failure rather than as the absence of a question. The injector's own
+    failure path is untouched by any of this."""
+
+    def unreachable(_port: int) -> Answer:
+        raise AssertionError("the handshake must not run when the injector failed")
+
+    injected = inject_debugpy(
+        INJECTION,
+        runner=FakeShell(returncode=1),
+        port=37189,
+        clock=lambda: 0.0,
+        prove=unreachable,
+    )
+
+    assert not injected.ok
+    assert injected.session is None
+    assert not injected.proved
+    assert "injection exited 1" in injected.messages[0]

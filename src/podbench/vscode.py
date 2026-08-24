@@ -76,6 +76,7 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 import typer
 
 from .cli import new_app, run
+from .dap import initialize as dap_initialize
 from .elf import debugpy_helper_name, debugpy_helper_published
 from .execfile import gdb_exec_file
 from .flavour import (
@@ -125,6 +126,7 @@ from .proc import (
 )
 from .provision import (
     PROVISION_DEST,
+    Prover,
     inject_debugpy,
     provision_debugpy,
     provision_paste,
@@ -1445,6 +1447,7 @@ def _inject(
     port: int,
     host_network: bool | None,
     runner: Runner | None,
+    prove: Prover,
 ) -> bool:
     """Start the debugpy server inside the target, under ``--provision``.
 
@@ -1493,9 +1496,14 @@ def _inject(
         f"a probed pod the deadlines `attach` prints are the budget it spends. "
         f"Running `{command}`"
     )
-    injected = inject_debugpy(command, runner=runner, port=port)
+    injected = inject_debugpy(command, runner=runner, port=port, prove=prove)
     for message in injected.messages:
         _warn(f"--provision: {message}")
+    # `ok` and not `proved`: the caller re-probes for a listener on the strength
+    # of this, and an injection whose adapter never answered still moved the
+    # server off the conventional port. Reporting it as a failure here would
+    # print "nothing is listening" over a port that is genuinely open, which is
+    # the same class of untrue sentence this whole slice exists to remove.
     return injected.ok
 
 
@@ -1739,6 +1747,7 @@ def _run(
     which: Which,
     debugpy_root: str | None,
     choose_port: PortChooser,
+    prove: Prover,
 ) -> int:
     source_map, problems = _parse_source_map(source_map_entries)
     for problem in problems:
@@ -1802,6 +1811,7 @@ def _run(
                 which=which,
                 debugpy_root=debugpy_root,
                 choose_port=choose_port,
+                prove=prove,
                 target_cid=target_cid,
                 host_network=host_network,
                 hint=primary,
@@ -1846,6 +1856,7 @@ def _for_target(
     which: Which,
     debugpy_root: str | None,
     choose_port: PortChooser,
+    prove: Prover,
     target_cid: str | None,
     host_network: bool | None,
     hint: bool,
@@ -2043,6 +2054,7 @@ def _for_target(
             port=injected_on,
             host_network=host_network,
             runner=runner,
+            prove=prove,
         ):
             # The re-measure has to look where the server was actually put, not
             # where a server conventionally is.
@@ -2200,6 +2212,7 @@ def main(
     which: Which = shutil.which,
     debugpy_root: str | None = None,
     port_chooser: PortChooser = ephemeral_port,
+    prover: Prover = dap_initialize,
 ) -> int:
     """``podbench debug-config`` — author ``launch.json`` for this seat.
 
@@ -2210,9 +2223,11 @@ def main(
     question from the machine it happens to run on. ``attacher`` is the ptrace
     backend :func:`measured_attach` uses, and a test that wants an answer out of
     it has to inject one *and* a real ``proc``: against a synthetic tree nothing
-    is attached at all. ``port_chooser`` is the last of them because its default
-    really binds a socket, and a test asserting on the emitted port has to know
-    which number to expect.
+    is attached at all. ``port_chooser`` and ``prover`` are last because their
+    defaults really open sockets: a test asserting on the emitted port has to
+    know which number to expect, and one exercising ``--provision`` has to say
+    what the adapter answers rather than letting a handshake reach whatever holds
+    that port on the machine the suite happens to run on.
     """
     app = new_app()
 
@@ -2380,6 +2395,7 @@ def main(
                 which=which,
                 debugpy_root=debugpy_root,
                 choose_port=port_chooser,
+                prove=prover,
             )
         )
 
