@@ -396,13 +396,34 @@ def test_settings_a_user_wrote_are_not_clobbered() -> None:
 
 
 def test_a_settings_file_that_will_not_parse_is_left_alone() -> None:
-    """VS Code permits comments and :mod:`json` does not. Rewriting would drop
-    what this parser cannot see, so the file stands and the note says so."""
-    seat = FakeSeat(files={f"{HOME}/.vscode/settings.json": "{ // mine\n}"})
+    """A file that is not JSONC either. Rewriting would drop what this parser
+    cannot see, so the file stands and the note says so."""
+    seat = FakeSeat(files={f"{HOME}/.vscode/settings.json": "{ mine }"})
     notes = run_open(seat)
 
-    assert seat.files[f"{HOME}/.vscode/settings.json"] == "{ // mine\n}"
+    assert seat.files[f"{HOME}/.vscode/settings.json"] == "{ mine }"
     assert any("left exactly as it is" in note for note in notes)
+
+
+def test_a_projects_own_commented_vscode_files_are_merged_into() -> None:
+    """The 2026-08-24 measurement, through the verb that hit it: on a hotfixed
+    pod the folder opened is the application's checkout, and a real project
+    ships all four ``.vscode/*.json`` committed, with comments and a trailing
+    comma. Both merges refused, and no ``launch.json`` means no F5."""
+    settings = f"{HOME}/.vscode/settings.json"
+    launch = f"{HOME}/.vscode/launch.json"
+    seat = FakeSeat(
+        files={
+            settings: '{\n  // ours\n  "editor.tabSize": 2,\n}\n',
+            launch: '{\n  "configurations": [\n    // none yet\n  ],\n}\n',
+        }
+    )
+    notes = run_open(seat)
+
+    assert not any("left exactly as it is" in note for note in notes)
+    assert "// ours" in seat.files[settings]
+    assert "// none yet" in seat.files[launch]
+    assert DEBUGPY_CONFIG["name"] in seat.files[launch]
 
 
 # -- launch.json -------------------------------------------------------------

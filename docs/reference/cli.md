@@ -1866,8 +1866,10 @@ the editor is handed `/proc/<pid>/root/proc/<pid>/root/...`.
 
 Re-running replaces its own entries by name and leaves a hand-written
 configuration beside them untouched — which is why every generated name carries
-its flavour. A `launch.json` it cannot parse — VS Code permits comments, `json`
-does not — is refused rather than rewritten. See
+its flavour. The file is read as JSONC and edited textually: an application's
+own committed `launch.json`, comments and trailing commas and all, comes back
+with podbench's entry added and nothing else moved. One that is not JSONC either
+is refused rather than rewritten. See
 [Debug with gdb](../how-to/debug-with-gdb.md).
 
 ### `dev-bootstrap`

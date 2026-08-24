@@ -15,6 +15,7 @@ Nothing here touches a cluster: pids come from a synthetic ``/proc`` tree.
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import socket
@@ -29,6 +30,7 @@ from podbench import vscode
 from podbench.execfile import gdb_exec_file
 from podbench.flavour import DEBUGPY_PORT, Language, Mode, Seat, Target
 from podbench.gdbcmd import EXIT_USAGE, RUST_PRETTY_PRINTERS, attach_commands
+from podbench.jsonc import parse as parse_jsonc
 from podbench.kubectl import CommandResult
 from podbench.model import SEIZE_PROBE
 from podbench.probe import AttachOutcome
@@ -383,14 +385,157 @@ def test_merge_keeps_a_hand_written_configuration() -> None:
     assert [item["name"] for item in configurations] == ["mine", "ours"]
 
 
-def test_merge_refuses_a_file_it_cannot_parse() -> None:
-    """VS Code allows comments in launch.json and :mod:`json` does not.
+def test_merge_refuses_a_file_that_is_not_jsonc_either() -> None:
+    """A comment is read now — see below — but a file podbench cannot read is
+    still one it must not rewrite, and the message is unchanged."""
+    with pytest.raises(ValueError, match="cannot parse the existing launch.json"):
+        merge_launch_json("{ 'name': 'mine' }", {"name": "ours"})
 
-    Rewriting it anyway would silently drop the comments and any configuration
-    this parser could not see, so refusing is the only safe answer.
+
+# -- ...into a real project's .vscode, which is JSONC ------------------------
+#
+# Measured 2026-08-24 on a hotfixed `bl47p-ea-fastcs-01-0`, where `podbench
+# vscode` opens the application's own checkout: `fastcs-example` ships all four
+# `.vscode/*.json` committed and unmodified, and both merges refused — one on
+# the `//` comments VS Code's own scaffold writes, one on a trailing comma
+# before `}`. On a hotfixed pod that is the common case, and no launch.json
+# means no F5.
+
+COMMITTED_LAUNCH_JSON = """{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Unit Test",
+      "type": "debugpy",
+      "request": "launch",
+      "justMyCode": false,
+      "program": "${file}",
+      "purpose": ["debug-test"],
+      "env": {
+        // pytest swallows stdout without this
+        "PYTEST_ADDOPTS": "--no-cov -s"
+      }
+    },
+    {
+      "name": "Launch IOC",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "fastcs_example",
+      "args": ["run"]
+    }  // and that is all of them
+  ],
+}
+"""
+"""A project's own file, in the shape VS Code writes and a user commits."""
+
+OURS = {"name": "podbench: attach to app [pid 13] (debugpy)", "type": "debugpy"}
+
+
+def _loads(text: str) -> dict[str, Any]:
+    """What VS Code would read out of the merged file.
+
+    :func:`json.loads` cannot: the point of these fixtures is that they carry
+    comments and a trailing comma, and they still do afterwards. Assertions that
+    have to be non-circular are made on the *text* instead.
     """
-    with pytest.raises(ValueError, match="cannot parse"):
-        merge_launch_json("{ // a comment\n}", {"name": "ours"})
+    return cast("dict[str, Any]", parse_jsonc(text).value)
+
+
+def _changes(before: str, after: str) -> list[str]:
+    """The inserted runs, or a failure if anything was replaced or removed.
+
+    The slice is falsified if the merged file's diff is larger than the block
+    podbench added, so the assertion is on the *shape* of the diff rather than
+    on its content: one contiguous insertion, and every other byte where it was.
+    """
+    matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
+    inserted: list[str] = []
+    for tag, _, _, start, end in matcher.get_opcodes():
+        assert tag in {"equal", "insert"}, f"{tag}: {after[start:end]!r}"
+        if tag == "insert":
+            inserted.append(after[start:end])
+    return inserted
+
+
+def test_a_committed_launch_json_keeps_its_comments_and_its_configurations() -> None:
+    merged = merge_launch_json(COMMITTED_LAUNCH_JSON, OURS)
+    # Every comment, verbatim and in place — including the one inside a
+    # configuration and the one trailing the last of them, which is where an
+    # appended comma would have landed had it been put at the end of the line.
+    for comment in (
+        "  // Use IntelliSense to learn about possible attributes.\n",
+        "        // pytest swallows stdout without this\n",
+        "    }  // and that is all of them\n",
+    ):
+        assert comment in merged
+    # Both of the project's own configurations, byte for byte.
+    for entry in ('"name": "Debug Unit Test"', '"args": ["run"]'):
+        assert entry in merged
+    added = _changes(COMMITTED_LAUNCH_JSON, merged)
+    assert len(added) == 1
+    assert OURS["name"] in added[0]
+    names = [item["name"] for item in _loads(merged)["configurations"]]
+    assert names == ["Debug Unit Test", "Launch IOC", OURS["name"]]
+
+
+def test_merging_into_a_committed_launch_json_twice_is_idempotent() -> None:
+    """The entry is replaced where it stands, so a reconnect neither appends a
+    second copy nor grows the file."""
+    once = merge_launch_json(COMMITTED_LAUNCH_JSON, OURS)
+    assert merge_launch_json(once, OURS) == once
+    updated = merge_launch_json(once, {**OURS, "port": 5678})
+    assert _changes(once, updated) == [',\n      "port": 5678']
+
+
+def test_a_settings_json_with_a_trailing_comma_merges() -> None:
+    """The second of the two 2026-08-24 refusals, and the one whose failure is
+    quiet: unapplied excludes are what OOM a seat that cannot be restarted."""
+    existing = """{
+  "python.testing.pytestArgs": ["tests"],
+  "python.testing.pytestEnabled": true,
+  "[python]": {
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit",
+    },
+  },
+}
+"""
+    merged = merge_folder_settings(existing) or ""
+    assert _changes(existing, merged)
+    for line in existing.splitlines():
+        assert line in merged
+    document = _loads(merged)
+    assert document["python.testing.pytestArgs"] == ["tests"]
+    assert document["[python]"]["editor.codeActionsOnSave"]
+    assert document["files.watcherExclude"]["**/proc/**"] is True
+
+
+def test_a_comment_or_a_comma_inside_a_string_survives_the_merge() -> None:
+    """A stripper that does not track string literals corrupts these silently,
+    and the file it hands back still parses."""
+    existing = (
+        "{\n"
+        '  "podbench.url": "https://example.invalid/x",\n'
+        '  "podbench.args": "run,--verbose",\n'
+        '  "podbench.said": "he said \\" // not a comment"\n'
+        "}\n"
+    )
+    merged = merge_folder_settings(existing) or ""
+    for line in existing.splitlines()[1:-1]:
+        assert line in merged
+    document = _loads(merged)
+    assert document["podbench.url"] == "https://example.invalid/x"
+    assert document["podbench.args"] == "run,--verbose"
+    assert document["podbench.said"] == 'he said " // not a comment'
+
+
+def test_a_launch_json_with_no_configurations_key_gains_one() -> None:
+    existing = '{\n  // nothing here yet\n  "version": "0.2.0"\n}\n'
+    merged = merge_launch_json(existing, OURS)
+    assert "// nothing here yet" in merged
+    assert _loads(merged)["configurations"] == [OURS]
 
 
 # -- the CLI ----------------------------------------------------------------
@@ -543,11 +688,19 @@ def test_pylance_excludes_are_appended_rather_than_replaced() -> None:
     assert "/proc/**" in excludes
 
 
-def test_merge_refuses_a_settings_file_it_cannot_parse() -> None:
-    """VS Code allows comments in settings.json and :mod:`json` does not, so a
-    rewrite would drop whatever this parser could not see."""
-    with pytest.raises(ValueError, match="cannot parse"):
-        merge_machine_settings("{ // mine\n}")
+def test_a_comment_no_longer_costs_the_excludes() -> None:
+    """The seat-saving excludes were being withheld from every settings.json
+    VS Code's own scaffold had written a comment into."""
+    merged = merge_machine_settings("{ // mine\n}") or ""
+    assert "// mine" in merged
+    assert parse_jsonc(merged).value["search.followSymlinks"] is False
+
+
+def test_merge_refuses_a_settings_file_that_is_not_jsonc_either() -> None:
+    """A file podbench cannot read is one it must not rewrite, and the message
+    the user sees is the one they saw before."""
+    with pytest.raises(ValueError, match="cannot parse the existing settings.json"):
+        merge_machine_settings("{ mine }")
 
 
 def test_merge_refuses_a_document_that_is_not_an_object() -> None:
@@ -640,9 +793,22 @@ def test_recommending_what_is_already_recommended_writes_nothing() -> None:
     assert merge_extensions_json(text, ["golang.go"]) is None
 
 
-def test_extensions_json_that_will_not_parse_is_refused() -> None:
-    with pytest.raises(ValueError, match="cannot parse"):
-        merge_extensions_json("{ // mine\n}", ["golang.go"])
+def test_a_committed_extensions_json_is_recommended_into() -> None:
+    """The fourth file `fastcs-example` ships, and VS Code's scaffold opens it
+    with a comment as well."""
+    scaffold = "// See https://go.microsoft.com/fwlink/?linkid=827846"
+    existing = f'{{\n  {scaffold}\n  "recommendations": ["ms-python.python"]\n}}\n'
+    merged = merge_extensions_json(existing, ["ms-vscode.cpptools"]) or ""
+    assert scaffold in merged
+    assert parse_jsonc(merged).value["recommendations"] == [
+        "ms-python.python",
+        "ms-vscode.cpptools",
+    ]
+
+
+def test_extensions_json_that_is_not_jsonc_either_is_refused() -> None:
+    with pytest.raises(ValueError, match="cannot parse the existing extensions.json"):
+        merge_extensions_json("{ mine }", ["golang.go"])
 
 
 # -- one entry per flavour that applies --------------------------------------

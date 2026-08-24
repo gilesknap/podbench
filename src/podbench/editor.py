@@ -1143,8 +1143,11 @@ def _merge_into(
 
     A refusal to parse is reported and the file left alone, which is
     :func:`podbench.vscode.merge_machine_settings`'s rule and for its reason:
-    VS Code permits comments in these files and :mod:`json` does not, so
-    rewriting one would discard whatever this parser could not see.
+    rewriting a file would discard whatever this parser could not see. These are
+    JSONC — the folder this opens on a hotfixed pod is the application's own
+    checkout, and it ships its ``.vscode`` committed — so a comment or a trailing
+    comma is read rather than refused, and only text that is not JSONC either
+    reaches this branch.
 
     Returns the file's own name and whether it changed, rather than reporting
     a line per file: three consecutive ``wrote …/.vscode/<name>.json`` lines,

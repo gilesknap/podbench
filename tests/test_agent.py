@@ -1510,19 +1510,21 @@ def test_a_users_own_settings_are_merged_into_rather_than_replaced(
 def test_settings_that_cannot_be_parsed_are_left_alone_and_reported(
     tmp_path: Path, passwd: FakePasswd, env: dict[str, str]
 ) -> None:
-    """VS Code allows comments in settings.json and :mod:`json` does not.
+    """Comments and trailing commas are read now, so what is left here is a file
+    that is not JSONC either.
 
-    Rewriting would discard them, and staying quiet would leave the seat one
-    File -> Open Folder away from an unrecoverable OOM — so the file is
-    untouched and the reason is a recorded failure.
+    Rewriting it would discard whatever this parser could not see, and staying
+    quiet would leave the seat one File -> Open Folder away from an
+    unrecoverable OOM — so the file is untouched and the reason is a recorded
+    failure.
     """
     settings = passwd.home / MACHINE_SETTINGS_PATH
     settings.parent.mkdir(parents=True)
-    settings.write_text("{ // mine\n}")
+    settings.write_text("{ mine }")
 
     report = agent.ensure_all(make_layout(tmp_path), env=env, runner=FakeRunner())
 
-    assert settings.read_text() == "{ // mine\n}"
+    assert settings.read_text() == "{ mine }"
     failure = {check.name: check for check in report.failures}["ensure-vscode-settings"]
     assert "cannot parse" in failure.detail
     assert "OOM-killed" in failure.detail

@@ -659,11 +659,13 @@ absolute paths and do work from either scope. Machine scope is what covers the
 folder you open *next* — including the `/` that starts the walk with no bottom —
 which is why both copies exist.
 
-Settings you have written yourself are never overwritten. The agent adds only
-the keys that are missing, so a deliberate `"**/proc/**": false` survives, and a
-file it cannot parse — VS Code allows comments in `settings.json`, `json` does
-not — is left exactly as it is, with the reason reported by
-`podbench agent --self-check` and in the container's start-up output.
+Settings you have written yourself are never overwritten. The file is read as
+JSONC — comments and a trailing comma, which is what VS Code writes and what a
+real project commits — and edited in place, so the agent adds only the keys that
+are missing and everything else, comments included, stays where you put it. A
+deliberate `"**/proc/**": false` survives. A file that is not JSONC either is
+left exactly as it is, with the reason reported by `podbench agent --self-check`
+and in the container's start-up output.
 
 The one thing that removes them is Remote-SSH's **Kill/Uninstall VS Code Server
 on Host**, which deletes `~/.vscode-server` wholesale. Nothing rewrites the file
