@@ -1902,8 +1902,8 @@ class HotfixRow:
 
         The hold moves the exit code (decision 6). A held pod is not a healthy
         one however healthy its fix: its liveness probe is short-circuited and
-        its supervisor has no backoff, so "no unretired hotfixes" must not come
-        back true while one is still held.
+        its supervisor has no backoff, so "nothing here needs somebody today"
+        must not come back true while one is still held.
 
         >>> row = HotfixRow(PodRef("d", "p"), None, HotfixHealth.ACTIVE, "")
         >>> row.ok
@@ -6140,10 +6140,21 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
     """Entry point for ``podbench hotfix <subcommand>``.
 
     ``status`` exits non-zero when any pod needs attention, so that it is usable
-    as a shutdown-checklist assertion — "no pod is still carrying an unretired
-    hotfix" is a thing a facility wants to be able to test, not read. With
-    ``--all-namespaces`` that assertion covers the cluster, which is what makes
-    it a command rather than a shell loop somebody has to keep correct.
+    as a shutdown-checklist assertion — "no hotfix in this namespace needs
+    somebody today" is a thing a facility wants to be able to test, not read.
+    With ``--all-namespaces`` that assertion covers the cluster, which is what
+    makes it a command rather than a shell loop somebody has to keep correct.
+
+    It is deliberately **not** the assertion "nothing here is still to be
+    retired", and the wording above used to say it was. A consolidated fix whose
+    image has not moved yet is a live hotfix doing its job, so retirement is not
+    part of :attr:`HotfixRow.ok` (see the attribute, which states the reasoning)
+    and ``status`` exits 0 on a pod ``retire`` reports three steps short. Two
+    verbs, two assertions: ``retire`` is the one that goes red until a
+    retirement is finished. Whether the shutdown gate should be the stricter of
+    the two is an open contract question and not a wording one, so nothing here
+    decides it - it is recorded so that the two docstrings stop disagreeing
+    about which assertion is being made.
 
     ``retire`` exits **1** while any step of a retirement it measured is
     outstanding, and **0** when the pod is unwired and the claim is gone. A step

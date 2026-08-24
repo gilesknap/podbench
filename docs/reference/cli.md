@@ -1153,8 +1153,12 @@ Notes:
 * The editable install runs in the **application** container, not the seat: the
   venv is shared but its interpreter is not. `--no-install` skips it.
 * `consolidate` does not open a PR; it prints the `gh pr create` line.
-* `status` exits **1** when any pod needs attention, so "no unretired hotfixes" is
-  a testable shutdown assertion. `-A`/`--all-namespaces` is that assertion for the
+* `status` exits **1** when any pod needs attention, so "no hotfix here needs somebody
+  today" is a testable shutdown assertion. It is **not** the assertion "nothing here is
+  still to be retired": a consolidated fix whose image has not moved is a live hotfix
+  doing its job, so retirement is not part of a row's `ok` and `status` can exit 0 on a
+  pod `retire` reports several steps short. `retire` is the verb that stays red until a
+  retirement is finished. `-A`/`--all-namespaces` is that assertion for the
   whole cluster, with the same exit code — the facility-wide form used to be a shell
   loop the operator had to write and keep correct. Every pod is still read through a
   client bound to its own namespace.
