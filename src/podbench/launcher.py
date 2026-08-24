@@ -152,6 +152,8 @@ from .sshcfg import (
     SshdLayout,
     client_config,
     ensure_control_dir,
+    forge_known_hosts,
+    git_remote_hosts,
     host_key_alias,
     known_hosts_entry,
 )
@@ -168,6 +170,7 @@ __all__ = [
     "EDITOR_RESIZE_NOTE",
     "EDITOR_STORAGE_WARNING",
     "EDITOR_UNMEASURED_WARNING",
+    "FORWARD_AGENT_WARNING",
     "HOST_KEY_ARGV",
     "ID_CORRECTION_WARNING",
     "LADDER",
@@ -208,6 +211,7 @@ __all__ = [
     "editor_key_refusal",
     "emit_ssh_config",
     "features",
+    "forge_seed_notes",
     "forget_known_hosts",
     "forget_ssh_config",
     "format_age",
@@ -4417,6 +4421,7 @@ def ssh_stanza(
     host_alias: str,
     user: str,
     invocation: KubectlInvocation | None = None,
+    forward_agent: bool = False,
 ) -> str:
     """The ``Include``-able ssh config stanza for this seat."""
     return client_config(
@@ -4427,6 +4432,7 @@ def ssh_stanza(
         layout=seat_layout(session),
         user=user,
         kubectl=invocation,
+        forward_agent=forward_agent,
     )
 
 
@@ -4667,6 +4673,178 @@ def forget_known_hosts(alias: str, path: Path) -> bool:
     return True
 
 
+# -- agent forwarding, and the forge keys it does not supply -----------------
+
+FORWARD_AGENT_WARNING = (
+    "agent forwarding is on, so anyone who can `kubectl exec` into "
+    "{namespace} can authenticate as you, to every host that trusts these "
+    "keys, until this session ends - `authorized_keys` gates ssh and does not "
+    "gate exec. `ssh-add -c` makes the agent ask you first."
+)
+"""The one line ``--forward-agent`` earns, printed by every verb that offers it.
+
+One line by the rule the other warnings here follow. The mechanism - a separate
+``ssh-agent`` holding only the git key, destination-constrained keys, and the
+caution that a facility's RBAC group routinely includes service accounts and CI
+identities as well as colleagues - is in ``docs/how-to/vscode-remote-ssh.md``,
+said once, where somebody deciding whether to use the flag will meet it.
+
+It names the *namespace* because that is the set the reader can go and read a
+rolebinding for, and because the exposure is a fact about where this pod is
+rather than about podbench. What it does **not** say is that the forwarded
+credential is the least-bad one available - that is why podbench offers the flag
+at all, and it belongs in :func:`podbench.sshcfg.client_config`'s docstring
+rather than on the terminal of somebody who has already chosen it.
+"""
+
+FORGE_REMOTES_ARGV = (
+    "sh",
+    "-c",
+    'for dir in "$@"; do git -C "$dir" remote -v 2>/dev/null; done',
+    "sh",
+)
+"""Ask the seat which ssh forges its checkouts name, over ``kubectl exec``.
+
+The directories arrive as ``"$@"`` rather than spliced into the script: they
+come from a mountPath the application chose, and a path with a space in it
+would otherwise become two directories and a shell error.
+
+Asked of the seat rather than guessed at from the laptop, because the checkout
+is *in the pod* - a hotfix claim, mounted where the application mounts it - and
+the laptop may hold no copy of the repository at all.
+"""
+
+_SEAT_HOME = (
+    'home=$(getent passwd "$1" 2>/dev/null | cut -d: -f6); '
+    '[ -n "$home" ] || home="$HOME"; '
+)
+"""The ssh session's home, resolved the way sshd resolves it.
+
+``$HOME`` under ``kubectl exec`` is the *image's*, and on a ``podbench dev``
+sidecar that is the workspace volume while sshd puts the session in the home the
+projected passwd record names (:func:`podbench.agent.session_home`). Seeding the
+first one would write a ``known_hosts`` no ssh session ever reads, and it would
+do so successfully. The fallback is for a seat whose image has no ``getent``.
+"""
+
+READ_SEAT_KNOWN_HOSTS = ("sh", "-c", _SEAT_HOME + 'cat "$home/.ssh/known_hosts"', "sh")
+WRITE_SEAT_KNOWN_HOSTS = (
+    "sh",
+    "-c",
+    _SEAT_HOME + 'mkdir -p "$home/.ssh" && chmod 700 "$home/.ssh" && '
+    'cat > "$home/.ssh/known_hosts" && chmod 600 "$home/.ssh/known_hosts"',
+    "sh",
+)
+"""Read and replace the seat's ``known_hosts``, under the ssh session's home.
+
+Read-then-write rather than an append, for the reason
+:func:`podbench.agent.ensure_authorized_keys` merges: a second attach into a
+seat somebody is already sitting in must not evict what is there. The merge
+happens on the laptop because that is where the entries being merged in are.
+"""
+
+FORGE_SEEDED = "seeded {count} known_hosts {entries} in the seat for {hosts}"
+FORGE_NO_REMOTE = (
+    "no ssh git remote found in the seat, so its known_hosts was left alone; "
+    "an https remote needs none, and a clone made later will need `ssh-keyscan`"
+)
+FORGE_NOT_TRUSTED = (
+    "your own known_hosts has no entry for {hosts}, so the seat's was left "
+    "alone: nothing here invents trust you have not already given"
+)
+FORGE_UNWRITTEN = (
+    "could not write the seat's known_hosts ({detail}), so git over ssh there "
+    "will still stop at `Host key verification failed`"
+)
+
+
+def seat_forge_hosts(
+    kubectl: Kubectl, seat: ContainerRef, directories: Sequence[str]
+) -> tuple[str, ...]:
+    """The ssh hosts the git remotes in ``directories`` name, asked of the seat."""
+    if not directories:
+        return ()
+    result = kubectl.exec_(
+        seat.pod.name,
+        [*FORGE_REMOTES_ARGV, *directories],
+        container=seat.container,
+        check=False,
+    )
+    return git_remote_hosts(result.stdout)
+
+
+def user_known_hosts() -> str:
+    """The laptop's own ``known_hosts``, or ``""`` when there is none.
+
+    ``~/.ssh/known_hosts`` and not the file podbench manages under
+    :func:`client_dir`: this is the user's own record of hosts *they* have
+    verified, which is the only trust decision worth copying anywhere.
+    """
+    path = Path("~/.ssh/known_hosts").expanduser()
+    return path.read_text(errors="replace") if path.is_file() else ""
+
+
+def forge_seed_notes(
+    kubectl: Kubectl,
+    session: Session,
+    *,
+    login: str,
+    directories: Sequence[str],
+) -> list[str]:
+    """Copy the forge's host keys into the seat, and say what happened.
+
+    Only ever called under ``--forward-agent``, because a seat that cannot
+    authenticate has no use for a forge's host key. The two halves are one
+    slice for the reason the p47 measurement gave: with the key forwarded and
+    nothing else done, ``git fetch`` in a seat stops at ``Host key verification
+    failed`` - so agent forwarding on its own buys nothing at all.
+
+    Every outcome is one line, and none of them is silence. "Nothing was
+    copied" is the answer in three different situations - no ssh remote, no
+    entry of the user's own, a write that failed - and they have different next
+    moves.
+    """
+    hosts = seat_forge_hosts(kubectl, session.seat, directories)
+    if not hosts:
+        return [FORGE_NO_REMOTE]
+    named = ", ".join(hosts)
+    entries = forge_known_hosts(user_known_hosts(), hosts)
+    if not entries:
+        return [FORGE_NOT_TRUSTED.format(hosts=named)]
+    existing = kubectl.exec_(
+        session.seat.pod.name,
+        list(READ_SEAT_KNOWN_HOSTS) + [login],
+        container=session.seat.container,
+        check=False,
+    )
+    merged: list[str] = []
+    for line in [*existing.stdout.splitlines(), *entries]:
+        if line.strip() and line not in merged:
+            merged.append(line)
+    written = kubectl.exec_(
+        session.seat.pod.name,
+        list(WRITE_SEAT_KNOWN_HOSTS) + [login],
+        container=session.seat.container,
+        stdin="\n".join(merged) + "\n",
+        check=False,
+    )
+    if written.returncode != 0:
+        return [FORGE_UNWRITTEN.format(detail=_forge_detail(written.stderr))]
+    return [
+        FORGE_SEEDED.format(
+            count=len(entries),
+            entries="entry" if len(entries) == 1 else "entries",
+            hosts=named,
+        )
+    ]
+
+
+def _forge_detail(stderr: str) -> str:
+    """The seat's own complaint, on one line and never empty."""
+    first = next((line.strip() for line in stderr.splitlines() if line.strip()), "")
+    return first or "no error text"
+
+
 def write_ssh_config(stanza: str, path: Path) -> Path:
     """Write the stanza to its own file, overwriting it wholesale.
 
@@ -4817,6 +4995,7 @@ def emit_ssh_config(
     print_config: bool = False,
     opening: bool = False,
     debug_command: str = DEBUG_COMMAND,
+    forward_agent: bool = False,
 ) -> SshSeat:
     """Generate the client stanza for a landed seat, and write it.
 
@@ -4836,6 +5015,12 @@ def emit_ssh_config(
     ``opening`` changes only the alias line's tense: ``vscode`` prints this
     block *after* opening a window, so the alias is what a later reconnect
     needs rather than what to do now.
+
+    ``forward_agent`` puts ``ForwardAgent yes`` in the stanza *and* seeds the
+    seat's ``known_hosts`` from the user's own, because on the p47 measurement
+    (2026-08-24) the first thing ``git fetch`` in a seat hit was ``Host key
+    verification failed`` rather than an authentication failure. One flag for
+    both halves: either alone leaves git in the seat exactly as broken.
 
     ``debug_command`` is the debug step this pod's reader should paste, and it
     is the caller's to compose because only the caller knows the pod: on a
@@ -4892,16 +5077,49 @@ def emit_ssh_config(
         host_alias=alias,
         user=login,
         invocation=KubectlInvocation(binary=kubectl.binary, context=kubectl.context),
+        forward_agent=forward_agent,
     )
     if print_config:
-        return SshSeat("\n".join([*notes, stanza]), alias=alias)
+        # As an ssh comment, because this output is pasted into a config file
+        # byte for byte and a `WARNING` lead would be pasted with it. Nothing is
+        # written anywhere on this path, so no known_hosts is seeded either -
+        # the reader is looking at a stanza, not using one.
+        warning = (
+            [f"# {FORWARD_AGENT_WARNING.format(namespace=session.pod.namespace)}"]
+            if forward_agent
+            else []
+        )
+        return SshSeat("\n".join([*warning, *notes, stanza]), alias=alias)
     path = write_ssh_config(
         stanza, ssh_config_path(directory, session.pod, session.seat.container)
     )
+    forge: list[str] = []
+    if forward_agent:
+        # The folder the editor would open plus the seat's home, de-duplicated:
+        # on a hotfixed pod the checkout is on the claim and the home holds
+        # nothing, and on every other pod they are the same path.
+        seat_spec = ephemeral_container(pod_json, session.seat.container)
+        folder, _ = editor_folder(session, seat_spec)
+        forge = forge_seed_notes(
+            kubectl,
+            session,
+            login=login,
+            directories=list(dict.fromkeys([folder, seat_layout(session).home])),
+        )
     return SshSeat(
         "\n".join(
             [
+                *(
+                    paragraph(
+                        FORWARD_AGENT_WARNING.format(namespace=session.pod.namespace),
+                        first=f"{WARNING_LEAD}  ",
+                        indent=" " * WARNING_HANG,
+                    )
+                    if forward_agent
+                    else []
+                ),
                 *notes,
+                *forge,
                 f"ssh config written to {path}",
                 # The hint names the verb that *checks* the edit as well as the
                 # line itself: this one is the only setup step podbench has ever
@@ -6173,6 +6391,17 @@ _PrintConfig = Annotated[
         help="print the ssh stanza instead of writing it to the config dir",
     ),
 ]
+_ForwardAgent = Annotated[
+    bool,
+    typer.Option(
+        "--forward-agent",
+        help="let git in the seat use your ssh keys: `ForwardAgent yes` in the "
+        "stanza, and the seat's known_hosts seeded from your own for whatever "
+        "forge its git remotes name. Off by default, because `authorized_keys` "
+        "gates ssh and does not gate `kubectl exec` - anyone with pods/exec in "
+        "the namespace can authenticate as you for the life of the session",
+    ),
+]
 
 
 _Target = Annotated[
@@ -6562,6 +6791,7 @@ def _open_editor(
     editor: str,
     runner: Runner | None,
     seat_spec: Mapping[str, Any] | None = None,
+    agent_socket: str | None = None,
 ) -> None:
     """Hand :func:`podbench.editor.open_seat` what only the launcher knows.
 
@@ -6615,6 +6845,7 @@ def _open_editor(
         editor=editor,
         provision_dest=provision_destination(session, seat_spec),
         runner=runner,
+        agent_socket=agent_socket,
     )
 
 
@@ -6653,6 +6884,7 @@ def _build_app(
         ssh_user: _SshUser = None,
         host_alias: _HostAlias = None,
         print_config: _PrintConfig = False,
+        forward_agent: _ForwardAgent = False,
         timeout: _Timeout = 120.0,
         no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
@@ -6696,6 +6928,7 @@ def _build_app(
                 host_alias=host_alias,
                 ssh_user=ssh_user,
                 print_config=print_config,
+                forward_agent=forward_agent,
             ).note
         )
         raise typer.Exit(0)
@@ -6734,6 +6967,20 @@ def _build_app(
         identity: _Identity = DEFAULT_IDENTITY,
         ssh_user: _SshUser = None,
         host_alias: _HostAlias = None,
+        forward_agent: _ForwardAgent = False,
+        agent_socket: Annotated[
+            str | None,
+            typer.Option(
+                "--agent-socket",
+                metavar="SOCKET",
+                help="forward this agent rather than the one your shell has, "
+                "and turn `--forward-agent` on. `ssh-agent -a SOCKET` then "
+                "`SSH_AUTH_SOCK=SOCKET ssh-add ~/.ssh/id_git` keeps a git-only "
+                "agent, so only that key reaches the pod. It is set for the "
+                "`code` this run launches, so a VS Code already running has "
+                "the environment it was started with instead",
+            ),
+        ] = None,
         timeout: _Timeout = 120.0,
         no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
@@ -6741,6 +6988,10 @@ def _build_app(
         kubectl: _KubectlBinary = "kubectl",
         config_dir: _ConfigDir = None,
     ) -> None:
+        # `--agent-socket` implies the flag. Accepting it alone would set
+        # SSH_AUTH_SOCK for a `code` whose stanza never says ForwardAgent, so
+        # the run would look configured and forward nothing.
+        forward_agent = forward_agent or agent_socket is not None
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         key_path, public_key = read_public_key(identity)
         # Both before the namespace is listed, and `code` for a harsher reason
@@ -6813,6 +7064,7 @@ def _build_app(
             print_config=False,
             opening=True,
             debug_command=debug_command(session, seat_spec, dev_pod=in_dev_pod),
+            forward_agent=forward_agent,
         )
         if in_dev_pod:
             emit(
@@ -6830,6 +7082,7 @@ def _build_app(
                 seat_spec=seat_spec,
                 editor=editor,
                 runner=runner,
+                agent_socket=agent_socket,
             )
             opened = True
         finally:
@@ -6874,6 +7127,7 @@ def _build_app(
         ssh_user: _SshUser = None,
         host_alias: _HostAlias = None,
         print_config: _PrintConfig = False,
+        forward_agent: _ForwardAgent = False,
         no_prompt: _NoPrompt = False,
         namespace: _Namespace = None,
         context: _Context = None,
@@ -6933,6 +7187,7 @@ def _build_app(
                 host_alias=host_alias,
                 ssh_user=ssh_user,
                 print_config=print_config,
+                forward_agent=forward_agent,
             ).note
         )
         raise typer.Exit(0)
@@ -7055,6 +7310,7 @@ def _wire(
     print_config: bool,
     opening: bool = False,
     debug_command: str = DEBUG_COMMAND,
+    forward_agent: bool = False,
 ) -> SshSeat:
     """:func:`emit_ssh_config`, with the flags this CLI spells it with."""
     return emit_ssh_config(
@@ -7067,6 +7323,7 @@ def _wire(
         print_config=print_config,
         opening=opening,
         debug_command=debug_command,
+        forward_agent=forward_agent,
     )
 
 

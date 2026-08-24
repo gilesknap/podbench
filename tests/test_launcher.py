@@ -35,11 +35,17 @@ from podbench.kubectl import (
 )
 from podbench.launcher import (
     DEV_SIDECAR_REUSED_NOTE,
+    FORGE_NO_REMOTE,
+    FORGE_NOT_TRUSTED,
+    FORGE_REMOTES_ARGV,
+    FORWARD_AGENT_WARNING,
     NO_TARGET_CONTAINER,
     OTHER_MODES_NOTE,
+    READ_SEAT_KNOWN_HOSTS,
     UNKNOWN_SEAT_VERSION,
     UNMOUNTED_HOTFIX_NOTE,
     VERSION_SKEW_WARNING,
+    WRITE_SEAT_KNOWN_HOSTS,
     LauncherError,
     SeatInfo,
     Session,
@@ -354,6 +360,8 @@ class FakeCluster:
         allowed_uids: Sequence[int] = (),
         seat_status: str | None = None,
         whoami: str | None = "kubernetes-admin",
+        git_remotes: str = "",
+        seat_known_hosts: str | None = None,
     ) -> None:
         self.pod = pod
         # The other pods in the namespace, which only the pod-name resolution
@@ -427,6 +435,13 @@ class FakeCluster:
         # already has a debugger: a fake that always needed provisioning would
         # make "provisioned nothing" untestable.
         self.unprovisioned = False
+        self.forge_dirs: list[str] = []
+        # What `git remote -v` prints in the seat, and what its
+        # `~/.ssh/known_hosts` holds. Both empty by default: the seat with no
+        # checkout and no host trust is the state every attach starts from, and
+        # `--forward-agent` has to say so rather than claim a seed.
+        self.git_remotes = git_remotes
+        self.seat_known_hosts = seat_known_hosts
 
     # -- Runner protocol ---------------------------------------------------
 
@@ -780,6 +795,16 @@ class FakeCluster:
                 json.dumps({"version": "0.2.0", "configurations": self.configurations})
             )
         if command[:2] == ["sh", "-c"]:
+            if command[2] == FORGE_REMOTES_ARGV[2]:
+                self.forge_dirs = command[4:]
+                return _ok(self.git_remotes)
+            if command[2] == READ_SEAT_KNOWN_HOSTS[2]:
+                if self.seat_known_hosts is None:
+                    return _fail("cat: no such file", returncode=1)
+                return _ok(self.seat_known_hosts)
+            if command[2] == WRITE_SEAT_KNOWN_HOSTS[2]:
+                self.seat_known_hosts = stdin or ""
+                return _ok("")
             return self._seat_file(command[2], stdin)
         if command[:1] == ["cat"] and command[-1].endswith("authorized_keys"):
             if self.authorized_keys is None:
@@ -7348,3 +7373,162 @@ def test_a_reconnect_does_not_name_the_other_modes(
 
     flowed = " ".join(capsys.readouterr().out.split())
     assert " ".join(OTHER_MODES_NOTE.split()) not in flowed
+
+
+# -- agent forwarding, and the host trust it does not supply ----------------
+
+
+def laptop_known_hosts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str
+) -> None:
+    """Give this run a ``~/.ssh/known_hosts`` of its own."""
+    home = tmp_path / "laptop"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "known_hosts").write_text(text)
+    monkeypatch.setenv("HOME", str(home))
+
+
+GITHUB_KEY = "github.com ssh-ed25519 AAAAC3NzForge"
+ORIGIN = "origin\tgit@github.com:DiamondLightSource/fastcs-example.git (fetch)\n"
+
+
+def test_forward_agent_asks_for_the_agent_and_seeds_the_forge_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both halves, because either alone leaves git in the seat broken.
+
+    Measured on p47 2026-08-24: with the key forwarded and nothing else done,
+    `git fetch` stops at `Host key verification failed` - the failure is host
+    trust before it is ever authentication.
+    """
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + " laptop\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    assert main(attach_argv(tmp_path, "--forward-agent"), runner=cluster) == 0
+
+    stanza = (tmp_path / "cfg" / "config.d" / "demo-target-1.conf").read_text()
+    assert "    ForwardAgent yes\n" in stanza
+    assert "StrictHostKeyChecking yes" in stanza
+    assert cluster.seat_known_hosts == GITHUB_KEY + "\n"
+    out = capsys.readouterr().out
+    assert "seeded 1 known_hosts entry in the seat for github.com" in out
+
+
+def test_the_flag_says_what_it_costs_in_one_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`authorized_keys` gates ssh and does not gate exec, and this is where
+    the reader finds that out. Flowed, because the line wraps."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    flowed = " ".join(capsys.readouterr().out.split())
+    assert FORWARD_AGENT_WARNING.format(namespace="demo") in flowed
+    assert "WARNING" in flowed
+
+
+def test_without_the_flag_nothing_is_lent_and_nothing_is_asked_of_the_seat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default costs an attach nothing: no line, no exec, no write."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    main(attach_argv(tmp_path), runner=cluster)
+
+    stanza = (tmp_path / "cfg" / "config.d" / "demo-target-1.conf").read_text()
+    assert "ForwardAgent" not in stanza
+    assert cluster.seat_known_hosts is None
+    assert cluster.forge_dirs == []
+
+
+def test_an_https_remote_is_told_it_needs_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Silence here would read as "seeded", and the two have different fixes."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        git_remotes="origin\thttps://github.com/x/y.git (fetch)\n",
+    )
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert cluster.seat_known_hosts is None
+    assert " ".join(FORGE_NO_REMOTE.split()) in " ".join(
+        capsys.readouterr().out.split()
+    )
+
+
+def test_a_forge_the_laptop_has_never_verified_is_not_invented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing here weakens verification: no entry of the user's own, no seed.
+
+    The alternative - `StrictHostKeyChecking no`, or a forge key baked into the
+    image - is what `ssh-over-exec` refuses for the seat's own host key, and
+    the principle does not stop at the pod.
+    """
+    laptop_known_hosts(monkeypatch, tmp_path, "internal.example.com ssh-rsa OTHER\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert cluster.seat_known_hosts is None
+    flowed = " ".join(capsys.readouterr().out.split())
+    assert " ".join(FORGE_NOT_TRUSTED.format(hosts="github.com").split()) in flowed
+
+
+def test_the_seed_merges_rather_than_evicting_what_the_seat_already_trusts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second attach into a seat somebody is sitting in must not truncate it,
+    which is :func:`podbench.agent.ensure_authorized_keys`' rule one file over."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(
+        pod_document(uid=1000),
+        git_remotes=ORIGIN,
+        seat_known_hosts="other.example.com ssh-rsa KEPT\n",
+    )
+
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert cluster.seat_known_hosts is not None
+    assert cluster.seat_known_hosts.splitlines() == [
+        "other.example.com ssh-rsa KEPT",
+        GITHUB_KEY,
+    ]
+
+
+def test_print_config_stays_pasteable_under_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--print-config` output is pasted into a config file byte for byte, so
+    the warning goes in as an ssh comment and nothing is written anywhere."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    main(attach_argv(tmp_path, "--forward-agent", "--print-config"), runner=cluster)
+
+    out = capsys.readouterr().out
+    assert "ForwardAgent yes" in out
+    assert "WARNING" not in out
+    assert "kubectl exec" in out
+    assert cluster.seat_known_hosts is None
+
+
+def test_the_seat_is_asked_about_the_folder_an_editor_would_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The checkout is in the pod, not on the laptop, and on a hotfixed pod it
+    is on the claim rather than in the home."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(pod_document(uid=1000), git_remotes=ORIGIN)
+
+    session = attach(talking_to(cluster), "target")
+    main(attach_argv(tmp_path, "--forward-agent"), runner=cluster)
+
+    assert cluster.forge_dirs == [seat_layout(session).home]

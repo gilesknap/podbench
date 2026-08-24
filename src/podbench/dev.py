@@ -1463,6 +1463,7 @@ def seat_ssh_config(
     identity: str,
     config_dir: str | None = None,
     host_alias: str | None = None,
+    forward_agent: bool = False,
 ) -> SshSeat:
     """Give the dev pod's sidecar the same seat ``attach`` gives an ephemeral one.
 
@@ -1487,6 +1488,7 @@ def seat_ssh_config(
         identity=identity,
         config_dir=config_dir,
         host_alias=host_alias,
+        forward_agent=forward_agent,
     )
 
 
@@ -1864,6 +1866,17 @@ def _build_app() -> typer.Typer:
                 "--host-alias", metavar="NAME", help="ssh Host name for the sidecar"
             ),
         ] = None,
+        forward_agent: Annotated[
+            bool,
+            typer.Option(
+                "--forward-agent",
+                help="let git in the sidecar use your ssh keys: `ForwardAgent "
+                "yes` in the stanza, and its known_hosts seeded from your own "
+                "for whatever forge the workspace's git remotes name. Off by "
+                "default, because `authorized_keys` gates ssh and does not "
+                "gate `kubectl exec`",
+            ),
+        ] = False,
         delete: Annotated[
             bool, typer.Option("--delete", help="tear the dev pod down")
         ] = False,
@@ -1930,6 +1943,7 @@ def _build_app() -> typer.Typer:
             identity=key_path,
             config_dir=config_dir,
             host_alias=host_alias,
+            forward_agent=forward_agent,
         )
         emit(connection_summary(created, seat))
         raise typer.Exit(0)
