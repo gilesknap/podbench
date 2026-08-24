@@ -16,7 +16,8 @@ kubelet's CrashLoopBackOff ladder: 15s, then 23s, then 45s. The in-place relaunc
 It is the one mode that needs deploy-time cooperation. It is Python-only and
 single-replica-only.
 
-Seven verbs: `values`, `check`, `init`, `apply`, `status`, `consolidate`, `retire`.
+Eight verbs: `values`, `check`, `init`, `apply`, `restart`, `status`,
+`consolidate`, `retire`.
 `values` reads the target pod and emits the chart snippet the whole thing depends on;
 `check` says whether the deployed result is one `init` can work on; `retire` says how
 far the fix has got back out again.
@@ -632,6 +633,74 @@ podbench hotfix apply TARGET -m "message" [--no-bounce]
                         actions printed, exit 0
 ```
 
+## `hotfix restart` — the same relaunch, with none of the git
+
+```text
+podbench hotfix restart TARGET
+    │
+    ▼
+   resolve the target and the seat, read the manifest (as apply does)
+    │
+    ▼
+   require_supervisor — before anything is killed, not after: with no
+   supervisor the tree-kill takes the application down with nothing
+   behind it, and the kubelet restarts the container and the seat with it
+    │
+    ▼
+   cat /tmp/podbench-child.pid                       → the pid before
+    │
+    ▼
+   the RELAUNCH block above, unchanged and unconditional
+    │
+    ▼
+   cat /tmp/podbench-child.pid                       → the pid after
+    │
+    ▼
+   git -C SRC status --porcelain
+     dirty → "the claim is dirty and running: N files uncommitted (…)"
+     clean → "the claim is clean and running: the new process loaded <sha>"
+    │
+    ▼
+   SRC/.vscode/launch.json exists?
+     no  → nothing (a restart is not an ask for a debugger)
+     yes → podbench debug-config --provision --provision-dest <claim>
+                                 --output SRC/.vscode/launch.json
+           failure → a line in the report, not a failed restart
+    │
+    ▼
+                        actions printed, exit 0
+```
+
+Everything `apply` does between the manifest read and the relaunch is missing
+here, deliberately: no `add`, no `commit`, no drift measurement, no packaging
+check, no manifest write. Committing is ordinary git in the seat since #217, and
+requiring `-m` per iteration is what pushed the edit-run-look loop out of
+podbench altogether. `apply` stays for the case it was built for — a hotfix with
+a sha, which is the only kind `consolidate` can push.
+
+What `restart` owes in exchange is the **dirty line**. The manifest records
+commits, and `status` reads the manifest, so a working-tree change on a live
+process is invisible to every other verb in the mode. That is not a smaller
+divergence than a committed one, it is a larger one — no repository anywhere has
+a copy — so it is said on every restart, clean or dirty.
+
+Two things the report is careful about:
+
+* **Which pid.** `/tmp/podbench-child.pid` holds the *supervisor's* child, and
+  on the measured target (`bl47p-ea-fastcs-01-0`, 2026-08-24) that was pid 7,
+  `stdio-socket --ptty`, with the `fastcs-example` anybody would debug at pid 13
+  three levels below it. The line says `stopped the supervisor child pid 7 and
+  its tree` because the kill is a tree kill and because calling 7 "the
+  application" would send a reader to the wrong process.
+* **Which debug configuration.** Every configuration podbench authors is
+  pid-keyed, so an untouched `launch.json` after a relaunch names a closed port
+  — which presents as a broken adapter rather than as a stale file. Refreshing
+  it is cheap: debugpy's files are already on the claim and a fresh process can
+  be served again, so the one-shot problem does not arise. The gate is the
+  document's existence and nothing weaker, because `--provision` ptraces the
+  workload and installs into it; the justification for doing that without asking
+  again is entirely that the user ran the debug step and has not retracted it.
+
 ## `hotfix status` — the point of the whole mode
 
 Silently-diverged pods are the risk this mode creates, so `status` is cheap enough to
@@ -881,22 +950,30 @@ claim is gone.
 ## Every cluster call, in order
 
 ```text
-  init / apply / consolidate:
+  init / apply / restart / consolidate:
    1  kubectl config view --minify -o jsonpath={..namespace}   # only without -n
    2  kubectl -n NS get deployment NAME -o json     ┐ or get pod NAME -o json,
    3  kubectl -n NS get pods -l <matchLabels> -o json│ then get replicaset / get
    4  kubectl -n NS get pod POD -o json             ┘ deployment walking upwards
                                                      (+ the seat lookup)
    5  kubectl -n NS exec -c APP  POD -- test -e /tmp/podbench-child.pid
-                                                     # init: require the supervisor
+                                                     # init and restart: require
+                                                     # the supervisor
    6  kubectl -n NS exec -c SEAT POD -- <cp / git / cat / test / sh -c 'cat > …'>
                                                      # the seed, and every claim
                                                      # read and write
    7  kubectl -n NS exec -c APP  POD -- env UV_CACHE_DIR=… uv sync …
                                                      # init, and apply when
                                                      # packaging metadata moved
-   8  kubectl -n NS exec -c APP  POD -- bash -c '<hold; kill the tree; release>'
-                                                     # apply, unless --no-bounce
+   8  kubectl -n NS exec -c APP  POD -- cat /tmp/podbench-child.pid
+                                                     # restart, either side of 9
+   9  kubectl -n NS exec -c APP  POD -- bash -c '<hold; kill the tree; release>'
+                                                     # apply, unless --no-bounce,
+                                                     # and every restart
+  10  kubectl -n NS exec -c SEAT POD -- podbench debug-config --provision …
+                                                     # restart, only where the
+                                                     # claim already has a
+                                                     # .vscode/launch.json
 
   status:
    1  kubectl -n NS get pods -o json

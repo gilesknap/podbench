@@ -308,6 +308,46 @@ in that state.
 `--no-bounce` commits without relaunching, for a change you want to take effect
 at the next restart instead.
 
+### The inner loop: `restart`, with no commit
+
+`apply` requires `-m`, and it is right to: a hotfix that is only a working-tree
+edit has no sha. But the loop most editing actually is — change a line, run it,
+look — is not twenty hotfixes, it is twenty restarts and one commit at the end.
+That is `hotfix restart`:
+
+```
+$ podbench hotfix restart bl47p-ea-fastcs-01-0 -n p47-beamline
+stopped the supervisor child pid 7 and its tree, started pid 2446
+the claim is dirty and running: 2 files uncommitted (src/fastcs_example/temp_controller.py and tests/test_ramp.py)
+
+$ cd /podbench/app && git commit -am "clamp the setpoint before the ramp"
+```
+
+It writes nothing at all — no commit, no index, no manifest — and the relaunch
+is the same hold-and-tree-kill `apply` performs, so `restartCount` still does
+not move.
+
+Three things about what it prints:
+
+* **The dirty line is the point of the verb, not decoration.** An uncommitted
+  change on a live process is the one divergence no repository anywhere records,
+  and `hotfix status` reads the manifest, so this is the only place it is said.
+  When the tree is clean the line says so and names the sha the new process
+  loaded.
+* **The pid is the supervisor's own child**, which is what
+  `/tmp/podbench-child.pid` holds. It is not the process you would set a
+  breakpoint in: on `bl47p-ea-fastcs-01` the file held 7 — the `stdio-socket`
+  wrapper — and the `fastcs-example` under it was 13, three levels down. The
+  kill is a tree kill from that pid, so everything below it went too. Use
+  [`podbench pids`](../reference/cli.md) in the seat to see the tree.
+* **A debug configuration is refreshed only if you already made one.** If the
+  claim has a `.vscode/launch.json`, restart re-runs `podbench debug-config
+  --provision` in the seat so F5 still reaches the new process — every
+  configuration podbench can author names a pid, and the relaunch just changed
+  it. With no `launch.json` it does nothing: `--provision` ptraces the workload,
+  and a restart is not an ask for a debugger. See [VS Code over
+  Remote-SSH](vscode-remote-ssh.md) for the debug step itself.
+
 ## 5. Watch it: `hotfix status`
 
 ```

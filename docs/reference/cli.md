@@ -1056,6 +1056,7 @@ seat, where the claim is already in this process's own mount namespace.
 │ check        say what would stop a hotfix on this target, before starting one                    │
 │ init         seed the claim from the running container, clone the source, rebuild the venv       │
 │ apply        commit the change on the claim and relaunch the running child                       │
+│ restart      relaunch the application on the claim, committing nothing                           │
 │ status       every hotfixed pod in the namespace, and its drift                                  │
 │ consolidate  push the claim's checkout as a branch for the rebuild                               │
 │ retire       what is left of retiring this hotfix, and the one step podbench can take            │
@@ -1068,15 +1069,18 @@ seat, where the claim is already in this process's own mount namespace.
 | `check TARGET` | every prerequisite `init` has, measured in one read-only pass, with a verdict and an exit code |
 | `init TARGET` | seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit |
 | `apply -m MSG TARGET` | commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application's own child so the fix is what runs |
+| `restart TARGET` | relaunch the application's own child on whatever is on the claim — no message, no commit, no manifest write — and say whether the code now running is committed |
 | `status` | every hotfixed pod in the namespace — or, with `-A`, the cluster — its drift, and what is wrong with it |
 | `consolidate --branch B TARGET` | push the checkout as a branch and print the retirement checklist |
 | `retire TARGET` | which steps of that checklist have landed, measured against the cluster, and `--delete-claim` to take the last one |
 
 `TARGET` is `pod/NAME`, `deployment/NAME` or `statefulset/NAME`. Shared flags
-across `init`, `apply` and `consolidate`: `--container`, `--seat`, `--local`,
-`--author`, and `--venv` — which is the mountPath the claim is mounted at,
+across `init`, `apply`, `restart` and `consolidate`: `--container`, `--seat`,
+`--local`, and `--venv` — which is the mountPath the claim is mounted at,
 beside the application's own project and never over it, and which is **read off
-the pod** rather than asked for. `check` takes `--container` and `--seat`, and
+the pod** rather than asked for. `--author` is on `init`, `apply` and
+`consolidate` and deliberately not on `restart`, which writes no commit for it
+to name. `check` takes `--container` and `--seat`, and
 `retire` takes `--container`. `values` runs before any of that exists, so it
 takes a `--from-pod POD` rather than a `TARGET` and has its own flags, listed
 below.
@@ -1157,6 +1161,30 @@ Notes:
   a measurement's clothes.
 * The editable install runs in the **application** container, not the seat: the
   venv is shared but its interpreter is not. `--no-install` skips it.
+* **`restart` is the inner loop, and it writes nothing.** No `-m`, no commit, no
+  index, no manifest — you restart twenty times and commit once, with ordinary
+  git in the seat. What it prints in exchange is whether the code now running is
+  committed: `the claim is dirty and running: 2 files uncommitted (…)`, or the
+  clean form naming the sha the new process loaded. An uncommitted change on a
+  live process is the one divergence no repository anywhere records, which is
+  what makes relaunch-without-commit sound rather than a hole in the model. It
+  refuses a container with no supervisor for `apply`'s reason, and it refuses
+  before anything is killed.
+* **The pid `restart` names is the supervisor's own child**, which is what
+  `/tmp/podbench-child.pid` holds and is *not* the process a breakpoint goes in:
+  measured on `bl47p-ea-fastcs-01`, the file held 7 and the `fastcs-example`
+  under it was 13, three levels down. The kill is a tree kill rooted at the
+  recorded pid, so `stopped the supervisor child pid 7 and its tree` is the
+  whole of what stopped; `podbench pids` is how to see the rest of it.
+* **`restart` refreshes a debug configuration only where one already exists.**
+  Every configuration podbench authors is pid-keyed and a relaunch changes the
+  pid, so a `.vscode/launch.json` on the claim is re-authored by re-running
+  `podbench debug-config --provision` in the seat and F5 keeps working across
+  the loop. No `launch.json` means nothing runs at all: `--provision` ptraces the
+  workload and installs into it, and a restart is not an ask for a debugger. A
+  refresh that fails is a line in the report rather than a failed restart — the
+  application is already back by then, and only F5 is still pointing at the old
+  process.
 * `consolidate` does not open a PR; it prints the `gh pr create` line.
 * `status` exits **1** when any pod needs attention, so "no hotfix here needs somebody
   today" is a testable shutdown assertion. It is **not** the assertion "nothing here is
