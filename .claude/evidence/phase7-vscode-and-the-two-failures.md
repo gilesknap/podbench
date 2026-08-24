@@ -4,150 +4,365 @@
 `k8s/p47-beamline-claude-hgv27681-tunnel.kubeconfig`, against the real
 `bl47p-ea-fastcs-01-0`. Launcher under test:
 `/home/giles/code/podbench/.venv/bin/podbench`, version
-`0.7.3.dev41+g25fe18bd8`, branch `hotfix/easy-to-drive`. Seat image pinned
-throughout the *landing* commands: `ghcr.io/gilesknap/podbench:0.7.3-beta.1-hotfix-easy-to-drive`.
+`0.7.3.dev41+g25fe18bd8`, branch `hotfix/easy-to-drive`. Seat image pinned:
+`ghcr.io/gilesknap/podbench:0.7.3-beta.1-hotfix-easy-to-drive` (seat reports
+`0.7.3.dev44+g649cf9188`).
 
-This picks up where `.claude/evidence/phase7-the-live-walk.md` left off: the
-target pod entering this session fresh (created ~06:20Z, 0 restarts, no
-podbench wiring) and the values→check→init→…→retire mutating walk already
-done and evidenced separately. This file covers only the VS Code half:
-driving a real window through the bridge, and chasing the two named field
-failures from 2026-08-23.
+**This file replaces an earlier one of the same name, committed as `649cf91`
+and withdrawn.** That run drove VS Code against a pod the mutating walk had
+correctly and completely *retired* — a bare pod with no claim, no supervisor
+loop, and the application running the image's own `/app/.venv`. The two named
+2026-08-23 field failures were seen against a **hotfixed** pod, which is a
+different mount-namespace shape, so its findings could not be trusted. §6 below
+records what that run got wrong and what it got right; the rest of this file is
+a fresh run against a target put back into a genuinely hotfixed state.
 
-Environment checked before starting: `DISPLAY=:0`, `WAYLAND_DISPLAY=wayland-0`,
-`XDG_RUNTIME_DIR=/run/user/1000` all present in the Bash tool's own
-environment (`echo $DISPLAY` etc. all answered). A real GUI is reachable —
-this is not a headless run.
-
----
-
-## 0. Setup
-
-Shim symlinked and put first on `PATH`, per the bridge README:
-
-```
-mkdir -p /tmp/bridge-bin
-ln -sf /home/giles/code/podbench/tools/vscode-bridge/code-with-bridge /tmp/bridge-bin/code
-export PATH="/tmp/bridge-bin:$PATH"
-which code   # -> /tmp/bridge-bin/code
-```
-
-`/tmp/bridge-bin` contains neither `/remote-cli/` nor `/.vscode-server/`, so
-`resolve_editor` accepts it. Before landing anything, checked for a stray
-already-running `code` holding the IPC socket (the trap the task named): one
-personal VS Code window was running (`pid=4187293`,
-`--user-data-dir=/home/giles/.config/Code`), a *different* user-data-dir from
-the bridge's own (`~/.local/state/podbench-vscode-bridge/user-data`), so it
-could not intercept the shim's launches — confirmed by reading
-`code-with-bridge` itself, which always passes an explicit
-`--user-data-dir` (never omits it), which is exactly what defeats the IPC
-hand-off this trap depends on. `vsc.py ls` found nothing before the first
-landing, as expected.
+Environment: `DISPLAY=:0`, `WAYLAND_DISPLAY=wayland-0`,
+`XDG_RUNTIME_DIR=/run/user/1000`. A real GUI, a real window, human present —
+the standing exception recorded in the `vscode-driving-stays-unsandboxed`
+memory.
 
 ---
 
-## 1. First landing
+## 0. Putting the target back into a hotfixed state
+
+The pod was deleted first, at Giles' instruction, so no seat from the withdrawn
+run could survive into this one: ephemeral containers cannot be removed, only
+outlived. `podbench-1` and `podbench-2` from that run died with it, and their
+laptop-side ssh configs were removed from `~/.podbench/config.d/`.
+
+The wiring was authored by podbench itself, not by hand:
+
+```
+podbench hotfix values --app bl47p-ea-fastcs-01 \
+  --from-pod bl47p-ea-fastcs-01-0 -n p47-beamline \
+  --values services/bl47p-ea-fastcs-01/values.yaml \
+  --parent-values services/values.yaml
+```
+
+**This is the first live exercise of the from-scratch wiring path.** The
+previous run's `values` diff was one line (`enabled: false → true`) only because
+the wiring was already in the file; here the file had none, and `values`
+emitted the whole shape — `podbench-app`/`podbench-home` volumes, the
+`/podbench/app` mount, the supervisor loop, `podSecurityContext.fsGroup: 37887`
+— plus two correct stderr notes that `volumes` and `volumeMounts` had to be
+copied down from `services/values.yaml` because a helm list replaces rather
+than merges across the parent/child merge. Committed as `c0fdd90` on
+`podbench-hotfix-claim`, pushed **07:11:57Z**.
+
+`--values` writes nothing in place: it emits the merged file on stdout and the
+caller redirects. Worth knowing — the withdrawn run's phrasing ("merged into
+the deployed values file with `--values`") reads as an in-place edit.
+
+Sync: StatefulSet generation 19 → 20 at **07:14:30Z**, **2m33s** after the push
+— inside the plan's "up to 2 minutes" only just, and faster than the 3m13s the
+mutating walk measured. New pod `creationTimestamp 2026-08-24T07:14:26Z`, both
+containers ready 07:14:55Z, `restartCount 0/0`, **no `ephemeralContainers`**.
+
+### The shape this run exists to test
+
+```
+$ kubectl exec ... -c bl47p-ea-fastcs-01 -- ls -l /proc/13/exe
+/proc/13/exe -> /podbench/app/.python/cpython-3.11.13-linux-x86_64-gnu/bin/python3.11
+```
+
+The application now runs the **claim's** uv-managed interpreter, not the
+image's. Its first log line is `podbench: running the hotfixed project`, the
+supervisor loop's own echo. Process tree: pid 1 `bash` (supervisor), 7
+`stdio-socket`, 10 `sh`, 12 `pptty`, **13 `fastcs-example`** — the debuggable
+target, 34 threads. This is exactly the `/python/cpython-<version>-<triple>/`
+collision shape the repo's own hard rule and the `gdb-across-namespaces` skill
+are about, and it is not present on a bare pod.
+
+One consequence matters immediately, and is measured, not assumed:
+
+```
+/podbench/app/.venv/.../site-packages/debugpy   -> No such file or directory
+/app/.venv/.../site-packages/debugpy            -> exists
+```
+
+**The hotfixed target runs an interpreter that has no debugpy**, while the
+image's venv — the one it is no longer using — has one. `kubectl logs` carries
+zero debugpy lines since pod start: a genuinely fresh process with an unspent
+`debugpy.listen()` latch. That is the precondition the withdrawn run could not
+offer.
+
+---
+
+## 1. One seat, landed once
 
 ```
 podbench vscode bl47p-ea-fastcs-01 -n p47-beamline \
   --image ghcr.io/gilesknap/podbench:0.7.3-beta.1-hotfix-easy-to-drive --pull always
 ```
 
-First attempt hit a transient API conflict, unrelated to either named
-failure — a stale `resourceVersion` on the ephemeral-containers PATCH:
+`exit=0`, 07:17:51Z → 07:18:07Z. `podbench-1` landed 07:18:01Z, rung
+`degraded` — **uid 37887, gid 37887, `CapEff 0000000000000000`**. Exactly one
+seat was landed in this entire run, so no second injection into the same pid
+can confound anything below.
+
+The report got the hotfix-specific decisions right:
 
 ```
-podbench: kubectl ... replace --raw .../ephemeralcontainers ... exited 1:
-Error from server (Conflict): Operation cannot be fulfilled on pods
-"bl47p-ea-fastcs-01-0": the object has been modified; please apply your
-changes to the latest version and try again
+  [ok] opening /podbench/app, not the seat's home /home/podbench: on a
+       hotfixed pod the claim is the only tree here where an edit
+       reaches the running process
+  [ok] ssh reaches the seat, so Remote-SSH will too
 ```
 
-Immediate retry, same command: `exit=0`, `podbench-1` landed, `degraded`
-rung, `verdict live attach available`. Confirmed with the bridge:
+and the window came up carrying the bridge, on the claim:
 
 ```
 $ vsc.py ls
-pid=499227  remote=ssh-remote  vscode-remote://ssh-remote%2Bpodbench-p47-beamline-bl47p-ea-fastcs-01-0-1/tmp/podbench-home
-$ vsc.py info
-{ "pid": 499227, "remoteName": "ssh-remote", ...,
-  "folders": [{"fsPath": "/tmp/podbench-home"}], "terminals": [{"name": "bash"}] }
+pid=529684  remote=ssh-remote
+  vscode-remote://ssh-remote%2Bpodbench-...-0-1/podbench/app
 ```
 
-The bridge is genuinely in the window (`remoteName: ssh-remote`, the seat's
-own folder) — the IPC hand-off trap did not recur.
+The IPC hand-off trap did not recur (the shim always passes an explicit
+`--user-data-dir`). `vsc.py text .vscode/launch.json` — a bare relative path —
+returned **the seat's** file, re-confirming the bridge's 2026-08-23 assumption
+on a hotfixed pod as well.
 
-The run's own report already carried a hint toward Failure 2, unprompted:
-after installing `ms-python.python`/`ms-python.debugpy` via the seat's own
-vscode-server, it printed
+But the same report also carried this, twice:
 
 ```
-[warn] the window has noticed these but not registered them: Command
-       Palette -> Developer: Reload Window, or F5 says
-       `could not find a debug adapter descriptor`
+  [warn] no launch.json: nothing above could be turned into one
 ```
 
-— exactly the out-of-process-install symptom the `vscode-in-a-seat` skill
-documents. That is a *known, named* caveat and turned out not to be the
-operative cause here (§4 below); it is recorded because it is a real, distinct
-gotcha this run also produced and a future reader of this file should not
-attribute Failure 2 to it without checking.
+**Failure 2, reproduced — and on a hotfixed pod it is not "debugging starts and
+dies", it is "there is nothing to press F5 on".**
 
 ---
 
-## 2. Reproducing Failure 1 — the `--new` refusal
+## 2. Failure 2, first cause: `--provision` writes to a directory the seat cannot write
 
-Two plain reconnects first (default identity, i.e. the same ssh key both
-times): `podbench vscode bl47p-ea-fastcs-01 -n p47-beamline` (no `--new`)
-reconnected cleanly, `exit=0`, no key warning. `podbench vscode ... --new`
-also landed cleanly (a second seat, `podbench-2`) — **neither reproduced a
-refusal**, because both offered the same ssh key the seat's `authorized_keys`
-already carries. This matches #204's own diagnosis: the failure is not "a
-seat cannot be reconnected to", it is "a client offering a *different* key
-than the one baked into this seat's `authorized_keys` cannot use it, and
-`authorized_keys` is immutable once the ephemeral container exists."
-
-So the real repro needs a genuinely different identity. Generated a
-throwaway keypair (`ssh-keygen -t ed25519`, scratchpad-local) and reconnected
-with `--identity <throwaway>`, no `--new`:
+The report's own narration names the step that failed:
 
 ```
-podbench vscode bl47p-ea-fastcs-01 -n p47-beamline --identity <throwaway-key>
+debug-config: --provision: running `uv pip install --no-cache --python-version 3.11
+  --target /proc/13/root/opt/podbench-debugpy debugpy`
+debug-config: --provision: permission denied at /proc/13/root/opt/podbench-debugpy: ...
+debug-config: --provision: not starting the server - debugpy is not importable by the target
+debug-config: no debugger flavour could be emitted for this target
 ```
 
-First attempt with the throwaway key still reported `[ok] ssh reaches the
-seat` and completed successfully — a measurement artefact, not the real
-answer: `ssh`'s `ControlMaster`/`ControlPersist 10m` from the *earlier*,
-real-key reconnect was still alive at the same `ControlPath` (the path hash
-is derived from host/port/user, **not** from the identity file), so
-`check_reachable`'s `ssh <alias> true` silently rode the old, already-
-authenticated master instead of authenticating fresh. Confirmed directly:
+Measured from inside the seat, rather than reasoned:
+
+| probe | result |
+|---|---|
+| `ls /proc/13/root/` | **succeeds** — so no `PTRACE_MODE_READ` refusal, no LSM denial |
+| `ls -ld /proc/13/root/opt` | `drwxr-xr-x. root root` |
+| seat `id` | `uid=37887(podbench) gid=37887` — **not root, no capabilities** |
+| `mkdir /proc/13/root/opt/podbench-debugpy` | `Permission denied` |
+| target `/` mount flags | `rw,relatime … overlay` — **not** read-only |
+
+The cause is the plainest one available: **`/opt` is a root-owned 0755
+directory and the seat is uid 37887.** Ordinary Unix file permissions.
+
+### The explanation podbench prints rules that cause out
+
+`provision.py:211-225`, the `EACCES`/`EPERM` branch of `blocker_sentence`:
+
+```python
+# Three distinct causes, and CAP_DAC_OVERRIDE covers only the first.
+return (
+    f"permission denied at {destination}: uid 0 in this seat carries "
+    "CAP_DAC_OVERRIDE, so the target's own file modes are not it. What "
+    "is left is the /proc/<pid>/root traversal, which takes "
+    "PTRACE_MODE_READ ... or an LSM denying the cross-container write ..."
+)
+```
+
+The module is written on the premise that the seat is uid 0 — the docstring at
+`provision.py:9` says so outright ("which uid 0 writes through
+`CAP_DAC_OVERRIDE` whatever the …"). On the **`full`** rung that premise holds
+and the sentence is correct. On the **`degraded`** rung — a non-root uid with
+an empty effective set, which is what this beamline pod admits and what the
+report printed four lines earlier — the premise is false, file modes are the
+entire cause, and the message **explicitly excludes the true explanation** and
+sends the reader to SELinux, AppArmor and `CAP_SYS_PTRACE`.
+
+`writable_blocker`'s docstring carries the same assumption ("`os.access`
+reports on uid and modes, which `CAP_DAC_OVERRIDE` already makes irrelevant").
+
+`PROVISION_DEST = "/opt/podbench-debugpy"` (`provision.py:79`) is a fixed
+constant; grepping `src/` shows it is never varied for a hotfixed pod.
+
+### The fix is available and works — proven, not proposed
+
+On a hotfixed pod there is a location that is writable *and* mounted at the
+**identical path in both mount namespaces**, which is exactly what the
+`gdb-across-namespaces` problem demands:
 
 ```
-$ ssh -O check -F <conf> podbench-p47-beamline-bl47p-ea-fastcs-01-0-1
-Master running (pid=498828)
-$ ssh -O exit  -F <conf> podbench-p47-beamline-bl47p-ea-fastcs-01-0-1
-Exit request sent.
-$ ssh -F <conf> -o IdentitiesOnly=yes -i <throwaway-key> podbench-p47-beamline-bl47p-ea-fastcs-01-0-1 true
+$ stat -c '%d:%i %n' /podbench/app /proc/13/root/podbench/app
+1048592:64 /podbench/app
+1048592:64 /proc/13/root/podbench/app        # same device, same inode
+$ ls -ld /proc/13/root/podbench/app
+drwxrwxrwx. 13 podbench-99 99
+```
+
+Pointed there, every step podbench had given up on succeeded:
+
+```
+$ podbench debug-config 13 --provision --provision-dest /podbench/app/.podbench-debugpy
+debug-config: --provision: installed debugpy for Python 3.11 into /proc/13/root/podbench/app/.podbench-debugpy
+debug-config: --provision: injected in 8.7s; the app now serves debugpy on 127.0.0.1:37189
+```
+
+Corroborated three ways: the target's thread count went **34 → 38**; its log
+printed pydevd's frozen-modules notice at 07:20:16Z with **no `RuntimeError`**
+(a clean first `listen()` on a fresh process); and a TCP connect to 37189 from
+the seat succeeded.
+
+**So the whole cascade turns on one unwritable path**, and podbench already has
+the flag to fix it — it simply does not choose it on a pod it has just
+announced is hotfixed (`WARNING this pod carries the hotfix layout, so the
+claim 'podbench-app' was mounted into the seat at /podbench/app`).
+
+---
+
+## 3. Failure 2, second cause: podbench cannot write into a real project's `.vscode`
+
+Independent of the first, and fatal on its own. With configurations available,
+the merge still refused:
+
+```
+debug-config: cannot parse the existing launch.json: Expecting property name
+  enclosed in double quotes: line 2 column 5 (char 6). Re-run with --print-config
+  and paste the configuration in by hand, or --output a different path.
+```
+
+and, in run 1's report, the same for settings:
+
+```
+  [warn] /podbench/app/.vscode/settings.json left exactly as it is:
+         cannot parse the existing settings.json: Expecting property
+         name enclosed in double quotes: line 11 column 5 (char 325)
+```
+
+Both files are **committed in the application's own repository** and unmodified:
+
+```
+$ git -C /podbench/app ls-files .vscode/
+.vscode/extensions.json
+.vscode/launch.json
+.vscode/settings.json
+.vscode/tasks.json
+$ git -C /podbench/app status --short .vscode/     # empty
+```
+
+They fail strict JSON for two different ordinary reasons — `launch.json` on
+`//` comments (VS Code's own scaffold writes them), `settings.json` on a
+trailing comma before `}`. Both are valid JSONC, which is what VS Code
+documents and writes.
+
+**On a hotfixed pod this is the common case, not an edge case.** `podbench
+vscode` deliberately opens the claim — the application's checkout — rather than
+the seat's empty `/tmp/podbench-home`, and a normal Python project ships a
+`.vscode/`. The project already knows about this asymmetry: the bridge's own
+shim handles VS Code settings as "JSON with comments" and inserts after the
+opening brace precisely so it cannot reorder or drop anything. podbench's
+merge does not.
+
+---
+
+## 4. Failure 2, third cause: with both fixed, the adapter still never speaks DAP
+
+This is the one the withdrawn run could not have reached, and it survives every
+correction above.
+
+With debugpy provisioned into the claim, a valid `launch.json` in place naming
+the live port, and `ms-python.debugpy` v2026.6.0 installed into the seat's
+vscode-server, a debug session was started through the bridge:
+
+```
+$ vsc.py debug "podbench: attach to fastcs-example [pid 13 fastcs-example] (debugpy)"
+TimeoutError: timed out          # vsc.py's own recv, ~30s
+$ vsc.py events
+[ bridge.ready, terminal.open ]  # no dap.* at all
+$ vsc.py info  -> debugSession: None
+```
+
+The seat's own extension log stops at the same place the withdrawn run's did:
+
+```
+07:23:39.952 [info] Resolving attach configuration with substituted variables
+07:23:39.993 [info] createDebugAdapterDescriptor: request='attach' name='podbench: attach to ...'
+07:23:39.993 [info] Connecting to DAP Server at:  127.0.0.1:37189
+```
+
+— and then nothing. **But this time the port is genuinely open**, so the
+withdrawn run's explanation (a closed port behind a spent latch) cannot apply.
+A hand-rolled DAP client from inside the seat isolates it:
+
+```
+connect 127.0.0.1:37189  -> OK
+send    initialize
+recv    -> TIMEOUT, 0 bytes in 15s
+```
+
+**The adapter accepts the TCP connection and never answers `initialize`.** The
+reason is visible in the node's socket table — the adapter's own server-facing
+port, `--for-server 33215` (`0x81BF`), has **no listener and no connection at
+all**, while the client port 37189 (`0x9145`) is in `LISTEN`:
+
+```
+local=9145 rem=0000 st=0A   # 37189 LISTEN  (the IDE side)
+                            # 33215: no rows whatsoever
+```
+
+The adapter process is alive and holds only three socket fds. So the debuggee
+half of the session was never established: the adapter has nothing to attach an
+IDE to, and blocks. The target's own log shows pydevd starting and records **no
+error** at all.
+
+**Named cause, stated at the precision it was measured:** `--provision`
+reports success on the injector's exit code, and a listening socket does not
+raise that bar — here both were satisfied and the session still cannot start,
+because the adapter's server-side connection is absent. The withdrawn run
+reached the right general criticism ("the exit code of the injector, nothing
+about the socket") from an example that was self-inflicted; this run reaches it
+from a fresh process, and tightens it: *an open port is not proof either.*
+
+**Not measured:** *why* the target never completed its connection back to the
+adapter. Its log carries no error, and this run did not instrument debugpy's
+own logging inside the target. This is the one open thread and it should not be
+reported as understood.
+
+---
+
+## 5. Failure 1 — the `--new` refusal: a correct refusal that names the wrong verb
+
+Reproduced on the hotfixed pod. A throwaway `ed25519` key, and — importantly —
+an ssh config in which the throwaway key is the *only* identity:
+
+> A first attempt used `-o IdentitiesOnly=yes -i <throwaway>` against podbench's
+> own generated config and **reached the seat**, which looks like the refusal
+> not reproducing. It is a measurement artefact: `IdentitiesOnly` restricts
+> ssh to the identities in the config file *plus* those given with `-i`, so the
+> config's own `IdentityFile /home/giles/.ssh/id_ed25519` was still offered and
+> still accepted. Rewriting the config's `IdentityFile` line is what isolates
+> it. (The withdrawn run hit a different masking artefact in the same place — a
+> live `ControlMaster` from a prior identity. Both were cleared here.)
+
+Isolated properly, the seat genuinely refuses the key:
+
+```
+$ ssh -F <throwaway.conf> -o ControlMaster=no -o ControlPath=none ... true
+exit=255
 podbench@bl47p-ea-fastcs-01-0: Permission denied (publickey,keyboard-interactive).
 ```
 
-This is a genuine, independently-worth-flagging gap in `check_reachable`'s
-proof (a live master from a prior identity can mask a real key mismatch),
-noted here because it nearly hid the real refusal, but it is **not** either
-of the two named failures and is not chased further — the task named exactly
-two, and this is adjacent, not one of them.
-
-With every `ControlMaster` cleared (`for sock in /tmp/podbench-cm/*; do ssh -O
-exit -o ControlPath=$sock x; done`), the clean repro:
+and through the verb:
 
 ```
-$ podbench vscode bl47p-ea-fastcs-01 -n p47-beamline --identity <throwaway-key>
+$ podbench vscode bl47p-ea-fastcs-01 -n p47-beamline --identity <throwaway>
 exit=2
 ```
 
-stdout (the report) carried, correctly, the **measured** warning — not a
-guess:
+The **WARNING** in the report is measured, correct and verb-agnostic — #204's
+rule working:
 
 ```
 WARNING  this seat does not authorise the key being offered, and its
@@ -155,290 +370,128 @@ WARNING  this seat does not authorise the key being offered, and its
          refused. `--new` lands a seat that takes it.
 ```
 
-and stderr carried the actual refusal:
+The **hard failure's cause list on stderr is not**. Two of its four bullets
+hard-code a different verb, including the one that actually fired:
 
 ```
-podbench: `ssh podbench-p47-beamline-bl47p-ea-fastcs-01-0-1` does not reach
-the seat, so VS Code was not started - a Remote-SSH window would have failed
-the same way, minutes and one vscode-server download later. ssh said:
-    podbench@bl47p-ea-fastcs-01-0: Permission denied (publickey,keyboard-interactive).
-  - `Could not resolve hostname`: ...
-  - `agent refused operation`: ...
-  - `sshd_config: No such file or directory`: ... `podbench attach --new` lands a fresh seat...
   - `Permission denied (publickey)`: this seat's authorized_keys was written
     when it started and does not carry the key in the stanza. `podbench
     attach --new` is the only way to change it
-The seat itself is landed and the kubectl exec helpers above work
-regardless; this is the ssh half of it.
 ```
 
-### Verdict: correct refusal, message names the wrong verb
+The user ran `podbench vscode`. `UNREACHABLE_CAUSES` (`editor.py:389-401`) is a
+module-level constant reached only from `check_reachable` → `open_seat` → the
+`vscode` verb's `_open_editor`; `attach` never reaches it. So the one code path
+that can print this sentence is the one path on which its advice names the
+wrong command.
 
-Measured, not guessed: `seat_authorises()` (`launcher.py`) does exactly what
-#204 asked — `cat`s the seat's `authorized_keys` and compares the key blob —
-and it correctly found the throwaway key **absent**. A direct `ssh` with
-`IdentitiesOnly=yes` against a cleared `ControlMaster` independently confirms
-the seat truly refuses that key: `Permission denied (publickey,keyboard-
-interactive)`. So this is not "a seat that should have been reusable" — an
-ephemeral container's `authorized_keys` is genuinely immutable
-(`ephemeral-containers` skill), so no seat carrying the wrong key can ever be
-made to accept a new one without landing a new container. **The refusal is
-correct.**
-
-It does, however, fail to explain itself precisely, exactly as the task
-framed the two possibilities: `UNREACHABLE_CAUSES`
-(`editor.py:389-401`) is a module-level constant with four generic bullet
-causes, reached only from `check_reachable`, which is reached only from
-`open_seat`, which is called only from the `vscode` verb's own
-`_open_editor` (`grep` confirms — the string has exactly one call site, and
-`attach` never calls it). Two of its four bullets nonetheless hard-code
-`podbench attach --new` as the remedy — including the exact one that fired
-here. A reader running `podbench vscode` and hitting this refusal is told to
-run a *different* verb. This is precisely "a correct refusal that failed to
-explain itself" — a message-quality defect, not a behaviour defect — and per
-the task's rule it is reported, not changed: no fix was applied to
-`UNREACHABLE_CAUSES` or `check_reachable`.
-
-By contrast, the WARNING line earlier in the same report
-(`_KEY_REMEDY_SEAT = "\`--new\` lands a seat that takes it."`) is
-verb-agnostic and correctly worded regardless of which command produced it —
-only the hard failure's cause list is wrong.
-
-Restored to a working state afterward: `podbench vscode bl47p-ea-fastcs-01
--n p47-beamline` with the default (correct) identity, `exit=0`, `[ok] ssh
-reaches the seat`, new window opened and bridge confirmed present
-(`vsc.py info`, `pid=506510`, `remoteName: ssh-remote`,
-`fsPath: /tmp/podbench-home`).
+**Verdict: a correct refusal that fails to explain itself.** An ephemeral
+container's `authorized_keys` is genuinely immutable, so no seat carrying the
+wrong key can be made to accept another — the refusal is right, and
+auto-landing a replacement is what `attach-endgame` deliberately refused. This
+is a message defect, not a behaviour defect, and per the task's rule it is
+reported, not fixed. This verdict is unchanged from the withdrawn run — as
+expected, since it turns on ssh keys and `authorized_keys` immutability, which
+a hotfixed pod does not alter — but it is now established against the right
+pod state rather than assumed to carry over.
 
 ---
 
-## 3. Failure 2 — debugging does not start
+## 6. What the withdrawn run got wrong
 
-### 3.1 What podbench wrote and what the seat has
+Its central claim about Failure 2 was that pid 12's `debugpy.listen()` latch was
+already spent before its own first attempt, with *which* call consumed it
+recorded as "not measured". **That is measurable from the pod's own log, and it
+was that run's own first injection.** Read from the still-live pod before this
+run deleted it (`--since-time` = its creation, 06:20:00Z):
 
-`vsc.py text .vscode/launch.json` — the bare relative path resolved into
-**the seat's** file (the bridge's proven-2026-08-23 assumption, used as
-given, not re-proven): four `debugpy` "attach" configs, one per debuggable
-pid (`fastcs-example` pid 12, `stdio-socket` pid 1, `pptty` pid 11, and an
-`adapter` pid 133 left from an earlier injection), each
-`"connect": {"host": "127.0.0.1", "port": <ephemeral>}`,
-`pathMappings: [{"localRoot": "/proc/<pid>/root", "remoteRoot": "/"}]` — the
-mount-namespace mapping the skill requires for observe mode, correctly
-present.
+| time (`+01:00`) | event |
+|---|---|
+| 07:20:28 | pod starts; **no debugpy for 16 minutes** |
+| 07:36:47.875 | pydevd frozen-modules notice — **no error: this listen() succeeded** |
+| 07:37:59 | first `RuntimeError: debugpy.listen() has already been called` |
+| 07:40:12, 07:42:01, 07:44:40 | three more, all the same |
 
-The adapter the config names is genuinely in the seat:
+The first injection took the one-shot latch and every later one failed —
+self-inflicted, exactly as suspected when the run was withdrawn. The file's
+suggestion that the latch might predate its first `podbench vscode` landing
+(06:36:41Z) is contradicted by its own timeline: 07:36:47 **+01:00** is
+06:36:47Z, *after* that landing, not before.
 
-```
-$ kubectl exec ... -- ls ~/.vscode-server/extensions/
-ms-python.debugpy-2026.6.0-linux-x64
-ms-python.python-2026.4.0-linux-x64
-...
-```
-
-So `type: "debugpy"` matches an adapter the seat actually has. **The
-launch.json/adapter pairing is not the defect.**
-
-### 3.2 `vsc.py debug` and the events
-
-```
-$ vsc.py debug "podbench: attach to fastcs-example [pid 12 fastcs-example] (debugpy)"
-{ "started": false, "since": 1, "session": null }
-$ vsc.py events 1
-[ {"kind":"terminal.open",...}, {"kind":"editor.active",...} ]   # no dap.* at all
-```
-
-`started: false` immediately, and **zero** `dap.*` events — unlike the
-README's doomed-file example, which got `started: true` and then a
-`dap.terminated`/`dap.adapterError` a moment later. Here the failure is
-earlier: no DAP session was ever created to emit events from.
-
-The seat's own extension log corroborates precisely where it stops:
-
-```
-$ kubectl exec ... -- cat .../exthost5/ms-python.debugpy/'Python Debugger.log'
-2026-08-24 06:46:48.885 [info] Resolving attach configuration with substituted variables
-2026-08-24 06:46:48.926 [info] createDebugAdapterDescriptor: request='attach' name='podbench: attach to fastcs-example ...'
-2026-08-24 06:46:48.926 [info] Connecting to DAP Server at:  127.0.0.1:46531
-```
-
-— then nothing. It tries to connect and the log simply stops, consistent
-with the TCP connect being refused with no protocol exchange to log.
-
-### 3.3 The named cause: `debugpy.listen()` can only be called once, podbench does not know that, and its success message is not a measurement
-
-Directly connecting to every port this session ever offered, from inside the
-seat (same host network as the target — `hostNetwork: true`):
-
-```
-$ for port in 45683 37687 59339 43391 59533 46531 47593 47001; do ...; done
-port 45683: ConnectionRefusedError: [Errno 111] Connection refused
-port 37687: ConnectionRefusedError: [Errno 111] Connection refused
-... (all eight: refused)
-```
-
-Every port from every provisioning attempt across this whole session —
-run 1's, run 6's, and a hand-run repro — is dead. Enumerating pid 12's own
-held listening sockets precisely (its `/proc/12/fd` socket inodes
-cross-referenced against `/proc/12/net/tcp`, rather than the whole-node
-listing `hostNetwork` otherwise returns) shows **exactly one**, port 44951,
-and it is not a debugpy port — thread names on pid 12 are all EPICS support
-threads (`CAS-TCP`, `PVXTCP`, `dbCaLink`, …), no `pydevd`/debugpy thread
-present at all.
-
-`kubectl logs` on the *target* container (not the seat — the process's own
-stdout/stderr, invisible to podbench's injector) is the direct proof of
-*why*. Every debugpy-related traceback in the whole session's log, back to
-the earliest timestamp checked, is the same:
-
-```
-RuntimeError: debugpy.listen() has already been called on this process
-  File ".../debugpy/server/api.py", line 145, in listen
-    raise RuntimeError("debugpy.listen() has already been called on this process")
-```
-
-caught and merely *logged* by debugpy's own `attach_pid_injected.attach()`
-(`log.reraise_exception()` — a log line, not a crash), so it never reaches
-podbench at all. Confirmed by hand-reproducing the whole injection from
-scratch against a **fresh, never-before-tried port** (47001) and polling it
-for 15s straight — `gdb` ran cleanly (`dlopen` returned a non-null pointer,
-`DoAttach` returned via `call`, gdb detached, injector exited **0**) and the
-port never opened for the entire 15s:
-
-```
-$ PYTHONPATH=... /app/.venv/bin/python -m debugpy --listen 127.0.0.1:47001 --pid 12
-[gdb output, clean detach, exit 0]
-t=1s..15s: port CLOSED (every second)
-```
-
-And `provision.py`'s own success path confirms exactly what gets checked:
-
-```python
-return Injected(
-    True, seconds,
-    (f"injected in {seconds:.1f}s; the app now serves debugpy on 127.0.0.1:{port}",),
-)
-```
-
-reached whenever `result.returncode == 0` for the `gdb`/`timeout` subprocess
-— **the exit code of the injector, nothing about the socket**. This is the
-same class of gap the `vscode-in-a-seat` skill already documents elsewhere
-("`gdb -batch` exits 0 either way") applied to a different call: a clean
-gdb detach proves the *injection call ran*, never that the Python code it
-ran did what it was asked. `debug-config`'s own text even contradicts itself
-within a single run's output over four lines — "injected in 1.4s; the app
-now serves debugpy on 127.0.0.1:46531" immediately followed by a fresh
-measurement pass reporting "nothing is listening on 127.0.0.1:46531 yet" —
-which is `_author()`'s post-provision remeasurement catching, honestly, what
-the provision step's own success line could not: the target's log makes
-clear that remeasurement is not a race, it is the same
-`RuntimeError`-guarded `listen()` call failing every time.
-
-**Named cause:** `debugpy.listen()` sets a permanent, process-lifetime latch
-(`listen.called`) the first time it succeeds on a given target process. This
-target (pid 12) already had that latch set before this session's own first
-provisioning attempt could run — the earliest occurrence found in
-`kubectl logs` (`--since-time=2026-08-24T06:20:00Z`, i.e. from pod creation)
-already shows the "already been called" error, before this run's first
-`podbench vscode` landing at 06:36:41Z. *Which* call originally consumed the
-one-shot latch is **not measured** — plausibly this run's own first
-`_author(provision=True)` pass (`editor.py`), which the code shows performs
-the real injection and then immediately remeasures within the same call; if
-that first real `listen()` briefly succeeded before the remeasurement's own
-socket probe (or something about it) tore it down, every attempt after is
-structurally doomed regardless of `--new`, a fresh identity, or a fresh
-window, because the latch lives in the *target's* process, not the seat's.
-`--new` cannot fix this (a new seat still injects into the same pid 12);
-only a new target process (an app restart) could hand back one more
-single-use `listen()` call.
-
-This is not the OOM trap (folder opened was `/tmp/podbench-home`, never `/`;
-pod never OOMed — restartCount 0/0 throughout, checked at the end), not the
-breakpoint-vs-probe timer (this target "declares no readiness, liveness or
-startup probe" per its own report — no deadline applies), and — checked and
-ruled out rather than assumed — not a `/python/cpython-*` interpreter
-collision (#160's shape): the seat runs `cpython-3.11.16`, the target
-(read via `/proc/12/root`, single-hop, no further symlink chase) runs
-`cpython-3.11.13` — a real, distinct build mismatch, present and worth
-knowing, but the failure observed is a plain Python-level `RuntimeError`
-inside the target's *own* already-correct debugpy copy, nothing an ABI or
-namespace collision would produce.
-
-### 3.4 A second, secondary data point: a different target pid hangs rather than fails fast
-
-Attaching to a *different* process in the same target container (`pid 1`,
-`stdio-socket`) did not fail immediately: the bridge call itself timed out
-client-side (`vsc.py`'s own socket recv, ~30s+) rather than resolving
-`started: false` promptly. By the time it was checked, `debugSession: null`
-— no session left running. The target container's own log had **no new
-output** for this attempt (unlike pid 12's clean `RuntimeError`), and its
-launch.json port (53540) is, like every other port this session, refused on
-direct connect. So the *end state* is the same (nothing listens, debugging
-does not start), but the *path* there was slower — most likely debugpy's
-adapter performing several connect retries with backoff before giving up,
-rather than one immediate refusal. **Not fully diagnosed** — reported as an
-observed variation, not folded into the pid-12 finding as the same
-mechanism, since the target's own log gives no direct confirmation for this
-pid the way it did for pid 12.
+What it got right, and this run confirms independently: Failure 1's verdict
+(§5), that the bridge genuinely drives a real window, and the general criticism
+that `--provision`'s success line measures the injector's exit code rather than
+a working debugger (§4, now tightened).
 
 ---
 
-## 4. Final state — what is left behind
+## 7. Two lesser observations
 
-Pod: `bl47p-ea-fastcs-01-0`, `Running`, `restartCount 0/0` on both real
-containers (`bl47p-ea-fastcs-01`, `temp-controller-simulator`) and both
-ephemeral seats, checked at the end of this session — the falsification
-condition (`restartCount` unchanged) holds.
+**A compounding resize on every reconnect.** Run 1 raised the container's
+memory limit to 1Gi (`resized … to memory 103Mi/1Gi`); the run in §5,
+a plain reconnect to the same seat, raised it again to 2Gi (`205Mi/2Gi`). The
+headroom row moved `1855Mi free of 2Gi` → `1637Mi free of 3Gi`. This is
+consistent with sizing for *current* usage plus the 1215Mi vscode-server
+measurement — usage was higher the second time because vscode-server was by
+then running — so it may be intended. Flagged as observed, **not judged**: it
+means a reconnect ratchets a workload's limit upward, which on a pod nobody
+asked to resize is at least worth a deliberate decision.
 
-Two permanent ephemeral containers exist on this pod (names are burnt for
-its lifetime regardless of what this file does):
+**An unguarded traceback.** `podbench debug-config 13 --provision` run by hand
+inside the seat with no `--output` crashed with a raw Python traceback —
+`PermissionError: [Errno 13] Permission denied: '/.vscode'` from
+`vscode.py:2077`, `path.parent.mkdir(parents=True, exist_ok=True)`, because the
+default output path resolved against the seat's cwd of `/`. **Self-provoked**:
+this is a seat-side verb that `podbench vscode` always calls with an explicit
+output path, so no user following the documented path reaches it. Reported
+because a raw traceback is never the intended failure mode, ranked last because
+the invocation was mine.
 
-* **`podbench-1`** — degraded rung, pinned image
-  (`0.7.3-beta.1-hotfix-easy-to-drive`), still running, ssh alias
-  `podbench-p47-beamline-bl47p-ea-fastcs-01-0-1`. A VS Code window is open
-  against it right now (`vsc.py ls` → `pid=506510`,
-  `remoteName: ssh-remote`, folder `/tmp/podbench-home`), with the bridge
-  confirmed alive. **Left running and left open** — this is the seat every
-  measurement above was taken against, and closing the window does not
-  retire the seat regardless.
-* **`podbench-2`** — landed only to reproduce `--new` behaviour on a
-  non-key-mismatched run (§2's first, inconclusive attempt); landed
-  *without* `--image`/`--pull always`, so it carries the **default**,
-  unpinned image (`0.2.0b3.dev27+gaf61404ae.d20260818` — visibly older than
-  this launcher and than the pinned tag), not the one this task specified
-  for landed seats. It is otherwise idle and was not used for the debugpy
-  investigation. Left running because ephemeral containers cannot be
-  removed; flagged here so its odd version does not read as a mystery.
+---
 
-Target process `pid 12` (`fastcs-example`) has its `debugpy.listen()` latch
-permanently spent for the remainder of this pod's life — no further
-injection into that specific pid can ever succeed, by design of debugpy
-itself, until the app process restarts.
+## 8. State left behind
 
-Scratchpad artefacts (not committed): the throwaway ssh keypair used for §2,
-and the raw command outputs referenced above, under
-`/tmp/claude-1000/-home-giles-code-podbench/c5f3383d-fe44-4000-ba56-4949b34e829c/scratchpad/`.
+* **`bl47p-ea-fastcs-01-0`** — created 07:14:26Z, `Running`, `restartCount 0/0`
+  on both application containers throughout (the falsification condition holds).
+  Hotfix-wired. **One** ephemeral container, `podbench-1`, still running; its
+  name is burnt for the pod's lifetime either way. Memory limit left raised at
+  3Gi/205Mi by the two runs above — it reverts on the next rollout, per the
+  warning podbench itself printed.
+* **The claim** carries `.podbench-debugpy/` (debugpy 1.8.21, ~15 MB), left in
+  place deliberately as the artefact proving §2's remedy. The application's own
+  `.vscode/launch.json` was temporarily replaced to drive §4 and has been
+  **restored from backup**; `git status` on the claim shows `.vscode/` clean.
+* **A live debugpy adapter**, pid 907 in the target container, listening on
+  127.0.0.1:37189 and wedged as described in §4. It does not survive a restart
+  and nothing off the node can reach it, but on a `hostNetwork: true` pod it is
+  reachable from every other hostNetwork pod on `bl47p-ea-serv-01` — podbench
+  said so at the time, and it is repeated here because this run left one
+  running.
+* **Laptop side** — the ssh config for `podbench-1` was rewritten to the
+  throwaway key by §5 and has been **restored** to `/home/giles/.ssh/id_ed25519`;
+  reachability re-verified (`SEAT_REACHED`). The throwaway keypair is
+  scratchpad-only and uncommitted. One VS Code window is open on
+  `/podbench/app` with the bridge alive.
+* **`p47-services`, branch `podbench-hotfix-claim`** — `HEAD c0fdd90`, pushed
+  direct, not a PR. **The target is left hotfix-wired**, deliberately: retiring
+  it is a separate act and the mutating walk has already evidenced `retire`
+  end to end.
 
 ---
 
 ## Not measured
 
-* **Which specific call first consumed pid 12's `debugpy.listen()` latch**
-  (§3.3) — the target's own log does not carry enough context before
-  06:20:00Z to say for certain it was this session's own first attempt
-  rather than something in the pod's first sixteen minutes before this
-  session touched it.
-* **The pid-1 hang's exact mechanism** (§3.4) — end state (nothing listens)
-  matches pid 12's finding; the slower failure path is observed, not traced
-  to a specific line.
-* **Whether `ControlMaster` reuse across a changed `--identity`** (the
-  near-miss in §2) is itself considered a bug worth filing — it is reported
-  as a measured mechanism, not judged, since it is adjacent to but not one
-  of the two named failures this task specified.
-* **GUI-only surfaces** — the workspace-trust modal (never seen: the shim's
-  `security.workspace.trust.enabled: false` write suppressed it on every
-  run, consistent with the README's 2026-08-23 finding), any VS Code error
-  dialog (the bridge cannot read `showErrorMessage` — none was needed here,
-  since every failure surfaced through DAP events, the extension's own log,
-  or the target's `kubectl logs`, all of which the bridge/cluster access
-  *can* read), and anything reachable only by mouse or living inside a
-  webview — none of this run's findings depended on any of those.
+* **Why the target never connected back to the adapter's `--for-server` port**
+  (§4) — the single open thread, and the one that decides whether Failure 2 has
+  a *fourth* cause behind the three named here.
+* **Whether fixing the provision destination alone would produce a working F5**
+  — it cannot be known while §4 stands; §2's remedy is proven only as far as
+  "debugpy installs, injects, and listens".
+* **`--new` landing a seat that takes the new key** (§5) — not exercised, to
+  hold this run to exactly one seat. The refusal path is what the failure is
+  about; the acceptance path is unit-tested.
+* **The compounding resize's intent** (§7) — observed across two runs, not
+  traced to the code that computes it.
+* **GUI-only surfaces** — no VS Code modal or toast can be read by the bridge
+  (`showErrorMessage` is write-only). Every finding above rests on DAP events,
+  extension logs, `kubectl logs`, socket state or file contents instead.
