@@ -82,6 +82,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import stat
 import time
 from collections.abc import Callable, Generator, Sequence
@@ -491,9 +492,41 @@ _NO_AGENT = (
 )
 
 
+_AGENT_CONNECT_TIMEOUT = 0.5
+"""Seconds to wait for a connect that only a *listening* socket can accept."""
+
+
+def _agent_answers(path: str) -> bool:
+    """Whether anything is listening on the AF_UNIX socket at ``path``.
+
+    ``stat`` cannot tell a live agent from the socket file a dead one left
+    behind: ssh-agent unlinks its socket when it exits cleanly and on no other
+    path, so a crash, a ``SIGKILL`` or a reboot leaves an inode that is still
+    ``S_ISSOCK`` and still connects to nothing. ``SSH_AUTH_SOCK`` pointing at
+    one forwards nothing, which is the failure this whole check exists to
+    refuse before the seat is landed.
+
+    A connect and an immediate close, which costs the agent no *request*: the
+    protocol is client-driven, so an agent that accepts a connection and reads
+    EOF answers nobody and logs nothing. A bound socket with no listener refuses
+    the connect (``ECONNREFUSED``), which is exactly the stale case. A timeout
+    means a listener whose backlog is full — an agent, so it is accepted rather
+    than called dead.
+    """
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(_AGENT_CONNECT_TIMEOUT)
+            probe.connect(path)
+    except TimeoutError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 @contextmanager
-def forwarded_agent(socket: str | None) -> Generator[None]:
-    """Point :data:`SSH_AUTH_SOCK` at ``socket`` for everything spawned inside.
+def forwarded_agent(path: str | None) -> Generator[None]:
+    """Point :data:`SSH_AUTH_SOCK` at ``path`` for everything spawned inside.
 
     Through :data:`os.environ` rather than through the runner, deliberately.
     :class:`podbench.kubectl.Runner` takes no environment, it is implemented by
@@ -506,25 +539,27 @@ def forwarded_agent(socket: str | None) -> Generator[None]:
     which is exactly the scope wanted, and it is restored on the way out so a
     caller's environment is unchanged.
 
-    Refused rather than ignored when the socket is not there. ssh with an
+    Refused rather than ignored when nothing is listening there. ssh with an
     ``SSH_AUTH_SOCK`` naming nothing simply forwards nothing and says so
     nowhere; the failure then arrives in the seat, minutes later, as a git
-    authentication error that points at the key.
+    authentication error that points at the key. **Listening**, and not merely
+    a socket inode: :func:`_agent_answers` is what makes :data:`_NO_AGENT`'s own
+    first clause true of a stale socket as well as of a missing one.
 
     >>> with forwarded_agent(None):
     ...     pass
     """
-    if socket is None:
+    if path is None:
         yield
         return
     try:
-        mode = Path(socket).stat().st_mode
+        mode = Path(path).stat().st_mode
     except OSError as error:
-        raise EditorError(_NO_AGENT.format(path=socket)) from error
-    if not stat.S_ISSOCK(mode):
-        raise EditorError(_NO_AGENT.format(path=socket))
+        raise EditorError(_NO_AGENT.format(path=path)) from error
+    if not stat.S_ISSOCK(mode) or not _agent_answers(path):
+        raise EditorError(_NO_AGENT.format(path=path))
     previous = os.environ.get(SSH_AUTH_SOCK)
-    os.environ[SSH_AUTH_SOCK] = socket
+    os.environ[SSH_AUTH_SOCK] = path
     try:
         yield
     finally:

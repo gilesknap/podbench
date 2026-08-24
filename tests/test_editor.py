@@ -1186,6 +1186,10 @@ def git_agent(tmp_path: Path) -> Iterator[str]:
     path = tmp_path / "git-agent.sock"
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(path))
+        # Listening, because that is what `forwarded_agent` measures: a bound
+        # socket nobody accepts on is the stale inode a killed agent leaves,
+        # and it is the case the check exists to refuse.
+        server.listen(1)
         yield str(path)
 
 
@@ -1242,4 +1246,21 @@ def test_a_plain_file_is_not_an_agent(tmp_path: Path) -> None:
 
     with pytest.raises(EditorError, match="not a listening socket"):
         with forwarded_agent(str(ordinary)):
+            pass
+
+
+def test_a_socket_its_agent_died_under_is_not_an_agent(tmp_path: Path) -> None:
+    """ssh-agent unlinks its socket when it exits cleanly and on no other path,
+    so a crash or a reboot leaves an inode that is still S_ISSOCK and still
+    connects to nothing. A stat-only check accepted it, and ssh then started
+    with an SSH_AUTH_SOCK that forwards nothing - which is the failure this
+    refusal exists to move from the seat to the laptop."""
+    stale = tmp_path / "dead-agent.sock"
+    bound = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    bound.bind(str(stale))
+    bound.close()
+
+    assert stale.is_socket(), "the file outlives the process, which is the trap"
+    with pytest.raises(EditorError, match="not a listening socket"):
+        with forwarded_agent(str(stale)):
             pass
