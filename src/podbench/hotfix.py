@@ -166,8 +166,10 @@ __all__ = [
     "format_retirement",
     "claim_state",
     "hotfix_wiring",
+    "pod_fs_group",
     "pod_claim_name",
     "WIRING_IS_THE_APPLICATIONS_OWN",
+    "FSGROUP_NOT_ATTRIBUTED",
     "CLAIM_OUTLIVES_THE_FLIP",
     "CLAIM_GONE_BUT_STILL_WIRED",
     "CLAIM_STILL_MOUNTED",
@@ -4621,8 +4623,9 @@ class RetirementCheck:
 WIRING_IS_THE_APPLICATIONS_OWN = (
     "{pod} still carries {what}. Those are fields in the application's own pod "
     "template, not in the claim's chart, so turning the claim off does not "
-    "remove them: take them back out of the values `podbench hotfix values` "
-    "emitted, and redeploy."
+    "remove them: take those entries back out of the application's values and "
+    "redeploy - the entries, and not the whole `volumes` and `volumeMounts` "
+    "keys, which a helm list replaces rather than merges."
 )
 """Said when the pod is still wired for hotfix mode.
 
@@ -4634,6 +4637,30 @@ the claim and still running the supervisor loop. The boolean disables the
 ``podSecurityContext`` live in the target's own ``ioc-instance`` values and are
 untouched. Somebody who believes they turned hotfix mode off has done step 5 and
 not step 4, and nothing until now said so.
+
+The closing clause used to read "take them back out of the values `podbench
+hotfix values` emitted". Re-measured 2026-08-24, that is hazardous rather than
+merely loose: ``values --from-pod`` emits podbench's own ``volumes`` and
+``volumeMounts`` entries only, while the deployed values carry ``beamline-data``
+in both keys - repeated there on purpose, because a helm list *replaces* across
+the parent/child merge. Somebody who deleted the two keys wholesale would
+unmount the beamline directory. :data:`EXISTING_MOUNTS_WARNING` says exactly
+this on the way in, and nothing said it on the way out.
+"""
+
+FSGROUP_NOT_ATTRIBUTED = (
+    "podSecurityContext.fsGroup is {gid}, which `hotfix values` emits too; "
+    "whether this pod had one before the hotfix is not measured here, so check "
+    "it against the values before taking it out."
+)
+"""The fifth value hotfix mode wires, and the one the pod cannot attribute.
+
+The ``wiring`` row named three things and six values were wired (evidence
+§7.3). Four of them are podbench's by construction and are read off the pod:
+the two volumes, the mount and the supervisor's ``command``/``args``. An
+``fsGroup`` is not - an application may perfectly well have declared its own -
+so it is *named* rather than counted, which is the difference between finishing
+somebody's checklist and inventing an item for it.
 """
 
 CLAIM_OUTLIVES_THE_FLIP = (
@@ -4763,29 +4790,58 @@ def pod_claim_name(pod_json: Mapping[str, Any]) -> str | None:
 
 
 def hotfix_wiring(pod_json: Mapping[str, Any]) -> tuple[str, ...]:
-    """Which halves of the hotfix wiring this pod still carries, named.
+    """Which parts of the hotfix wiring this pod still carries, named.
 
-    All three, and not :func:`podbench.launcher.is_hotfixed`'s single verdict:
-    retirement is somebody editing a values file, and a report that said "still
-    wired" without saying *which keys* leaves them to diff the pod against the
-    snippet by eye.
+    Every one of them, and not :func:`podbench.launcher.is_hotfixed`'s single
+    verdict: retirement is somebody editing a values file, and a report that
+    said "still wired" without saying *which keys* leaves them to diff the pod
+    against the snippet by eye.
+
+    The seat's home volume is here because :func:`values_snippet` emits it and
+    nothing mounts it, so it is the entry a reader working from the pod's mounts
+    alone would leave behind (evidence §7.3). ``command`` is named only where
+    the pod actually carries podbench's, since the loop is shell text and a
+    chart that supplied its own ``bash -c`` would have it either way.
 
     >>> hotfix_wiring({"spec": {"volumes": [{"name": "podbench-app"}],
     ...     "containers": [{"name": "app"}]}})
     ('the podbench-app volume',)
+    >>> hotfix_wiring({"spec": {"volumes": [{"name": "podbench-home"}],
+    ...     "containers": []}})
+    ('the podbench-home volume',)
     """
     spec = as_dict(pod_json.get("spec"))
+    declared = declared_volumes(pod_json)
     carried: list[str] = []
-    if HOTFIX_CLAIM_VOLUME in declared_volumes(pod_json):
-        carried.append(f"the {HOTFIX_CLAIM_VOLUME} volume")
+    for volume in (HOTFIX_CLAIM_VOLUME, SEAT_HOME_VOLUME):
+        if volume in declared:
+            carried.append(f"the {volume} volume")
     if claim_container(pod_json) is not None:
         carried.append(f"a volumeMount at {HOTFIX_APP_PATH}")
-    if any(
-        runs_hotfix_supervisor(as_dict(entry))
-        for entry in _as_list(spec.get("containers"))
-    ):
-        carried.append("the supervisor loop in args")
+    for entry in _as_list(spec.get("containers")):
+        container = as_dict(entry)
+        if not runs_hotfix_supervisor(container):
+            continue
+        command = [word for word in _as_list(container.get("command")) if _as_str(word)]
+        carried.append(
+            "the supervisor loop in command and args"
+            if command == ["bash", "-c"]
+            else "the supervisor loop in args"
+        )
+        break
     return tuple(carried)
+
+
+def pod_fs_group(pod_json: Mapping[str, Any]) -> int | None:
+    """The pod's ``securityContext.fsGroup``, or ``None`` where it declares none.
+
+    >>> pod_fs_group({"spec": {"securityContext": {"fsGroup": 37887}}})
+    37887
+    >>> pod_fs_group({"spec": {}}) is None
+    True
+    """
+    value = as_dict(as_dict(pod_json.get("spec")).get("securityContext")).get("fsGroup")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 @dataclass(frozen=True)
@@ -4845,6 +4901,7 @@ def retirement(
     must stop being answered.
     """
     carried = hotfix_wiring(pod_json)
+    fs_group = pod_fs_group(pod_json)
     pod = _as_str(as_dict(pod_json.get("metadata")).get("name")) or "this pod"
     if not carried and claim.present is False:
         # Said once, on the two rows it makes moot, in `_seed_checks`' words and
@@ -4854,13 +4911,13 @@ def retirement(
         return [
             RetirementCheck(RetirementStep.BRANCH, None, moot),
             RetirementCheck(RetirementStep.IMAGE, None, moot),
-            _wiring_check(carried, pod=pod, claim=claim),
+            _wiring_check(carried, pod=pod, claim=claim, fs_group=fs_group),
             _claim_check_row(claim, reference=reference),
         ]
     return [
         _branch_check(manifest, wired=bool(carried), reference=reference),
         _image_check(manifest, current_digest=current_digest),
-        _wiring_check(carried, pod=pod, claim=claim),
+        _wiring_check(carried, pod=pod, claim=claim, fs_group=fs_group),
         _claim_check_row(claim, reference=reference),
     ]
 
@@ -4886,6 +4943,18 @@ def _branch_check(
             True,
             f"consolidated onto {manifest.consolidated_branch}, so the claim is "
             "no longer the only copy of this fix",
+        )
+    if manifest.ahead == 0:
+        # Measured on the live target (evidence §7.2): with no commits this row
+        # counted a step with nothing in it and offered `consolidate`, which
+        # refuses that exact claim - "there is no hotfix to consolidate ...
+        # retire the claim instead". Two verbs pointing at each other about one
+        # claim, in a report whose whole value is that its count is right.
+        return RetirementCheck(
+            step,
+            True,
+            "this claim records no commits of its own, so there is nothing to "
+            "consolidate and nothing that retiring it would discard.",
         )
     return RetirementCheck(
         step,
@@ -4933,7 +5002,11 @@ def _image_check(
 
 
 def _wiring_check(
-    carried: Sequence[str], *, pod: str, claim: ClaimState
+    carried: Sequence[str],
+    *,
+    pod: str,
+    claim: ClaimState,
+    fs_group: int | None = None,
 ) -> RetirementCheck:
     step = RetirementStep.WIRING
     if not carried:
@@ -4941,7 +5014,8 @@ def _wiring_check(
             step,
             True,
             f"{pod} carries none of the hotfix wiring: no {HOTFIX_CLAIM_VOLUME} "
-            f"volume, no mount at {HOTFIX_APP_PATH}, no supervisor loop.",
+            f"or {SEAT_HOME_VOLUME} volume, no mount at {HOTFIX_APP_PATH}, no "
+            "supervisor loop.",
         )
     if claim.present is False and claim.name is not None and not claim.deleted:
         return RetirementCheck(
@@ -4949,11 +5023,12 @@ def _wiring_check(
             False,
             CLAIM_GONE_BUT_STILL_WIRED.format(pod=pod, claim=claim.name),
         )
-    return RetirementCheck(
-        step,
-        False,
-        WIRING_IS_THE_APPLICATIONS_OWN.format(pod=pod, what=and_list(list(carried))),
+    detail = WIRING_IS_THE_APPLICATIONS_OWN.format(
+        pod=pod, what=and_list(list(carried))
     )
+    if fs_group is not None:
+        detail += " " + FSGROUP_NOT_ATTRIBUTED.format(gid=fs_group)
+    return RetirementCheck(step, False, detail)
 
 
 def _claim_check_row(claim: ClaimState, *, reference: str) -> RetirementCheck:

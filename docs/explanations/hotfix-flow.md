@@ -784,10 +784,16 @@ cluster where a retirement has actually got to, and performs the one step podben
                          the fix is *not* measured — podbench compares digests,
                          not contents.
   [ ]     wiring         bl47p-ea-fastcs-01-0 still carries the podbench-app
-                         volume, a volumeMount at /podbench/app and the
-                         supervisor loop in args. Those are fields in the
-                         application's own pod template, not in the claim's
-                         chart, so turning the claim off does not remove them …
+                         volume, the podbench-home volume, a volumeMount at
+                         /podbench/app and the supervisor loop in command and
+                         args. Those are fields in the application's own pod
+                         template, not in the claim's chart, so turning the
+                         claim off does not remove them: take those entries
+                         back out … the entries, and not the whole `volumes`
+                         and `volumeMounts` keys, which a helm list replaces
+                         rather than merges. podSecurityContext.fsGroup is
+                         37887, which `hotfix values` emits too; whether this
+                         pod had one before the hotfix is not measured here …
   [ ]     claim          bl47p-ea-fastcs-01-podbench-project still exists …
 ------------------------------------------------------------------------
 VERDICT: 2 of 4 steps of retirement remain (exit 1)
@@ -798,7 +804,7 @@ REMAINING: wiring, claim
 whose top commit turned hotfix mode *off* — `podbench-hotfix-claim.enabled: false` —
 every pod in the namespace was deleted, and `bl47p-ea-fastcs-01-0` came back still
 mounting the claim and still running the supervisor loop. The boolean disables the
-**subchart**, which is the PVC; `volumes`, `volumeMounts`, `args` and
+**subchart**, which is the PVC; `volumes`, `volumeMounts`, `command`, `args` and
 `podSecurityContext` live in the target's own `ioc-instance` values and were untouched.
 Somebody had done step 5 and not step 4, and the state that leaves — a pod wired to a
 claim its chart no longer declares — is worse than either end of the checklist, because
@@ -817,6 +823,20 @@ The rules the report keeps, each with the failure it exists to stop:
 * **The manifest can only be read while something mounts the claim**, so `branch` and
   `image` go unmeasured the moment the pod is unwired — which is exactly when the
   deletion becomes safe. The verb says so rather than carrying the last answer forward.
+* **A step with nothing in it is done, not outstanding.** A claim that was seeded and
+  never `apply`-ed carries no commits, so `branch` is `[x]`: there is nothing to
+  consolidate and nothing that retiring the claim discards. It read `[ ]  0 commit(s)
+  … `podbench hotfix consolidate …` first` on the live target, about a claim
+  `consolidate` refuses with "there is no hotfix to consolidate … retire the claim
+  instead" — two verbs pointing at each other, and a count of four when three remained.
+* **The `wiring` row names what `values` emits, and does not send anyone at the keys.**
+  It named three things when six values were wired, and its closing clause pointed at
+  "the values `podbench hotfix values` emitted" — which under `--from-pod` is
+  podbench's own entries only, while the service's `volumes` and `volumeMounts` carry
+  its own as well. A helm list *replaces* across the parent/child merge, so deleting
+  those keys wholesale unmounts a beamline directory. The `fsGroup` is named rather
+  than counted: podbench emits one and an application may have declared its own, and
+  the pod cannot say which.
 * **A claim that could not be read is not a claim that is gone.** kubectl tells a 403
   from a 404 in its text alone, and ticking `claim` on a refusal would tick the one step
   nobody can undo.

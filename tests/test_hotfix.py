@@ -1632,13 +1632,15 @@ def wired_pod(
     digest: str = NEW_DIGEST,
     wired: bool = True,
     claim: str | None = CLAIM,
+    fs_group: int | None = 37887,
 ) -> dict[str, Any]:
     """A pod as retirement meets it: wired for hotfix mode, or no longer.
 
-    All three halves of the wiring, because that is what retirement takes back
-    out one at a time - the volume, the mount and the supervisor's args - and a
-    fixture carrying only the mount would let a report that reads one of them
-    pass for a report that reads all three.
+    Everything `values_snippet` emits, because that is what retirement takes
+    back out one at a time - both volumes, the mount, the command, the
+    supervisor's args and the fsGroup - and a fixture carrying only three of
+    them is what let the `wiring` row under-enumerate on the live target
+    (evidence §7.3) while every test here passed.
     """
     metadata: dict[str, Any] = {"name": name}
     if namespace is not None:
@@ -1649,11 +1651,17 @@ def wired_pod(
         container["volumeMounts"] = [
             {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH}
         ]
+        container["command"] = ["bash", "-c"]
         container["args"] = [hotfix.hold_loop_args("python -m app")]
         volume: dict[str, Any] = {"name": model.HOTFIX_CLAIM_VOLUME}
         if claim is not None:
             volume["persistentVolumeClaim"] = {"claimName": claim}
-        spec["volumes"] = [volume]
+        spec["volumes"] = [
+            volume,
+            {"name": model.SEAT_HOME_VOLUME, "emptyDir": {"sizeLimit": "2Gi"}},
+        ]
+        if fs_group is not None:
+            spec["securityContext"] = {"fsGroup": fs_group}
     return {
         "metadata": metadata,
         "spec": spec,
@@ -1748,6 +1756,95 @@ def test_a_pod_wired_to_a_claim_its_chart_no_longer_declares_is_reported() -> No
     report = hotfix.format_retirement(checks)
     assert "2 of 4 steps of retirement remain (exit 1)" in report
     assert "REMAINING: wiring, claim" in report
+
+
+def test_a_claim_carrying_no_commits_has_its_branch_step_done() -> None:
+    """Evidence §7.2/§7.3, measured on the live target.
+
+    `retire` printed "0 commit(s) on this claim are on no branch: `podbench
+    hotfix consolidate …` first, or retiring the claim discards them" - about a
+    claim `consolidate` refuses in the same minute with "there is no hotfix to
+    consolidate ... retire the claim instead". Two verbs pointing at each other,
+    and a verdict of "4 of 4 steps remain" when three do. Nothing is discarded
+    by retiring a claim with nothing on it, so that step is done.
+    """
+    checks = hotfix.retirement(
+        wired_pod(digest=BASE_DIGEST),
+        a_manifest(ahead=0),
+        claim=hotfix.ClaimState(CLAIM, True),
+        current_digest=BASE_DIGEST,
+        reference="pod/api-7f9-abc",
+    )
+    rows = rows_by_step(checks)
+    branch = rows[hotfix.RetirementStep.BRANCH]
+    assert branch.done is True
+    assert not branch.remaining
+    # And no offer of the command that would refuse this very claim.
+    assert "podbench hotfix consolidate" not in branch.detail
+    report = hotfix.format_retirement(checks)
+    assert "3 of 4 steps of retirement remain (exit 1)" in report
+    assert "REMAINING: image, wiring, claim" in report
+
+
+def test_a_claim_that_is_ahead_still_has_to_be_consolidated() -> None:
+    """The other side of the same arm: commits on no branch are still a step,
+    and the offer is still the command that takes them off the claim."""
+    checks = hotfix.retirement(
+        wired_pod(),
+        a_manifest(ahead=2),
+        claim=hotfix.ClaimState(CLAIM, True),
+        current_digest=NEW_DIGEST,
+        reference="pod/api-7f9-abc",
+    )
+    branch = rows_by_step(checks)[hotfix.RetirementStep.BRANCH]
+    assert branch.remaining
+    assert "consolidate pod/api-7f9-abc" in branch.detail
+
+
+def test_the_wiring_row_names_every_value_that_has_to_come_out() -> None:
+    """Evidence §7.3 and the 2026-08-24 audit's correction to it.
+
+    The row named three things and six values were wired. Worse, its closing
+    clause sent the reader at "the values `podbench hotfix values` emitted" -
+    which under `--from-pod` is podbench's own entries only, while the service's
+    `volumes` and `volumeMounts` also carry its beamline hostPath. A helm list
+    replaces rather than merges (rule 5), so deleting those two keys wholesale
+    unmounts the beamline directory.
+    """
+    checks = hotfix.retirement(
+        wired_pod(),
+        consolidated(),
+        claim=hotfix.ClaimState(CLAIM, True),
+        current_digest=NEW_DIGEST,
+        reference="pod/api-7f9-abc",
+    )
+    wiring = " ".join(rows_by_step(checks)[hotfix.RetirementStep.WIRING].detail.split())
+    for named in (
+        model.HOTFIX_CLAIM_VOLUME,
+        model.SEAT_HOME_VOLUME,
+        model.HOTFIX_APP_PATH,
+        "command and args",
+        "podSecurityContext.fsGroup is 37887",
+    ):
+        assert named in wiring, named
+    # The fsGroup is named, never counted: an application may have declared its
+    # own, and the pod cannot say which.
+    assert "not measured here" in wiring
+    # The hazard, replacing the advice that caused it.
+    assert "replaces rather than merges" in wiring
+    assert "`podbench hotfix values` emitted" not in wiring
+
+
+def test_the_wiring_row_leaves_an_fsgroup_out_when_the_pod_declares_none() -> None:
+    """Named only where it is there: an invented item is the same defect as a
+    missing one."""
+    checks = hotfix.retirement(
+        wired_pod(fs_group=None),
+        consolidated(),
+        claim=hotfix.ClaimState(CLAIM, True),
+        current_digest=NEW_DIGEST,
+    )
+    assert "fsGroup" not in rows_by_step(checks)[hotfix.RetirementStep.WIRING].detail
 
 
 def test_retirement_never_ticks_a_step_it_could_not_measure() -> None:

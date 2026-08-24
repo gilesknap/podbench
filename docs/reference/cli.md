@@ -1170,10 +1170,20 @@ Notes:
   deletion: nothing mounted the claim, so what was on it went unread, and a chart that
   still declares the claim will have the next sync recreate it. Exit **1** while any
   measured step is outstanding.
+* `retire`'s `branch` step is **done** on a claim that records no commits: a seeded
+  claim nobody ever `apply`-ed has nothing to consolidate and nothing that retiring it
+  discards, and `consolidate` refuses that same claim.
+* `retire`'s `wiring` row names both volumes, the mount and the supervisor loop in
+  `command` and `args`, and it says to take those *entries* out of the application's
+  values rather than the whole `volumes` and `volumeMounts` keys — a helm list replaces
+  across the parent/child merge rather than merging into it, so a key deleted wholesale
+  takes the service's own mounts with it. A `podSecurityContext.fsGroup` is **named,
+  not counted**: `hotfix values` emits one, an application may have declared its own,
+  and the pod cannot say which.
 * **Turning the claim off is not retiring the hotfix**, and this is the state `retire`
   exists to name. `podbench-hotfix-claim.enabled: false` disables the subchart — the
-  PVC — while the `volumes`, `volumeMounts`, `args` and `podSecurityContext` that wire
-  the pod are the *application's* own values. Measured on p47-beamline on 2026-08-23:
+  PVC — while the `volumes`, `volumeMounts`, `command`, `args` and `podSecurityContext`
+  that wire the pod are the *application's* own values. Measured on p47-beamline on 2026-08-23:
   with the boolean off, every pod in the namespace deleted, and the workloads
   recreated from git, the target came back still mounting the claim and still running
   the supervisor loop.
