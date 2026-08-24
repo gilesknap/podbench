@@ -67,6 +67,7 @@ from podbench.launcher import (
     pod_choices,
     probe_seat_credentials,
     probe_seat_versions,
+    provision_destination,
     recover_seat_reports,
     resolve_pod,
     resolve_pod_name,
@@ -103,8 +104,13 @@ from podbench.model import (
     describe_pause,
 )
 from podbench.proc import Credentials
+from podbench.provision import PROVISION_DEST, claim_destination
 from podbench.resize import Headroom
-from podbench.spec import admission_rewrites, requested_seat_spec
+from podbench.spec import (
+    admission_rewrites,
+    ephemeral_container,
+    requested_seat_spec,
+)
 from podbench.sshcfg import SEAT_USER
 
 POD_UID = "11111111-2222-3333-4444-555555555555"
@@ -4165,6 +4171,35 @@ def test_open_on_a_hotfix_pod_opens_the_claim_and_not_the_home(
     assert "the only tree here where an edit reaches the running process" in out
 
 
+def test_open_on_a_hotfix_pod_provisions_into_the_claim_and_says_so(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other half of #189's pod, and the first link of the 2026-08-24
+    cascade: the seat cannot write the target's root-owned ``/opt``, so a
+    ``--provision`` aimed there installs nothing, emits no configuration, and
+    leaves the report saying only "no launch.json".
+
+    The destination reaches the seat as a flag rather than being decided there,
+    because only this side can see the pod - and it is named in the same block
+    that already says where the claim was mounted.
+    """
+    cluster = FakeCluster(layout_pod())
+    code = main(
+        vscode_argv(tmp_path),
+        runner=cluster,
+        which=lambda name: f"/usr/bin/{name}",
+    )
+    assert code == 0
+
+    dest = f"{HOTFIX_APP_PATH}/.podbench-debugpy"
+    runs = [call for call in cluster.calls if "debug-config" in call]
+    assert runs
+    for call in runs:
+        assert call[call.index("--provision-dest") + 1] == dest
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"any debugpy this run installs goes to {dest} on the claim" in out
+
+
 def test_open_follows_the_claim_to_wherever_the_application_mounts_it(
     tmp_path: Path,
 ) -> None:
@@ -6863,6 +6898,77 @@ def test_the_convention_volumes_do_not_make_a_seat_a_hotfix_seat() -> None:
 
     assert seat.kind is SeatKind.ATTACH
     assert seat.in_hotfixed_pod
+
+
+# -- where --provision installs debugpy (the 2026-08-24 cascade) -------------
+
+
+def seat_of(pod: dict[str, Any]) -> tuple[Session, dict[str, Any] | None]:
+    """A session and the seat's own container spec, as ``vscode`` holds them."""
+    session = Session(
+        seat=ContainerRef(PodRef("demo", "target"), "podbench-1"),
+        workload="app",
+        rung=Rung.DEGRADED,
+        reused=False,
+        uid=1000,
+        hotfixed=is_hotfixed(pod),
+    )
+    return session, ephemeral_container(pod, "podbench-1")
+
+
+def test_a_hotfixed_seat_provisions_into_the_claim_it_carries() -> None:
+    """The whole of Failure 2's first link, measured on `bl47p-ea-fastcs-01-0`:
+    `/opt` is `drwxr-xr-x root root`, the degraded seat is uid 37887 with an
+    empty effective set, so the install is refused by ordinary file permissions
+    and nothing downstream of it - configurations, launch.json, the seat's debug
+    adapter - can exist. Pointed at the claim, every step succeeded.
+
+    The path is read off the mount rather than assumed to be `HOTFIX_APP_PATH`:
+    the application chose the mountPath and podbench only matched it.
+    """
+    dest, why = provision_destination(*seat_of(hotfixed_pod(mounted=True)))
+
+    expected = f"{HOTFIX_APP_PATH}/.podbench-debugpy"
+    assert dest == expected
+    # And it says which of the two it chose, in the report that already says
+    # where the claim was mounted.
+    assert why is not None
+    assert expected in why
+    assert PROVISION_DEST in why
+
+
+def test_a_seat_without_the_claim_keeps_the_default_it_can_at_least_fail_on() -> None:
+    """A pod can carry the layout while this seat carries no mount - a `subPath`
+    refusal degraded to a note, a reconnect into a seat older than the layout,
+    `--no-seat-identity`.
+
+    The write would still land (it goes through `/proc/<pid>/root`, and the
+    target has the claim regardless), but the property being relied on would
+    not: the claim is one path in *both* namespaces only where both containers
+    mount it. Choosing it from a seat that does not would be choosing on an
+    assumption rather than on the mount."""
+    assert provision_destination(*seat_of(hotfixed_pod(mounted=False))) == (None, None)
+
+
+def test_a_pod_with_no_layout_is_left_exactly_as_it_was() -> None:
+    """`None` is "the seat's own default", and podbench spells the flag only
+    where it is overriding something."""
+    pod = pod_document(
+        uid=1000,
+        ephemeral=[{"name": "podbench-1", "targetContainerName": "app"}],
+        ephemeral_statuses=[running_status("podbench-1")],
+    )
+
+    assert provision_destination(*seat_of(pod)) == (None, None)
+
+
+def test_the_claim_destination_is_named_so_it_cannot_meet_the_project() -> None:
+    """`PROVISION_DEST` is outside every directory a package manager owns; the
+    claim is the opposite of that, being the application's own checkout. So what
+    keeps this off somebody's source tree is the name."""
+    assert claim_destination("/srv/app") == "/srv/app/.podbench-debugpy"
+    # A mountPath with a trailing slash is a mountPath, not a second directory.
+    assert claim_destination("/srv/app/") == "/srv/app/.podbench-debugpy"
 
 
 def test_the_sidecar_is_never_paired_with_an_ephemeral_seat_as_superseded() -> None:

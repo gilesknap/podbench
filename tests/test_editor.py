@@ -23,6 +23,7 @@ import pytest
 from podbench.editor import (
     CONNECTION_HINT,
     OK,
+    PROVISION_DEST_FLAG,
     PROVISION_FLAG,
     SERVER_CLI_ATTEMPTS,
     SERVER_CLI_INTERVAL,
@@ -247,6 +248,7 @@ def run_open(
     *,
     folder: str = HOME,
     provision: Provision = Provision.NEVER,
+    provision_dest: str | None = None,
     naps: list[float] | None = None,
 ) -> list[str]:
     """Every note, in the order the user saw it — ``open_seat`` reports as it
@@ -261,6 +263,7 @@ def run_open(
         report=notes.append,
         editor="code",
         provision=provision,
+        provision_dest=provision_dest,
         runner=seat,
         # Never the real one: waiting for a vscode-server that a fake will never
         # bootstrap is five minutes of a unit suite that is meant to take
@@ -679,6 +682,37 @@ def test_provision_is_announced_with_its_costs_before_it_runs() -> None:
     # Saying them a third time on the laptop is what made this block unreadable.
     assert "mutating the workload" in notice
     assert "debugpy" in notice and "ptraces" in notice
+
+
+def test_a_chosen_destination_reaches_both_runs_of_debug_config() -> None:
+    """Only the launcher can see the pod, so only it can know that this seat's
+    own default is a directory the seat cannot write (issue #189's pod: `/opt`
+    is root-owned and the degraded rung is uid 37887).
+
+    On the assessment run as well as the provisioning one, because
+    `--provision-dest` is also the extra path `debug-config` searches for the
+    target's own copy - so a reconnect finds what an earlier run installed
+    instead of offering to install it again.
+    """
+    seat = FakeSeat(debug_config_stderr=_SUCCESS)
+    dest = "/podbench/app/.podbench-debugpy"
+    run_open(seat, provision=Provision.IF_NEEDED, provision_dest=dest)
+
+    runs = [call for call in seat.calls if "debug-config" in call]
+    assert len(runs) == 2
+    for call in runs:
+        assert call[call.index(PROVISION_DEST_FLAG) + 1] == dest
+
+
+def test_no_destination_leaves_the_argv_as_it_has_always_been() -> None:
+    """`None` is "the seat's own default", and it is spelled as an absent flag
+    rather than as the constant: a seat landed by a launcher that predates
+    `--provision-dest` would refuse the whole run, and podbench meets one only
+    on a pod where it had nothing to override anyway."""
+    seat = FakeSeat(debug_config_stderr=_SUCCESS)
+    run_open(seat, provision=Provision.IF_NEEDED)
+
+    assert not any(PROVISION_DEST_FLAG in call for call in seat.calls)
 
 
 def test_nothing_is_provisioned_unless_it_is_asked_for() -> None:

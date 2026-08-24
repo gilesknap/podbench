@@ -69,6 +69,7 @@ __all__ = [
     "read_cgroup",
     "read_cmdline",
     "read_comm",
+    "read_credentials",
     "read_exe",
     "read_gid",
     "read_mapped_objects",
@@ -297,6 +298,22 @@ def read_status_field(
     """Return one field of ``/proc/<pid>/status``, or ``None`` if unavailable."""
     text = _read_text(_pid_dir(pid, proc) / "status")
     return None if text is None else status_field(text, field)
+
+
+def read_credentials(
+    pid: int | str = "self", *, proc: Path = DEFAULT_PROC
+) -> Credentials | None:
+    """A process's ids and capability masks, or ``None`` when ``/proc`` refused.
+
+    The local peer of ``launcher.probe_seat_credentials``, which relays the same
+    file over ``kubectl exec``: one decoder (:meth:`Credentials.from_status`),
+    two ways of getting the bytes to it. ``self`` by default because the caller
+    that needs it in the seat is asking what *this* container is running as -
+    which decides whether a refused write is about file modes at all
+    (:func:`podbench.provision.blocker_sentence`).
+    """
+    text = _read_text(_pid_dir(pid, proc) / "status")
+    return None if text is None else Credentials.from_status(text)
 
 
 def read_uid(pid: int | str, *, proc: Path = DEFAULT_PROC) -> int | None:

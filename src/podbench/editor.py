@@ -91,6 +91,7 @@ __all__ = [
     "EXTENSIONS_DIR",
     "SSH_CONNECT_TIMEOUT",
     "EditorError",
+    "PROVISION_DEST_FLAG",
     "PROVISION_FLAG",
     "SERVER_CLI_ATTEMPTS",
     "SERVER_CLI_INTERVAL",
@@ -177,6 +178,19 @@ refusal a target that cannot import debugpy gets, *and* by the hint a target
 that can import it gets when nothing is listening on the port its configuration
 connects to. One string, because to this side of the wire they are one request.
 """
+
+PROVISION_DEST_FLAG = "--provision-dest"
+"""How a destination chosen on the laptop reaches the seat.
+
+Spelled only when there is one (``launcher.provision_destination`` answers
+``None`` otherwise), so every argv on a pod with no hotfix layout is
+byte-identical to the one this verb has always sent — including into a seat
+landed by a launcher that predates the flag.
+
+Passed on the *assessment* run as well as the provisioning one, and not only for
+symmetry: it is also the one extra path ``debug-config`` searches for the
+target's own debugpy, so a reconnect after an earlier install finds it there
+instead of offering to install it again."""
 
 
 class Provision(enum.Enum):
@@ -544,6 +558,7 @@ def open_seat(
     report: Callable[[str], None],
     editor: str = DEFAULT_EDITOR,
     provision: Provision = Provision.NEVER,
+    provision_dest: str | None = None,
     ssh: str = DEFAULT_SSH,
     runner: Runner | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -577,6 +592,12 @@ def open_seat(
     module docstring — a caller that has been given consent passes
     :attr:`Provision.IF_NEEDED` and lets the seat decide whether to spend it.
 
+    ``provision_dest`` is *where* that install goes, and it is the caller's
+    choice for the same reason ``folder`` is: only the launcher can see the
+    pod, and on a hotfixed one the seat's own default is a root-owned ``/opt``
+    it has no capability to write (``launcher.provision_destination``). ``None``
+    leaves the seat's default alone.
+
     Anything that went wrong but left the seat usable is a line rather than an
     exception — a missing ``launch.json`` costs an F5, whereas the excludes and
     the folder are what keep the seat alive.
@@ -603,7 +624,9 @@ def open_seat(
     report(f"{OK} ssh reaches the seat, so Remote-SSH will too")
     # Everything from here is one line each: this is a sequence of steps, and
     # a step that explains itself in a paragraph buries the one that failed.
-    configurations = _configurations(kubectl, seat, report, provision=provision)
+    configurations = _configurations(
+        kubectl, seat, report, provision=provision, dest=provision_dest
+    )
     extensions = extensions_for(configurations)
 
     base = f"{folder}/{VSCODE_DIR}"
@@ -992,6 +1015,7 @@ def _configurations(
     report: Callable[[str], None],
     *,
     provision: Provision = Provision.NEVER,
+    dest: str | None = None,
 ) -> list[dict[str, Any]]:
     """What ``debug-config`` would write, asked for rather than recomputed.
 
@@ -1017,7 +1041,7 @@ def _configurations(
     widened to serve.
     """
     entries, unprovisioned = _author(
-        kubectl, seat, report, provision=provision is Provision.ALWAYS
+        kubectl, seat, report, provision=provision is Provision.ALWAYS, dest=dest
     )
     if not unprovisioned:
         return entries
@@ -1025,7 +1049,7 @@ def _configurations(
         report(_PROVISION_REMEDY)
         return entries
     report(_PROVISION_NEEDED)
-    return _author(kubectl, seat, report, provision=True)[0] or entries
+    return _author(kubectl, seat, report, provision=True, dest=dest)[0] or entries
 
 
 def _author(
@@ -1034,6 +1058,7 @@ def _author(
     report: Callable[[str], None],
     *,
     provision: bool,
+    dest: str | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """One ``debug-config`` run, and whether the seat asked to be provisioned.
 
@@ -1058,8 +1083,17 @@ def _author(
     ``not provision`` is what keeps it from looping, and it is the whole of
     that guarantee: a provisioning run's stderr names the flag on every line it
     narrates, so the guard has to be here rather than in the caller.
+
+    ``dest`` is spelled ahead of :data:`PROVISION_FLAG` and on both runs, for
+    the reasons on :data:`PROVISION_DEST_FLAG`. It cannot disturb the guard
+    above: ``wants_provisioning`` reads the seat's *stderr*, not the argv it was
+    sent.
     """
-    argv = [*DEBUG_CONFIG_ARGV, *([PROVISION_FLAG] if provision else [])]
+    argv = [
+        *DEBUG_CONFIG_ARGV,
+        *([PROVISION_DEST_FLAG, dest] if dest is not None else []),
+        *([PROVISION_FLAG] if provision else []),
+    ]
     if provision:
         report(_PROVISION_NOTICE)
     result = kubectl.exec_(

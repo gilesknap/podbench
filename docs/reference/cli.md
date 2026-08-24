@@ -794,8 +794,9 @@ the report above prints); and a restart of the target container ends the
 debugging. The two halves do not expire together: the **server** never
 survives a restart, being a live process in the container that died, while the
 **install** survives one where `--provision-dest` names a volume mounted into
-the target — an `emptyDir` is pod-scoped and outlives a container — and not at
-the default `/opt/podbench-debugpy`, which is the container's own writable
+the target — an `emptyDir` is pod-scoped and outlives a container, and so does a
+hotfixed pod's claim, which is where this verb installs on one — and not at the
+default `/opt/podbench-debugpy`, which is the container's own writable
 layer. Either way the next step is another `podbench vscode`, since without the
 server nothing is listening. Installing debugpy into the app image, or baking
 `debugpy.listen()` into the app, is the durable answer.
@@ -1781,9 +1782,10 @@ A stock Python image has no debugpy, and debugpy's pid-injection needs it
 importable **by the target**: the bootstrap runs in the target's interpreter,
 and the path debugpy injects is the one the *driver* sees, so
 `/proc/<pid>/root/...` is the only spelling valid in both mount namespaces. The
-seat can supply it — it ships `uv`, live attach already requires `runAsUser: 0`,
-and `/proc/<pid>/root` is the target's own filesystem — so the refusal prints
-the command rather than asking for an image rebuild:
+seat can supply it — it ships `uv`, and `/proc/<pid>/root` is the target's own
+filesystem, which the seat writes into wherever the target's own ownership and
+modes let it — so the refusal prints the command rather than asking for an image
+rebuild:
 
 ```
 uv pip install --no-cache --python-version 3.12 --target /proc/1/root/opt/podbench-debugpy debugpy
@@ -1807,8 +1809,8 @@ the flag it probes the destination for writability first and names what refuses:
 | cost | why it cannot be ignored |
 |---|---|
 | network egress from the pod | uv resolves and downloads from an index; a locked-down namespace refuses it, and the fallback is a copy of the seat's tree with the accelerator caveat above |
-| no restart survives it | neither the install nor the injection — a restart brings back the app image exactly as built |
-| ~15 MB of ephemeral storage | on a budget the seat **shares with the workload and cannot reserve**, because an ephemeral container may not carry `resources` |
+| no restart survives the injection | the server is a live process in the container that died; whether the *install* survives one depends on the destination, below |
+| ~15 MB of ephemeral storage | on a budget the seat **shares with the workload and cannot reserve**, because an ephemeral container may not carry `resources` — unless `--provision-dest` names a volume, which is also the case whose install outlives a restart |
 
 `--no-cache` is what keeps that last number true. uv downloads into its cache in
 the *seat's* writable layer and materialises from there into `--target`; the two
@@ -1819,14 +1821,29 @@ against an unroutable index is otherwise silence indistinguishable from a hang.
 
 `readOnlyRootFilesystem: true` is the one genuinely new precondition, and it is
 not readable from the seat: the mount flag lives in the target's mount
-namespace, so it arrives as `EROFS` on the write. Uid 0 in the seat carries
-`CAP_DAC_OVERRIDE`, so the target's own uid and file modes are never the
-explanation — a `permission denied` here is the `/proc/<pid>/root` traversal,
-which takes `PTRACE_MODE_READ` and is refused to a root seat with no
-`CAP_SYS_PTRACE` (report 3.11), or an LSM denying the cross-container write.
-Where the rootfs is read-only there is usually still a writable
-`emptyDir` or tmpfs in the pod — `--provision-dest` puts the copy there instead,
-and is also the extra path `debug-config` searches on a later run.
+namespace, so it arrives as `EROFS` on the write. Where the rootfs is read-only
+there is usually still a writable `emptyDir` or tmpfs in the pod —
+`--provision-dest` puts the copy there instead, and is also the extra path
+`debug-config` searches on a later run.
+
+A `permission denied` has two explanations and the seat's own uid picks between
+them, which is why the message names it. On the **full** rung the seat is uid 0
+and `CAP_DAC_OVERRIDE` rules the target's file modes out, leaving the
+`/proc/<pid>/root` traversal — which takes `PTRACE_MODE_READ` and is refused to
+a root seat with no `CAP_SYS_PTRACE` (report 3.11) — or an LSM denying the
+cross-container write. On the **degraded** rung the seat is the target's own uid
+with an empty effective capability set, nothing bridges the target's ownership
+and modes, and they are the whole of the check: `/opt` is `drwxr-xr-x root root`
+in a stock image, which is exactly how a beamline pod refused this install while
+`ls /proc/<pid>/root` succeeded (2026-08-24).
+
+Which is why the destination is chosen from the pod on a **hotfixed** one.
+`podbench vscode` there installs into `<claim>/.podbench-debugpy` rather than
+`/opt/podbench-debugpy` — writable by a non-root seat, the same directory in
+both mount namespaces, and a volume — and says which it chose in its `editor`
+block. A hotfixed pod whose seat carries no claim mount keeps the default.
+There is no fallback between the two: it is chosen before the install, not after
+a refusal.
 
 At that destination "already installed" is not a refusal: an installed tree
 records no version, and `--provision-dest` is searched **first**, so a copy

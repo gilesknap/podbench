@@ -3,11 +3,21 @@
 ``debug-config``'s Python refusal used to end in "install debugpy into the app
 image": true, durable, and unavailable to the person who is already attached to
 a running pod at 3 a.m., which is the situation the seat exists for. The seat
-can satisfy the prerequisite itself — it ships ``uv``, live attach already
-requires ``runAsUser: 0`` (``spec.validate_security_context``, because no CRI
-populates the ambient set), and ``/proc/<pid>/root`` is the target's own
-filesystem, which uid 0 writes through ``CAP_DAC_OVERRIDE`` whatever the
-target's uid and modes are.
+can satisfy the prerequisite itself — it ships ``uv``, and ``/proc/<pid>/root``
+is the target's own filesystem, which the seat writes into wherever it is
+allowed to.
+
+**Which is not everywhere, and the rung decides.** On ``full`` the seat is uid 0
+and ``CAP_DAC_OVERRIDE`` settles it whatever the target's uid and modes say. On
+``degraded`` — the seat matched to the target's own uid with ``CapEff
+0000000000000000``, which is what a beamline pod admits — nothing bridges those
+modes and they are the entire check: ``/opt`` is ``drwxr-xr-x root root`` in a
+stock image, so the default destination below is refused by ordinary file
+permissions (measured on ``bl47p-ea-fastcs-01-0``, 2026-08-24). That is why the
+destination is chosen from the pod's layout by
+``launcher.provision_destination`` rather than being one constant, and why
+:func:`blocker_sentence` asks the seat's own credentials before explaining a
+refusal.
 
 Proved on the bench on 2026-08-16 (issue #45): k3s, seat Python 3.11, target
 Python 3.12. The install resolved *for 3.12 while running on 3.11*, the
@@ -24,11 +34,11 @@ which is what gets the matching wheel. Copying the seat's tree stays the
 fallback for a pod with no egress; it is not the path.
 
 Three things this costs, named wherever it is offered (:data:`CAVEATS`):
-egress, since uv resolves and downloads from an index; nothing that survives a
-container restart, neither the install nor the injection; and ~15 MB of
-ephemeral storage, on a budget the seat *shares with the workload and cannot
-reserve*, because an ephemeral container may not carry ``resources`` (report
-3.9).
+egress, since uv resolves and downloads from an index; an injection no container
+restart survives; and ~15 MB of storage, which lands on the budget the seat
+*shares with the workload and cannot reserve* — because an ephemeral container
+may not carry ``resources`` (report 3.9) — unless the destination is a volume,
+which is also the only kind of destination whose install outlives a restart.
 
 That is why the caller has to ask. ``flavour.injection_command`` is printed
 rather than run because ptracing the workload is not something authoring a
@@ -60,14 +70,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .kubectl import CommandResult, Runner, run_subprocess
-from .proc import DEFAULT_PROC, sysroot_path
+from .proc import DEFAULT_PROC, Credentials, read_credentials, sysroot_path
 
 __all__ = [
     "CAVEATS",
+    "CLAIM_DEST_NAME",
     "PROVISION_DEST",
     "Injected",
     "Provisioned",
     "blocker_sentence",
+    "claim_destination",
     "inject_debugpy",
     "provision_command",
     "provision_debugpy",
@@ -77,24 +89,51 @@ __all__ = [
 ]
 
 PROVISION_DEST = "/opt/podbench-debugpy"
-"""Where a provisioned debugpy goes, as the *target* spells it.
+"""Where a provisioned debugpy goes on a pod with no layout to read.
 
 Outside every directory a package manager owns, so nothing in the app image can
 be shadowed by it, and one fixed path rather than a guess at the target's
 site-packages — which is also what lets ``flavour._target_debugpy`` find it
 again with one extra ``stat`` instead of a walk.
+
+The *default* and no longer the only answer: it is a root-owned directory in a
+stock image, so a seat that is not root cannot write it, and on a hotfixed pod
+:func:`claim_destination` is chosen instead. ``--provision-dest`` still wins
+over both.
+"""
+
+CLAIM_DEST_NAME = ".podbench-debugpy"
+"""What a provisioned debugpy is called *inside* a hotfix claim.
+
+:data:`PROVISION_DEST` gets to be outside every directory a package manager
+owns; the claim is the opposite of that, being the application's own checkout,
+usually a git one. So what keeps this from colliding with the user's tree is the
+name rather than the place: podbench's own prefix, which nothing else would
+choose, dotted so it stays out of a listing. It is the path the 2026-08-24 run
+proved the whole install and injection against.
 """
 
 CAVEATS = (
     "needs egress: uv downloads the wheel from an index",
-    "no container restart survives it, neither the install nor the injection",
-    "~15 MB of ephemeral storage, shared with the workload",
+    "no container restart survives the injection",
+    "~15 MB of ephemeral storage shared with the workload, unless "
+    "--provision-dest named a volume - which is also what decides whether the "
+    "install outlives a restart",
 )
 """What provisioning costs, printed with it rather than left to be discovered.
 
 All three were measured or are structural, and none of them announces itself:
 no egress looks like a resolver error, a restart looks like the debugger simply
 stopping, and ephemeral-storage eviction takes the *workload* with it.
+
+The restart caveat used to read "neither the install nor the injection", which
+was true while every destination was the container's own writable layer and is
+false now that a hotfixed pod's default is the claim: a PVC outlives the
+container, so the install is still there after a restart and the injection is
+not (2026-08-24). Both halves of that split hang off the same fact - whether the
+destination is a volume - which is why it is said once, on the clause about
+storage, rather than hedged twice. ``docs/reference/cli.md`` carries the long
+form.
 
 A clause each, because they are printed inline in a sentence the user is about
 to act on rather than read as a page. Why each one is true is the module
@@ -126,6 +165,27 @@ def target_destination(pid: int, dest: str = PROVISION_DEST) -> str:
     '/proc/1/root/opt/podbench-debugpy'
     """
     return f"{sysroot_path(pid)}/{dest.lstrip('/')}"
+
+
+def claim_destination(mount_path: str) -> str:
+    """Where debugpy goes on a hotfixed pod, given where the claim is mounted.
+
+    The claim is the one tree that is *the same inode in both mount namespaces*
+    — ``stat`` says ``1048592:64`` for ``/podbench/app`` and for
+    ``/proc/13/root/podbench/app`` alike — which is the property the
+    ``gdb-across-namespaces`` skill demands of any path both halves of a debug
+    session name. It is also writable by a seat that is not root, which is what
+    ``/opt`` is not, and a volume, so the install survives a restart.
+
+    ``mount_path`` is read off the seat's own ``volumeMounts`` by
+    ``launcher.provision_destination`` and never assumed to be
+    :data:`~podbench.model.HOTFIX_APP_PATH`: the application chose the
+    mountPath and podbench only matched it.
+
+    >>> claim_destination("/podbench/app")
+    '/podbench/app/.podbench-debugpy'
+    """
+    return f"{mount_path.rstrip('/')}/{CLAIM_DEST_NAME}"
 
 
 def provision_command(destination: str, python_version: str) -> tuple[str, ...]:
@@ -173,17 +233,33 @@ def provision_paste(
     return " ".join(provision_command(destination, python_version or _UNKNOWN_VERSION))
 
 
-def blocker_sentence(error: OSError, destination: Path) -> str:
+def blocker_sentence(
+    error: OSError, destination: Path, *, credentials: Credentials | None = None
+) -> str:
     """Name the mechanism behind a failed write, in ``capreport``'s house style.
 
-    ``EROFS`` is the one worth spelling out: the seat is uid 0 and holds
-    ``CAP_DAC_OVERRIDE``, so the target's own uid and file modes decide nothing,
-    and the only thing that can refuse is a mount flag living in the *target's*
-    mount namespace.
+    ``EROFS`` is the one worth spelling out whatever the seat is: a mount flag
+    lives in the *target's* mount namespace, and no credential this container
+    holds reaches it.
+
+    ``credentials`` is the seat's own ``/proc/self/status``, and ``EACCES`` is
+    where it changes the answer. At uid 0 the file modes really are ruled out,
+    because ``CAP_DAC_OVERRIDE`` overrides them; below it nothing does, and the
+    sentence that ruled them out sent a beamline reader to SELinux and
+    ``PTRACE_MODE_READ`` while the whole cause was a root-owned ``/opt`` and a
+    seat at uid 37887 (2026-08-24). ``None`` is *unknown*, not root: it keeps
+    the older text, which names more mechanisms than it excludes.
 
     >>> import errno
     >>> sentence = blocker_sentence(OSError(errno.EROFS, "ro"), Path("/opt/x"))
     >>> sentence.startswith("/opt/x is read-only: the target has")
+    True
+    >>> from .proc import Capabilities, Credentials
+    >>> seat = Credentials(37887, 37887, Capabilities(0, 0, 0))
+    >>> denied = blocker_sentence(
+    ...     OSError(errno.EACCES, "denied"), Path("/opt/x"), credentials=seat
+    ... )
+    >>> "uid 37887" in denied and "CAP_DAC_OVERRIDE" not in denied
     True
     """
     if error.errno == errno.EROFS:
@@ -208,6 +284,27 @@ def blocker_sentence(error: OSError, destination: Path) -> str:
             "eviction rather than as an errno"
         )
     if error.errno in (errno.EACCES, errno.EPERM):
+        if credentials is not None and credentials.uid not in (None, 0):
+            # The degraded rung, where the sentence below is not merely
+            # incomplete but excludes the answer: a seat at the target's own
+            # uid holds no capability at all (`capabilities.add` on a non-root
+            # uid is a silent no-op), so the target's ownership and modes are
+            # the whole of the check. Measured, not reasoned: `mkdir
+            # /proc/13/root/opt/podbench-debugpy` refused for uid 37887 while
+            # `ls /proc/13/root` succeeded, which is what rules the traversal
+            # out - so that check is offered here rather than a mechanism.
+            return (
+                f"permission denied at {destination}: this seat runs as uid "
+                f"{credentials.uid} with CapEff "
+                f"{credentials.capabilities.effective_hex}, so it holds nothing "
+                "that overrides the target's own ownership and modes - they are "
+                "the whole of the check, and the directory this path sits in "
+                "does not grant that uid a write. `ls -ld` on it through "
+                "/proc/<pid>/root names the owner; if `ls /proc/<pid>/root` is "
+                "refused too then it is the traversal and not this directory. "
+                "--provision-dest points the install at a tree the seat can "
+                "write, which on a hotfixed pod is the claim"
+            )
         # Three distinct causes, and CAP_DAC_OVERRIDE covers only the first.
         # Report 3.11 measured the second: at uid 0 with an empty effective set
         # even `ls /proc/<pid>/root` is denied, because the traversal takes
@@ -226,13 +323,20 @@ def blocker_sentence(error: OSError, destination: Path) -> str:
     return f"cannot write {destination}: {error.strerror or error}"
 
 
-def writable_blocker(destination: Path) -> str | None:
+def writable_blocker(
+    destination: Path, *, credentials: Credentials | None = None
+) -> str | None:
     """Why the seat cannot write ``destination``, or ``None`` when it can.
 
-    Probed by writing, because nothing else answers the question: the flag that
-    refuses is in the target's mount namespace and is not readable from here,
-    and ``os.access`` reports on uid and modes, which ``CAP_DAC_OVERRIDE``
-    already makes irrelevant.
+    Probed by writing, because nothing else is right on both rungs: the flag
+    that answers ``EROFS`` is in the target's mount namespace and is not
+    readable from here, and ``os.access`` weighs this process's uid against the
+    target's modes — the whole answer for a degraded seat, and irrelevant for a
+    root one, where ``CAP_DAC_OVERRIDE`` overrides them. A write is what both
+    of those reduce to.
+
+    ``credentials`` only reaches :func:`blocker_sentence`, which needs them to
+    explain a refusal rather than to predict one.
     """
     try:
         destination.mkdir(parents=True, exist_ok=True)
@@ -240,7 +344,7 @@ def writable_blocker(destination: Path) -> str | None:
         probe.write_bytes(b"")
         probe.unlink()
     except OSError as error:
-        return blocker_sentence(error, destination)
+        return blocker_sentence(error, destination, credentials=credentials)
     return None
 
 
@@ -433,7 +537,11 @@ def provision_debugpy(
     """
     run = runner if runner is not None else run_subprocess
     destination = Path(proc) / str(pid) / "root" / dest.lstrip("/")
-    blocker = writable_blocker(destination)
+    # Read here rather than in `writable_blocker`, so the probe stays a probe:
+    # what this container is running as is evidence for the *explanation* of a
+    # refusal, and reading it under the same `proc` root keeps the synthetic
+    # trees the unit suite builds answering for the seat as well as the target.
+    blocker = writable_blocker(destination, credentials=read_credentials(proc=proc))
     if blocker is not None:
         return Provisioned(None, (blocker,))
     argv = provision_command(str(destination), python_version)

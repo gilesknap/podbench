@@ -16,10 +16,14 @@ rootfs under ``tmp_path`` and uv is an injected runner that is never really run.
 from __future__ import annotations
 
 import errno
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 from podbench.kubectl import CommandResult
+from podbench.proc import Capabilities, Credentials
 from podbench.provision import (
     CAVEATS,
     INJECTION_TIMEOUT_SECONDS,
@@ -151,6 +155,72 @@ def test_a_denied_write_names_the_causes_dac_override_does_not_cover() -> None:
     sentence = blocker_sentence(OSError(errno.EACCES, "denied"), Path("/proc/1/root"))
     assert "PTRACE_MODE_READ" in sentence
     assert "AppArmor" in sentence
+
+
+def test_a_denied_write_on_a_seat_that_is_not_root_names_the_ownership() -> None:
+    """The `degraded` rung, where the sentence above excludes the true cause.
+
+    Measured on a beamline pod (2026-08-24): the seat is uid 37887 with `CapEff
+    0000000000000000`, `/opt` in the target is `drwxr-xr-x root root`, and `ls
+    /proc/13/root` *succeeded* - so the traversal and every LSM are ruled out
+    and file modes are the whole of it. A message that sends that reader to
+    SELinux has spent their afternoon.
+    """
+    seat = Credentials(37887, 37887, Capabilities(0, 0, 0))
+    sentence = blocker_sentence(
+        OSError(errno.EACCES, "denied"),
+        Path("/proc/13/root/opt/podbench-debugpy"),
+        credentials=seat,
+    )
+
+    assert "uid 37887" in sentence
+    assert "ownership and modes" in sentence
+    # None of the three the root-seat sentence offers, because none of them is
+    # available to a capability-less uid: they would each be a mechanism to
+    # check instead of the one that refused.
+    assert "CAP_DAC_OVERRIDE" not in sentence
+    assert "SELinux" not in sentence and "AppArmor" not in sentence
+
+
+def test_a_root_seat_is_still_told_its_modes_are_not_the_explanation() -> None:
+    """The other rung, unchanged: at uid 0 `CAP_DAC_OVERRIDE` really does make
+    the target's modes irrelevant, so naming them would be the same mistake in
+    the other direction."""
+    root = Credentials(0, 0, Capabilities(0, 0, 0))
+    sentence = blocker_sentence(
+        OSError(errno.EACCES, "denied"), Path("/proc/1/root"), credentials=root
+    )
+
+    assert "CAP_DAC_OVERRIDE" in sentence
+    assert "PTRACE_MODE_READ" in sentence
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="uid 0 ignores the modes this test refuses with"
+)
+def test_the_refusal_reads_the_seats_own_credentials_from_the_same_proc(
+    tmp_path: Path,
+) -> None:
+    """End to end, because the plumbing is the defect: the sentence was composed
+    without ever asking what this container is running as, and the answer is one
+    `/proc/self/status` away in the seat that is composing it."""
+    (tmp_path / "self").mkdir()
+    (tmp_path / "self" / "status").write_text(
+        "Name:\tpodbench\nUid:\t37887\t37887\t37887\t37887\n"
+        "Gid:\t37887\t37887\t37887\t37887\nCapEff:\t0000000000000000\n"
+    )
+    unwritable = tmp_path / str(PID) / "root" / "opt"
+    unwritable.mkdir(parents=True)
+    unwritable.chmod(0o555)
+    uv = FakeUv()
+    try:
+        result = provision_debugpy(PID, python_version="3.12", proc=tmp_path, runner=uv)
+    finally:
+        unwritable.chmod(0o755)
+
+    assert not result.ok
+    assert uv.argv == [], "the probe refuses before uv is asked to resolve"
+    assert "uid 37887" in " ".join(result.messages)
 
 
 def test_the_probe_writes_rather_than_asking_the_kernel_about_modes(

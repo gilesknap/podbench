@@ -1491,6 +1491,32 @@ def test_provision_installs_into_the_target_and_then_emits_debugpy(
         assert caveat in captured.err
 
 
+def test_a_named_destination_beats_the_seats_default_all_the_way_through(
+    tmp_path: Path,
+) -> None:
+    """`--provision-dest` is what the laptop spells on a hotfixed pod, where the
+    seat's own default is a root-owned `/opt` it cannot write. So it has to win
+    over that default for both things the destination is: where uv installs, and
+    the extra path the injection's PYTHONPATH then names."""
+    proc, root = provision_seat(tmp_path)
+    uv = InstallingUv()
+    dest = "/podbench/app/.podbench-debugpy"
+    code = main(
+        [str(PID), "--print-config", "--provision", "--provision-dest", dest],
+        proc=proc,
+        which=which_of("gdb", "gdb-podbench", "uv"),
+        runner=uv,
+        port_chooser=fixed_port,
+        debugpy_root=root,
+    )
+
+    assert code == 0
+    assert str(proc / str(PID) / "root" / dest.lstrip("/")) in uv.argv
+    assert not any("podbench-debugpy" in arg and "/opt/" in arg for arg in uv.argv)
+    assert uv.injected is not None
+    assert f"PYTHONPATH=/proc/{PID}/root{dest}" in uv.injected
+
+
 def test_provision_leaves_a_server_listening_rather_than_a_command_to_paste(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

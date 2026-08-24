@@ -332,6 +332,22 @@ Baking `debugpy.listen()` into the app is the durable answer, and the only one
 that survives a restart. Provisioning is for the pod that is already
 misbehaving.
 
+On a **hotfixed** pod the default destination is not `/opt/podbench-debugpy`,
+and cannot be. The seat there runs at the target's own uid with no capabilities,
+`/opt` in the target is a root-owned `0755` directory, and the install is
+refused by ordinary file permissions — which costs the whole cascade behind it:
+no importable debugpy, no configurations, no `launch.json`, and no debug adapter
+installed into the seat either. So `podbench vscode` installs into
+`<claim>/.podbench-debugpy` instead, where the claim is mounted, and names it in
+the `editor` block beside the folder it opened. That path is writable by the
+seat, is the same directory in both mount namespaces, and is a volume, so this
+is also the case where the install outlives a restart. There is deliberately no
+fallback in either direction: a destination that changed after a refusal would
+leave you guessing which one is live. A seat in a hotfixed pod that does not
+carry the claim mount keeps `/opt/podbench-debugpy` — the claim is the same
+directory in both mount namespaces only where both containers mount it, and
+podbench decides this on the mount rather than on the assumption.
+
 A **bare** `debug-config` in the seat, with no `--provision`, still only prints
 the injection command rather than running it: that really is authoring a
 `launch.json` and nothing more, and ptracing the workload is not something it
