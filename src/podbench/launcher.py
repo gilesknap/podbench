@@ -6765,12 +6765,13 @@ def _editor_step(note: str) -> None:
     and a wrapped line beginning with one under a bulleted list reads as a new
     item; the indent cannot be forged that way.
 
-    Anything else is the **seat's own stderr**, relayed by
-    :func:`podbench.editor._relay`, and it is printed exactly as it arrived.
-    It used to go through the same wrap, which collapses whitespace and breaks
-    on spaces - and one of those relayed lines is the two-line injection
-    command whose first line ends in a continuation ``\\`` that means nothing
-    once something follows it.
+    Anything else is text ``open_seat`` did not author, and it is printed
+    exactly as it arrived. It sends only steps today - the seat's own narration
+    stopped being relayed with issue #230 - but this branch is what makes that
+    a change of behaviour rather than a change of *layout*: the wrap below
+    collapses whitespace and breaks on spaces, so a relayed line with a
+    trailing continuation ``\\`` or an internal run of two spaces comes back
+    meaning something else.
     """
     if not is_step(note):
         # As a `Text`, so none of the line rules run over it. This is somebody

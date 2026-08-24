@@ -265,12 +265,20 @@ mechanism behind each of them is on this page rather than in the terminal —
 this block used to say all of it inline, and the reliably-skipped part of a
 report is the part written as prose.
 
-Lines with no tick are the **seat's own stderr**, relayed exactly as it
-arrived. `debug-config` is the only thing that can see the target, so its
-account of what is missing *is* the diagnosis, and it is where you learn that
-the debug step will need `--provision`; it also carries the injection command,
-whose first line ends in a `\` that means nothing once anything follows it,
-which is why nothing on this side rewraps or reflows it.
+**The assessment does not narrate here.** The one `debug-config
+--print-config` this verb runs is an internal probe of it: it says which
+extensions the seat needs and what the target's interpreter is, and those are
+the only two things it is asked. Its account of *debuggers* — which mechanism
+refused, which port a server would listen on, the injection command to run by
+hand — stays in the seat, because this run set none of that up. Measured on a
+live Diamond pod on 2026-08-24 it was 15 lines of a 90-line report, and one of
+them read `also emitting for pid 7` after a run that emitted nothing and wrote
+nothing anywhere.
+
+If it could not be read at all, that is one `[warn]` line, quoting
+`debug-config`'s own last word and naming the command to run in the seat to see
+the rest. Run it there and you get all of it, unabridged — it prints, so it
+still writes and probes nothing.
 
 `next` is printed whether or not the editor step succeeded. A run that ends at
 "ssh does not reach the seat" still landed a seat, and `podbench dbg` and

@@ -812,10 +812,13 @@ reads the config dir. Use `attach --print-config` for a stanza to paste. A
 target no debugger fits is not a failure — the excludes, the folder and the
 terminals are the rest of the seat.
 
-`debug-config`'s own stderr is relayed line by line rather than summarised.
-It is the only thing in the run that can see the target, so its narration is
-the diagnosis — it names every mechanism that said no, and it is where you
-learn that the debug step below will need `--provision`.
+`debug-config`'s own narration is **not** relayed into the report. The
+assessment is an internal probe of this verb, asked for two editor facts — the
+extensions and the interpreter — and everything else it says is about a
+debugger this run did not set up. An assessment that could not be read is one
+`[warn]` line naming what was lost and quoting `debug-config`'s own last word;
+the reasoning behind it is still in the seat, one `podbench debug-config
+--print-config` away.
 
 #### The debug step, offered rather than taken
 

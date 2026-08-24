@@ -528,9 +528,8 @@ def test_the_assessment_still_says_which_extensions_the_seat_needs() -> None:
 
 
 def test_a_target_no_debugger_fits_still_gets_the_guard_and_the_folder() -> None:
-    """debug-config already named every mechanism that said no on its stderr.
-    The excludes and the folder are the rest of the seat, and they are the half
-    that keeps it alive."""
+    """The excludes and the folder are the rest of the seat, and they are the
+    half that keeps it alive. A target no debugger fits costs an F5."""
     seat = FakeSeat(
         debug_config_rc=2, debug_config_stderr="no debugger flavour could be emitted"
     )
@@ -538,7 +537,7 @@ def test_a_target_no_debugger_fits_still_gets_the_guard_and_the_folder() -> None
 
     assert MACHINE in seat.files
     assert seat.installed == []
-    assert any("no debug extension to install" in note for note in notes)
+    assert any("no debug extension was installed" in note for note in notes)
 
 
 # -- what the seat said ------------------------------------------------------
@@ -551,8 +550,14 @@ _REFUSAL = (
     "debug-config: no debugger flavour could be emitted for this target - every "
     "mechanism that said no is named above\n"
 )
-"""A live refusal, trimmed. The shape that matters is that the diagnosis is in
-the *middle*: the last line points at the ones above it."""
+"""A live refusal, trimmed. Two shapes matter here: it is *per-candidate prose
+about a debugger*, none of which this verb set up, and its diagnosis is the last
+thing `debug-config` says rather than the last thing on the stream — over a real
+`kubectl exec` there is a `command terminated with exit code 2` after it."""
+
+_LIVE_TRAILER = "command terminated with exit code 2\n"
+"""What kubectl appends to a failed exec's stderr. Measured on live p47,
+2026-08-24, where it was quoted at the user as the reason for the failure."""
 
 _SUCCESS = (
     "debug-config: python target, observe mode, x86_64\n"
@@ -566,39 +571,94 @@ _SUCCESS = (
 point: the prerequisites are met and there is still nothing to connect to."""
 
 
-def test_the_whole_refusal_is_relayed_not_just_its_last_line() -> None:
-    """ "every mechanism that said no is named above" is the last line, so a
-    caller that keeps only the last line points at output it just discarded —
-    which is exactly how a missing launch.json read as a podbench bug."""
+def test_the_assessments_per_candidate_notes_stay_in_the_seat() -> None:
+    """The measured defect: 15 lines of the report's 90 on live p47 were the
+    assessment narrating about a debugger this run deliberately did not set up.
+
+    `--print-config` emitted nothing and wrote nothing anywhere, so "also
+    emitting for pid 7" read as the very thing #230 removed, and an injection
+    command is advice about a debugger nobody asked this verb for.
+    """
     seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
     notes = run_open(seat)
 
-    assert any("debugpy is not importable by the target" in note for note in notes)
+    flowed = " ".join(notes)
+    assert "python target, observe mode" not in flowed
+    assert "install it into the target from this seat" not in flowed
+    assert "--provision" not in flowed
 
 
-def test_the_injection_command_survives_a_successful_run() -> None:
-    """A run that fits a debugger says so, and says what still has to happen
-    before F5 connects. Nothing here writes or provisions, so that narration is
-    the entire reason the reader knows the offered step needs `--provision`."""
+def test_an_assessment_that_could_not_be_read_is_worth_one_line() -> None:
+    """What survives, and why it is not the same thing as relaying.
+
+    The extensions and the interpreter both come off this run, so a reader
+    whose window opens without them is owed the fact - once, with the seat's
+    own diagnosis quoted and the rest of it left where it can still be read.
+    """
+    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL + _LIVE_TRAILER)
+    notes = run_open(seat)
+
+    about = [note for note in notes if "no debug extension was installed" in note]
+    assert len(about) == 1
+    # `debug-config`'s own last word, which on a real exec is not the last line
+    # of the stream: kubectl's trailer is.
+    assert "no debugger flavour could be emitted" in about[0]
+    assert "command terminated" not in about[0]
+    assert "podbench debug-config --print-config" in about[0]
+
+
+def test_a_run_that_fits_a_debugger_says_nothing_about_the_debugger() -> None:
+    """The successful case is the one that reads worst relayed: a port number
+    and a paste-me injection command, from a run that started no server. What
+    the reader gets instead is the extension install, which is the editor fact
+    the assessment was made for."""
     seat = FakeSeat(debug_config_stderr=_SUCCESS)
     notes = run_open(seat)
 
+    flowed = " ".join(notes)
     assert not seat.files.keys() - {MACHINE}
-    assert any("nothing is listening on 127.0.0.1:5678" in note for note in notes)
-    # One note per line: the launcher's report formatter re-wraps on whitespace,
-    # so the continuation backslash only survives at the end of its own note.
-    assert any(note.endswith("\\") for note in notes)
+    assert "127.0.0.1:5678" not in flowed
+    assert "PYTHONPATH" not in flowed
+    assert any(note.startswith(f"{OK} installing ms-python.python") for note in notes)
 
 
 def test_a_seat_that_never_ran_the_verb_still_says_what_happened() -> None:
-    """127 from a `podbench` the image does not resolve carries sh's message and
-    no narration at all, and that message is the whole diagnosis."""
+    """127 from a `podbench` the image does not resolve narrates nothing at all,
+    so there is no diagnosis to quote. The exit code is what is left, and it is
+    said rather than left as an empty quote."""
     seat = FakeSeat(debug_config_rc=127, debug_config_stderr="")
     notes = run_open(seat)
 
-    assert any(
-        "no debug extension to install: it said nothing" in note for note in notes
+    assert any("it exited 127 and said nothing" in note for note in notes)
+
+
+def test_a_seat_whose_shell_answered_is_quoted_rather_than_the_trailer() -> None:
+    """Nothing narrated, but something said: sh's own message is the diagnosis
+    there, and kubectl's trailer sits after it on the same stream."""
+    seat = FakeSeat(
+        debug_config_rc=127,
+        debug_config_stderr=f"sh: 1: podbench: not found\n{_LIVE_TRAILER}",
     )
+    notes = run_open(seat)
+
+    assert any("podbench: not found" in note for note in notes)
+    assert not any("command terminated" in note for note in notes)
+
+
+def test_an_interpreter_survives_an_assessment_that_otherwise_failed() -> None:
+    """A refusal still measures the target's interpreter, and the line must not
+    claim otherwise: the window's "no interpreter found" popup is answered from
+    a run that fitted no debugger at all."""
+    seat = FakeSeat(
+        debug_config_rc=2,
+        debug_config_stderr=(
+            f"debug-config: {INTERPRETER_NOTE}{CLAIM_INTERPRETER}\n{_REFUSAL}"
+        ),
+    )
+    notes = run_open(seat, folder=CLAIM)
+
+    assert json.loads(seat.files[MACHINE])[PYTHON_INTERPRETER_KEY] == CLAIM_INTERPRETER
+    assert not any("no interpreter set" in note for note in notes)
 
 
 # -- nothing in the target ---------------------------------------------------
@@ -621,14 +681,14 @@ def test_nothing_is_provisioned_however_loudly_the_seat_asks() -> None:
         assert not any(PROVISION_FLAG in call for call in seat.calls)
 
 
-def test_the_seats_own_account_of_the_blocker_still_reaches_the_reader() -> None:
-    """Nothing here answers the refusal any more, so relaying it is the whole
-    of what this run can do about it — and it is enough, because the step the
-    report offers carries the flag the seat just named."""
+def test_the_reader_is_sent_to_the_seat_rather_than_read_the_seats_reasoning() -> None:
+    """Nothing here answers the refusal any more, and nothing here recites it:
+    the assessment writes and probes nothing, so the same command run in the
+    seat prints the same reasoning to somebody who asked for it."""
     seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
     notes = run_open(seat)
 
-    assert any("debugpy is not importable by the target" in note for note in notes)
+    assert any("in the seat prints the whole of what it saw" in note for note in notes)
     assert not seat.provisioned
 
 
@@ -1086,30 +1146,26 @@ def test_nothing_here_shells_out_to_a_second_assessment() -> None:
     assert assessments[0][-1] == "--print-config"
 
 
-def test_every_step_carries_a_tick_and_the_seats_own_words_do_not() -> None:
-    """The two shapes `report` emits, and the reason they are laid out apart.
+def test_every_note_is_a_step_of_this_modules_own() -> None:
+    """The report is a checklist, and since #230 it is only that.
 
-    A step is this module's own claim and wraps under its tick. Relayed stderr
-    is somebody else's text: it is printed exactly as it arrived, because one
-    of those lines ends in a continuation `\\` that means nothing once anything
-    follows it, and because a `debug-config:` at the head of one is a label to
-    `console`'s eye and is not one.
+    The seat's narration used to come through here as a second shape, laid out
+    raw because reflowing somebody else's text destroys it - a continuation `\\`
+    that means nothing once anything follows it, a `debug-config:` that is a
+    label to `console`'s eye and is not one. Now nothing but steps is reported,
+    and each is one line, because the reliably-skipped part of a report is the
+    prose in it.
     """
-    seat = FakeSeat(debug_config_rc=2, debug_config_stderr=_REFUSAL)
-    notes = run_open(seat)
+    for stderr in (_REFUSAL, _SUCCESS):
+        seat = FakeSeat(debug_config_rc=2, debug_config_stderr=stderr)
+        notes = run_open(seat)
 
-    ours = [note for note in notes if is_step(note)]
-    relayed = [note for note in notes if not is_step(note)]
-    assert ours and relayed
-    # Verbatim, indent and all: the seat wraps its own narration, and this
-    # line is the continuation of the one above it. Anything on this side that
-    # reflowed or stripped it would run the two together.
-    assert "  `podbench debug-config --provision` runs" in relayed
-    for note in ours:
-        # One line each. The mechanism lives in docs/how-to/vscode-remote-ssh.md,
-        # because the reliably-skipped part of a report is the prose in it.
-        assert "\n" not in note
-        assert len(note.split(". ")) <= 2, note
+        assert notes
+        for note in notes:
+            assert is_step(note), note
+            assert "\n" not in note
+            # The mechanism lives in docs/how-to/vscode-remote-ssh.md, said once.
+            assert len(note.split(". ")) <= 2, note
 
 
 def test_only_one_line_claims_to_have_written_anything() -> None:

@@ -24,12 +24,15 @@ extensions from the configurations ``debug-config`` says *would* fit the target
 — so they are read from the seat's own assessment rather than assessed a second
 time from the laptop, which could not see the target's ``/proc`` anyway.
 
-That last point is also why the seat's ``stderr`` is relayed line by line rather
-than summarised. ``debug-config`` is the only thing here that can see the
-target, so its narration *is* the diagnosis — it ends "every mechanism that said
-no is named above", and a caller that keeps the last line alone points at output
-it has just thrown away. It is also where the reader learns that debugpy will
-need ``--provision`` when they come to run the debug step.
+That assessment is an **internal probe of this verb**, and nothing it narrates
+reaches the report. ``debug-config`` is talking about a debugger, at length: on
+live p47 (2026-08-24) its stderr was 15 lines of the 90 this verb printed — a
+port number, a paste-me injection command, and "also emitting for pid 7", which
+reads as configurations having been emitted by a run that emitted and wrote
+nothing anywhere. Relaying it undid, on the terminal, exactly what issue #230
+took out of the filesystem. What the report keeps is what changes what the
+*editor* does: the extensions, the interpreter, and :data:`_UNASSESSED` when
+neither could be read.
 
 **This module writes nothing at all into the folder** (issue #230). D1b had
 already stopped ``settings.json`` and ``extensions.json``; ``launch.json`` was
@@ -88,8 +91,10 @@ from typing import Any, cast
 from .kubectl import (
     DEFAULT_CALL_TIMEOUT,
     UNBOUNDED,
+    CommandResult,
     Kubectl,
     Runner,
+    command_said,
     run_subprocess,
 )
 from .model import SEAT_HOME_VOLUME, ContainerRef, as_dict
@@ -98,6 +103,7 @@ from .vscode import (
     MACHINE_SETTINGS_PATH,
     PYTHON_INTERPRETER_KEY,
     extensions_for,
+    last_narrated,
     merge_machine_settings,
 )
 
@@ -150,11 +156,18 @@ the mode will meet it.
 def is_step(note: str) -> bool:
     """Whether ``note`` is one of this module's own steps.
 
-    The other thing that comes through ``report`` is the seat's own stderr,
-    relayed verbatim (:func:`_relay`), and the two must not be laid out alike:
-    a step wraps under its tick, and relayed narration must not be touched at
-    all — one of those lines ends in a continuation ``\\`` that means nothing
-    once it is not at the end of a line.
+    Every note :func:`open_seat` reports is one today: the seat's own narration
+    stopped being relayed with issue #230's editor-first turn, and each line
+    below is authored with one of the three ticks above.
+
+    The predicate stays because it is the **caller's** guarantee and not this
+    module's. ``report`` is somebody else's callback
+    (:func:`podbench.launcher._editor_step`), the layout it applies to a step
+    re-wraps on whitespace, and re-wrapping text this module did not author is
+    destructive — a relayed line can end in a continuation ``\\`` that means
+    nothing once it is not at the end of a line, and a two-space run inside it
+    is read as a column. A caller that can tell the shapes apart cannot be
+    broken by a note that is not a step.
     """
     return note.startswith((OK, WARN, FAIL))
 
@@ -957,33 +970,60 @@ def _detail(stderr: str) -> str:
     return lines[-1] if lines else "it said nothing"
 
 
-def _relay(stderr: str, report: Callable[[str], None]) -> bool:
-    """Pass the seat's own narration through, one line per call.
+def _assessment_detail(result: CommandResult) -> str:
+    """Why the assessment did not answer, in the words of whatever refused.
 
-    Per line rather than as one block because ``report`` is a paragraph
-    formatter on the launcher side: it re-wraps on whitespace, so a multi-line
-    note handed over whole comes back with its newlines gone — and one of these
-    notes is the two-line injection command, whose first line ends in a
-    continuation ``\\`` that only means anything at the end of a line.
-
-    Returns whether anything was relayed, which is what tells "the seat
-    explained itself and the answer was no" from "the seat never ran".
+    :func:`podbench.vscode.last_narrated` first, because ``debug-config``'s own
+    diagnosis is regularly not the last line of its stderr: ``kubectl exec``
+    appends :data:`podbench.kubectl.EXEC_TRAILER` after it, and the injection
+    command it prints for a target that *does* fit debugpy is deliberately
+    unprefixed so it can be pasted. Then the command's last line with that
+    trailer dropped — a ``podbench`` the image cannot resolve exits 127 with
+    only ``sh``'s message, and that message is the whole diagnosis. Then the
+    exit code, because this is interpolated into a sentence and an empty quote
+    reads as podbench having lost it.
     """
-    lines = [line.rstrip() for line in stderr.splitlines() if line.strip()]
-    for line in lines:
-        report(line)
-    return bool(lines)
+    narrated = last_narrated(result.stderr)
+    if narrated:
+        return narrated
+    said = command_said(result.stderr) or command_said(result.stdout)
+    return said[-1] if said else f"it exited {result.returncode} and said nothing"
 
 
-_NO_EXTENSION = "no debug extension to install"
-"""What an assessment that came back with nothing costs *this* run.
+_UNASSESSED = (
+    "no debug extension was installed{also}: the seat's assessment did not "
+    "answer, and `{command}` in the seat prints the whole of what it saw - "
+    "{detail}"
+)
+"""The one line an assessment that could not be read is worth, and the only one.
 
-It used to read "no launch.json", which was the truth while this module wrote
-one. It no longer does (issue #230), so the consequence left here is narrower
-and worth saying plainly: the seat gets no debugger extension, because nothing
-named a debugger the target could use. The debug step is still there to be run,
-and the seat's own narration above says what it will need.
+The assessment is an **internal probe** of this verb (see the module docstring),
+so its narration is not the report's: measured on live p47 on 2026-08-24, it was
+15 lines of the report's 90, all of it about a debugger this run deliberately
+did not set up — a port number, a paste-me injection command, and "also emitting
+for pid 7", which reads as the very thing #230 stopped doing. None of it is
+relayed any more.
+
+What survives is what changes *the editor*, which is one line and this one: the
+assessment names the extensions the seat needs and carries the target's
+interpreter, so a run that could not read it installs nothing and may set no
+:data:`podbench.vscode.PYTHON_INTERPRETER_KEY`. The interpreter is named here
+only when it was lost too — a failed run still narrates one for a Python target,
+and :func:`_machine_settings` says so on its own line when it writes it.
+
+The reasons stay where they were measured. ``--print-config`` writes nothing and
+probes nothing, so the reader is pointed at the same run rather than handed a
+summary of output this side has just discarded.
 """
+
+
+def _unassessed(detail: str, interpreter: str | None) -> str:
+    """:data:`_UNASSESSED`, filled in for what this run actually lost."""
+    return _UNASSESSED.format(
+        also="" if interpreter is not None else " and no interpreter set",
+        command=" ".join(DEBUG_CONFIG_ARGV),
+        detail=detail,
+    )
 
 
 @dataclass(frozen=True)
@@ -1012,14 +1052,19 @@ def _author(
     *,
     dest: str | None = None,
 ) -> _Authored:
-    """Ask the seat which debuggers fit, and read everything it said.
+    """Ask the seat which debuggers fit, and keep the two facts an editor needs.
 
     A target no debugger fits is not a failure of the editor: the folder, the
-    excludes and the terminals are the rest of the seat, and every mechanism
-    that said no was named on ``debug-config``'s stderr — which is relayed
-    whether or not a configuration came back with it. That narration is also
-    where a reader learns that the debug step will need ``--provision``, which
-    is the one thing this side of the wire cannot work out for itself.
+    excludes and the terminals are the rest of the seat, and they are the half
+    that keeps it alive. So a refusal costs one line (:data:`_UNASSESSED`) and
+    not a report full of the seat's reasoning about a debugger this run did not
+    set up — the whole of that reasoning is still in the seat, one
+    ``--print-config`` away, and the line says so.
+
+    ``report`` therefore hears from this function at most **once**, whatever the
+    seat wrote. Everything else on that stderr is read structurally rather than
+    printed: :func:`_narrated_interpreter` takes the interpreter out of it, and
+    :func:`_assessment_detail` takes the one sentence a failure is quoted by.
 
     Nothing is provisioned from here, so there is no retry and no second run:
     the assessment happens exactly once, and the extensions installed cannot
@@ -1047,28 +1092,22 @@ def _author(
         check=False,
         timeout=DEFAULT_CALL_TIMEOUT,
     )
-    relayed = _relay(result.stderr, report)
     interpreter = _narrated_interpreter(result.stderr)
-    if result.returncode != 0:
-        # The last line only when there was nothing to relay - a `podbench` the
-        # image does not resolve exits 127 with sh's message and no narration,
-        # and that message is the whole diagnosis.
-        report(
-            f"{WARN} {_NO_EXTENSION}: nothing above could be turned into a "
-            "configuration"
-            if relayed
-            else f"{WARN} {_NO_EXTENSION}: {_detail(result.stderr)}"
-        )
+
+    def unassessed(detail: str) -> _Authored:
+        """One line, and the seat's own account left in the seat."""
+        report(f"{WARN} {_unassessed(detail, interpreter)}")
         return _Authored([], interpreter)
+
+    if result.returncode != 0:
+        return unassessed(_assessment_detail(result))
     document: Any
     try:
         document = json.loads(result.stdout)
     except ValueError as error:
-        report(f"{WARN} {_NO_EXTENSION}: debug-config printed no JSON ({error})")
-        return _Authored([], interpreter)
+        return unassessed(f"it printed no JSON ({error})")
     if not isinstance(document, dict):
-        report(f"{WARN} {_NO_EXTENSION}: debug-config printed no JSON object")
-        return _Authored([], interpreter)
+        return unassessed("it printed no JSON object")
     raw: Any = as_dict(document).get("configurations")
     entries = cast("list[Any]", raw) if isinstance(raw, list) else []
     return _Authored(
