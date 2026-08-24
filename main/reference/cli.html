@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Command-line reference &#8212; podbench 0.9.2.dev10+g4aff5d245 documentation</title>
+    <title>Command-line reference &#8212; podbench 0.9.2.dev33+g97cec977c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4e410589"></script>
+    <script src="../_static/documentation_options.js?v=264b474c"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -509,7 +509,7 @@ in both places, rather than a launcher’s guess and a helper’s separate guess
 ╭─ On your machine ────────────────────────────────────────────────────────────────────────────────╮
 │ doctor         check this machine can attach, and name what stops it                             │
 │ attach         add or reconnect a podbench container and print the report                        │
-│ vscode         land a seat sized and provisioned for an editor, and open it                      │
+│ vscode         land a seat sized for an editor, and open a window on it                          │
 │ ssh-config     regenerate the ssh stanza for an existing session                                 │
 │ status         the podbench containers in one pod and what each supports                         │
 │ list           every pod in the namespace carrying a podbench container                          │
@@ -910,6 +910,14 @@ what that seat can actually do.</p>
 │ --host-alias                NAME             ssh Host name for the seat                          │
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
+│ --forward-agent                              let git in the seat use your ssh keys:              │
+│                                              `ForwardAgent yes` in the stanza, and the seat&#39;s    │
+│                                              known_hosts seeded from your own for whatever forge │
+│                                              its git remotes name. Off by default, because       │
+│                                              `authorized_keys` gates ssh and does not gate       │
+│                                              `kubectl exec` - anyone with pods/exec in the       │
+│                                              namespace can authenticate as you for the life of   │
+│                                              the session                                         │
 │ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
 │                                              that wait and nothing else: one kubectl call is     │
 │                                              bounded separately, at 30s                          │
@@ -1049,6 +1057,33 @@ preparation failed. Where a seat <em>does</em> carry the identity, the same line
 credits it.</p></li>
 </ul>
 </li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--forward-agent</span></code> is what makes git in the seat work</strong>, and it is two
+changes rather than one: <code class="docutils literal notranslate"><span class="pre">ForwardAgent</span> <span class="pre">yes</span></code> in the stanza, and the seat’s
+<code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> seeded with the entries your own file already holds for the ssh
+hosts its git remotes name. The measured first failure in a seat is <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">key</span> <span class="pre">verification</span> <span class="pre">failed</span></code>, not an authentication error, so either half alone
+leaves <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span></code> exactly as broken. Nothing is invented: a host you have
+never verified is reported as such, entries are rewritten to name one host
+each, and <code class="docutils literal notranslate"><span class="pre">&#64;revoked</span></code>/<code class="docutils literal notranslate"><span class="pre">&#64;cert-authority</span></code> lines are never copied. An https clone
+of a public repository needs none of it. The scan is over every directory the
+seat mounts plus its home, so a checkout on a hotfix claim is found on the
+verbs that never looked at the hotfix layout.</p>
+<ul>
+<li><p><strong>An ssh master that is already open swallows the flag</strong>, because
+<code class="docutils literal notranslate"><span class="pre">ControlPersist</span></code> is in every stanza podbench writes and a new connection
+inherits the settings the master was opened with. podbench asks <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-O</span> <span class="pre">check</span></code> and, where a master is running, asks it what <code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK</span></code> a
+session gets; one with no agent earns a warning and the <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-O</span> <span class="pre">exit</span></code>
+that fixes it. It is not closed for you — a VS Code window is usually on
+the other end.</p></li>
+<li><p>It is a flag and not a default because the exposure is real:
+<code class="docutils literal notranslate"><span class="pre">authorized_keys</span></code> gates ssh and does <strong>not</strong> gate <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>, so anyone
+with <code class="docutils literal notranslate"><span class="pre">pods/exec</span></code> in the namespace can authenticate as you, to any host that
+trusts the forwarded keys, until the session ends. One line on the report
+says so; the mechanism, the <code class="docutils literal notranslate"><span class="pre">ssh-add</span> <span class="pre">-c</span></code> and destination-constrained-key
+mitigations, and the caution that facility RBAC groups often include
+service accounts and CI identities are in
+<a class="reference internal" href="../how-to/vscode-remote-ssh.html"><span class="std std-doc">VS Code Remote-SSH</span></a>.</p></li>
+</ul>
+</li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--resize</span></code> and <code class="docutils literal notranslate"><span class="pre">--resize-cpu</span></code> are opt-in and only partly proven, and need
 <code class="docutils literal notranslate"><span class="pre">get</span></code> and <code class="docutils literal notranslate"><span class="pre">patch</span></code> on <code class="docutils literal notranslate"><span class="pre">pods/resize</span></code>. An attach that used neither prints one
 line offering them; one that used either prints what it cost — including that
@@ -1086,15 +1121,21 @@ real error.</p></li>
 </section>
 <section id="vscode">
 <h3><code class="docutils literal notranslate"><span class="pre">vscode</span></code><a class="headerlink" href="#vscode" title="Link to this heading">#</a></h3>
-<p>Land a seat, size the pod for an editor, make the target debuggable, and open
-VS Code on it over Remote-SSH. Everything <code class="docutils literal notranslate"><span class="pre">attach</span></code> does, plus the three things a
-VS Code session needs that a bare seat does not — which is why it is a verb and
-not a flag: <code class="docutils literal notranslate"><span class="pre">attach</span></code> adds a container to the pod and touches the workload not at
-all, and two of these steps change it.</p>
+<p>Land a seat, size the pod for an editor, and open VS Code on it over Remote-SSH.
+Everything <code class="docutils literal notranslate"><span class="pre">attach</span></code> does, plus the things a VS Code session needs that a bare
+seat does not — which is why it is a verb and not a flag: <code class="docutils literal notranslate"><span class="pre">attach</span></code> adds a
+container to the pod and touches the workload not at all, and the resize does.</p>
+<p>Since #230 it <strong>writes no project or claim file and installs nothing into the
+target</strong>. The one file it writes is the seat’s own machine settings,
+<code class="docutils literal notranslate"><span class="pre">~/.vscode-server/data/Machine/settings.json</span></code> — which on an ordinary pod is
+<em>below</em> the folder it opens, because that folder is the seat’s home; the
+checkout, the claim and anything under them are untouched. Debugging is a step
+you run, and the run offers it: see <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> below, and the offer line
+under <code class="docutils literal notranslate"><span class="pre">next</span></code>.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>                                                                                                    
  Usage: podbench vscode [OPTIONS] [POD]                                                             
                                                                                                     
- land a seat sized and provisioned for an editor, and open it                                       
+ land a seat sized for an editor, and open a window on it                                           
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   POD      &lt;str&gt;  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
@@ -1171,19 +1212,26 @@ all, and two of these steps change it.</p>
 │                                              this verb makes that `--resize MEMORY` would        │
 │                                              otherwise have to be typed with a number. A pod     │
 │                                              that already has the room is left alone either way  │
-│ --no-provision                               author whatever fits the target as it stands.       │
-│                                              Without it, a Python workload that cannot import    │
-│                                              debugpy has it installed and its server started,    │
-│                                              because that target gets no launch.json at all      │
-│                                              otherwise. Mutates the workload: ~15 MB of shared   │
-│                                              ephemeral storage, needs egress from the pod,       │
-│                                              ptraces the app for a few seconds, and no restart   │
-│                                              survives it                                         │
 │ --identity                  KEY              ssh key to authorise in the seat and name in the    │
 │                                              generated stanza                                    │
 │                                              [default: ~/.ssh/id_ed25519]                        │
 │ --ssh-user                  NAME             login name to put in the stanza                     │
 │ --host-alias                NAME             ssh Host name for the seat                          │
+│ --forward-agent                              let git in the seat use your ssh keys:              │
+│                                              `ForwardAgent yes` in the stanza, and the seat&#39;s    │
+│                                              known_hosts seeded from your own for whatever forge │
+│                                              its git remotes name. Off by default, because       │
+│                                              `authorized_keys` gates ssh and does not gate       │
+│                                              `kubectl exec` - anyone with pods/exec in the       │
+│                                              namespace can authenticate as you for the life of   │
+│                                              the session                                         │
+│ --agent-socket              SOCKET           forward this agent rather than the one your shell   │
+│                                              has, and turn `--forward-agent` on. `ssh-agent -a   │
+│                                              SOCKET` then `SSH_AUTH_SOCK=SOCKET ssh-add          │
+│                                              ~/.ssh/id_git` keeps a git-only agent, so only that │
+│                                              key reaches the pod. It is set for the `code` this  │
+│                                              run launches, so a VS Code already running has the  │
+│                                              environment it was started with instead             │
 │ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
 │                                              that wait and nothing else: one kubectl call is     │
 │                                              bounded separately, at 30s                          │
@@ -1203,6 +1251,15 @@ all, and two of these steps change it.</p>
 <p><code class="docutils literal notranslate"><span class="pre">POD</span></code> and every option <code class="docutils literal notranslate"><span class="pre">attach</span></code> takes mean the same thing here; only the two
 below are its own. (<code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--print-config</span></code> is the one option <code class="docutils literal notranslate"><span class="pre">vscode</span></code> does
 <em>not</em> take — see below.)</p>
+<p><code class="docutils literal notranslate"><span class="pre">--agent-socket</span></code> is this verb’s alone, and it is the reason the flag is worth
+having here: podbench launches <code class="docutils literal notranslate"><span class="pre">code</span></code>, so it can set <code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK</span></code> for that
+child. Point it at an agent holding only your git key
+(<code class="docutils literal notranslate"><span class="pre">ssh-agent</span> <span class="pre">-a</span> <span class="pre">SOCKET;</span> <span class="pre">SSH_AUTH_SOCK=SOCKET</span> <span class="pre">ssh-add</span> <span class="pre">~/.ssh/id_git</span></code>) and only
+that key ever reaches the pod. It implies <code class="docutils literal notranslate"><span class="pre">--forward-agent</span></code>, refuses a path
+that is not a listening socket, and applies to every child of the run — <code class="docutils literal notranslate"><span class="pre">code</span></code>,
+the preflight, and the ssh calls that write the machine settings. A VS Code
+that is <strong>already running</strong> spawns ssh with the environment it was started
+with, so close the window first or export <code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK</span></code> before launching it.</p>
 <section id="sizing-the-pod">
 <h4>Sizing the pod<a class="headerlink" href="#sizing-the-pod" title="Link to this heading">#</a></h4>
 <p>vscode-server measured <strong>1215 MiB</strong> live with a single extension, which does not
@@ -1286,10 +1343,11 @@ in the seat and in the application. On any other pod the target’s
 interpreter is in another mount namespace and the seat’s file at that path
 is a different one, so no key is written and the extension’s own picker
 decides. It is <code class="docutils literal notranslate"><span class="pre">machine-overridable</span></code>, so a value you set wins;</p></li>
-<li><p>runs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--print-config</span></code> in the seat and merges the result
-into <code class="docutils literal notranslate"><span class="pre">&lt;home&gt;/.vscode/launch.json</span></code>, matching on configuration name, so a
-second run updates its own entries rather than appending copies;</p></li>
-<li><p>installs <strong>only</strong> the extensions the emitted configurations name, with
+<li><p>runs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--print-config</span></code> in the seat and <strong>writes nothing
+with the answer</strong>. <code class="docutils literal notranslate"><span class="pre">--print-config</span></code> neither writes a file nor probes the
+target, so this is a measurement and not a mutation; what it is for is the
+two lines below;</p></li>
+<li><p>installs <strong>only</strong> the extensions the assessed configurations name, with
 <code class="docutils literal notranslate"><span class="pre">code</span> <span class="pre">--remote</span> <span class="pre">ssh-remote+&lt;alias&gt;</span> <span class="pre">--install-extension</span></code> — which is the
 “Install in SSH: <code class="docutils literal notranslate"><span class="pre">&lt;alias&gt;</span></code>” button as a flag. A locally installed extension
 runs the debug adapter on your laptop, where no <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> path
@@ -1315,57 +1373,54 @@ while <code class="docutils literal notranslate"><span class="pre">code</span> <
 reads the config dir. Use <code class="docutils literal notranslate"><span class="pre">attach</span> <span class="pre">--print-config</span></code> for a stanza to paste. A
 target no debugger fits is not a failure — the excludes, the folder and the
 terminals are the rest of the seat.</p>
-<p><code class="docutils literal notranslate"><span class="pre">debug-config</span></code>’s own stderr is relayed line by line rather than summarised.
-It is the only thing in the run that can see the target, so its narration is
-the diagnosis — it names every mechanism that said no, and on success it also
-carries the injection command, which the emitted debugpy configuration needs
-and cannot state: the entry is written once the <em>prerequisites</em> are met, and
-nothing is listening until that command is run.</p>
+<p><code class="docutils literal notranslate"><span class="pre">debug-config</span></code>’s own narration is <strong>not</strong> relayed into the report. The
+assessment is an internal probe of this verb, asked for two editor facts — the
+extensions and the interpreter — and everything else it says is about a
+debugger this run did not set up. An assessment that could not be read is one
+<code class="docutils literal notranslate"><span class="pre">[warn]</span></code> line naming what was lost and quoting <code class="docutils literal notranslate"><span class="pre">debug-config</span></code>’s own last word;
+the reasoning behind it is still in the seat, one <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--print-config</span></code> away.</p>
 </section>
-<section id="provisioning">
-<h4>Provisioning<a class="headerlink" href="#provisioning" title="Link to this heading">#</a></h4>
-<p>Provisioning means <em>make this target debuggable</em>, and it is what the verb does
-unless <code class="docutils literal notranslate"><span class="pre">--no-provision</span></code> says otherwise. It is the answer to the commonest
-empty-handed case: a Python target whose image has no debugpy. The injection
-bootstrap runs inside the target’s interpreter, so debugpy has to be importable
-<em>there</em>; without it no configuration can be emitted and the verb writes no
-<code class="docutils literal notranslate"><span class="pre">launch.json</span></code> at all.</p>
-<p>It does both halves. The seat installs debugpy into the target with <code class="docutils literal notranslate"><span class="pre">uv</span></code>,
-resolved for the <em>target’s</em> Python version rather than the seat’s, and then
-starts the debugpy server inside the app — so the emitted configuration has
-something to connect to and F5 works when the command finishes. The two are
-one step because issue #45 ordered these mutations and put <em>installing</em> above
-<em>injecting</em>: a run already allowed the larger one has been allowed the
-smaller, and asking twice left the configuration emitted, the port closed and
-the first F5 at <code class="docutils literal notranslate"><span class="pre">ECONNREFUSED</span></code>.</p>
-<p>It is a mutation and is reported as one. It writes ~15 MB into the workload’s
-writable layer, on an ephemeral-storage budget the seat shares with the workload and
-<strong>cannot reserve</strong> — an ephemeral container may not declare <code class="docutils literal notranslate"><span class="pre">resources</span></code>
-(report 3.9); it needs egress from the pod, since uv resolves and downloads
-from an index; starting the server ptraces the app, so it stops answering
-probes for the few seconds that takes (~3 s measured, against the deadlines
-the report above prints); and a restart of the target container ends the
-debugging. The two halves do not expire together: the <strong>server</strong> never
-survives a restart, being a live process in the container that died, while the
-<strong>install</strong> survives one where <code class="docutils literal notranslate"><span class="pre">--provision-dest</span></code> names a volume mounted into
-the target — an <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> is pod-scoped and outlives a container, and so does a
-hotfixed pod’s claim, which is where this verb installs on one — and not at the
-default <code class="docutils literal notranslate"><span class="pre">/opt/podbench-debugpy</span></code>, which is the container’s own writable
-layer. Either way the next step is another <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code>, since without the
-server nothing is listening. Installing debugpy into the app image, or baking
-<code class="docutils literal notranslate"><span class="pre">debugpy.listen()</span></code> into the app, is the durable answer.</p>
-<p>A <strong>bare</strong> <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> still only prints the injection command. That is
-<code class="docutils literal notranslate"><span class="pre">injection_command</span></code>’s rule unchanged — authoring a <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> may not
-ptrace the workload on its own — and <code class="docutils literal notranslate"><span class="pre">--provision</span></code> is what revokes it.</p>
-<p>It happens only where the seat says it is the blocker. <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> names
-<code class="docutils literal notranslate"><span class="pre">--provision</span></code> in its own refusal when debugpy is what is missing and for no
-other flavour — there is no <code class="docutils literal notranslate"><span class="pre">--provision</span></code> for a missing delve — so the retry is
-keyed on the seat’s own words rather than on this side guessing the target’s
-language a second time. A target that already has a debugger is not touched,
-and <code class="docutils literal notranslate"><span class="pre">--no-provision</span></code> gets the offer instead of the act. Where the target’s
-rootfs is read-only the write fails with <code class="docutils literal notranslate"><span class="pre">EROFS</span></code> — the mount flag lives in the target’s
-mount namespace — and the seat’s own <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--provision-dest</span></code>
-is what points it at a writable volume instead.</p>
+<section id="the-debug-step-offered-rather-than-taken">
+<h4>The debug step, offered rather than taken<a class="headerlink" href="#the-debug-step-offered-rather-than-taken" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">next</span></code> ends with an offer, and it is the only place this run names a debugger:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  <span class="n">to</span> <span class="n">debug</span><span class="p">,</span> <span class="ow">in</span> <span class="n">the</span> <span class="n">seat</span><span class="p">:</span>  <span class="n">podbench</span> <span class="n">debug</span><span class="o">-</span><span class="n">config</span> <span class="o">--</span><span class="n">provision</span>
+</pre></div>
+</div>
+<p>Run it in the window’s own terminal. <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> writes <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code>
+into the directory it is run from, which is the folder VS Code just opened.</p>
+<p>Three reasons it is a step and not something this verb does for you:</p>
+<ul class="simple">
+<li><p><strong>a restart changes the pid</strong>, and every configuration podbench can author is
+pid-named and pid-keyed. Measured across restarts on the p47 replica, the same
+process was pid 12, then 2446, then 13 — so anything written at window-open is
+stale as soon as the inner loop turns once;</p></li>
+<li><p><strong>the folder is often a committed checkout</strong> on a shared volume, where a
+written file is a permanent line in somebody’s <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">status</span></code>;</p></li>
+<li><p><strong>provisioning is a mutation on somebody else’s container</strong> — ~15 MB in the
+workload’s writable layer, egress from the pod, and a ptrace that stops the
+app answering its probes for a few seconds. Editing needs none of it, and most
+runs never debug.</p></li>
+</ul>
+<p>The offer is composed for <em>this</em> pod, because two of its parts are facts only
+the launcher holds:</p>
+<ul class="simple">
+<li><p>on a <strong>hotfixed</strong> pod it carries <code class="docutils literal notranslate"><span class="pre">--provision-dest</span> <span class="pre">&lt;claim&gt;/.podbench-debugpy</span></code>.
+The seat there runs at the target’s own uid with no capabilities and <code class="docutils literal notranslate"><span class="pre">/opt</span></code> in
+the target is root-owned <code class="docutils literal notranslate"><span class="pre">0755</span></code>, so the seat’s own default is refused by
+ordinary file permissions — and the whole cascade behind it (no importable
+debugpy, no configuration, no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code>, no adapter) follows from that one
+<code class="docutils literal notranslate"><span class="pre">EACCES</span></code>. The claim is writable, is the same directory in both mount
+namespaces, and is a volume, so the install outlives a restart there;</p></li>
+<li><p>on a <strong>dev pod</strong> it drops <code class="docutils literal notranslate"><span class="pre">--provision</span></code> altogether, and the run says why:
+Iterate mode launches the application from the seat, so there is no live
+target to inject into and the launch configuration needs none.</p></li>
+</ul>
+<p>A later <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> passes that same destination to its assessment run, as
+an extra path <code class="docutils literal notranslate"><span class="pre">debug-config</span></code> searches for the target’s own debugpy — so a window
+opened after the step knows this is a Python seat.</p>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span></code> prints the same offer, without <code class="docutils literal notranslate"><span class="pre">--provision</span></code> and without a
+destination: it touches the workload not at all, and neither flag is one of
+its own.</p>
 <p>Each extension unpacks into the seat’s <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>, which in Observe
 mode is on the <strong>workload’s</strong> ephemeral-storage budget: a server plus one
 extension measured 1215 MiB live, and <code class="docutils literal notranslate"><span class="pre">ms-vscode.cpptools</span></code> alone is 330 MiB.
@@ -1391,24 +1446,31 @@ the pod.</p>
 │                   on a single pod lists the namespace and asks                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --identity              KEY        ssh key to authorise in the seat and name in the generated    │
-│                                    stanza                                                        │
-│                                    [default: ~/.ssh/id_ed25519]                                  │
-│ --ssh-user              NAME       login name to put in the stanza                               │
-│ --host-alias            NAME       ssh Host name for the seat                                    │
-│ --print-config                     print the ssh stanza instead of writing it to the config dir  │
-│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
-│                                    with the candidates instead. Already implied when stdin is    │
-│                                    not a tty                                                     │
-│ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)             │
-│ --context               NAME       kubeconfig context                                            │
-│ --kubectl               BIN        kubectl binary to use [default: kubectl]                      │
-│ --config-dir            DIR        where the generated ssh config and known_hosts live (default  │
-│                                    ~/.podbench)                                                  │
-│ --help                             Show this message and exit.                                   │
+│ --identity               KEY        ssh key to authorise in the seat and name in the generated   │
+│                                     stanza                                                       │
+│                                     [default: ~/.ssh/id_ed25519]                                 │
+│ --ssh-user               NAME       login name to put in the stanza                              │
+│ --host-alias             NAME       ssh Host name for the seat                                   │
+│ --print-config                      print the ssh stanza instead of writing it to the config dir │
+│ --forward-agent                     let git in the seat use your ssh keys: `ForwardAgent yes` in │
+│                                     the stanza, and the seat&#39;s known_hosts seeded from your own  │
+│                                     for whatever forge its git remotes name. Off by default,     │
+│                                     because `authorized_keys` gates ssh and does not gate        │
+│                                     `kubectl exec` - anyone with pods/exec in the namespace can  │
+│                                     authenticate as you for the life of the session              │
+│ --no-prompt                         never ask which pod: an ambiguous or missing POD is refused  │
+│                                     with the candidates instead. Already implied when stdin is   │
+│                                     not a tty                                                    │
+│ --namespace      -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)            │
+│ --context                NAME       kubeconfig context                                           │
+│ --kubectl                BIN        kubectl binary to use [default: kubectl]                     │
+│ --config-dir             DIR        where the generated ssh config and known_hosts live (default │
+│                                     ~/.podbench)                                                 │
+│ --help                              Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">--forward-agent</span></code> means here exactly what it means on <code class="docutils literal notranslate"><span class="pre">attach</span></code>, and it is the way to add agent forwarding and the forge’s host keys to a seat that is already running: the stanza is regenerated and the seat’s <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> is seeded on the spot. This is also the verb most likely to meet an ssh master that is already open, which would inherit its own settings and not the new stanza’s; podbench says so and names the <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-O</span> <span class="pre">exit</span></code> that clears it.</p>
 <p>Fails if there is no running podbench container in the pod.</p>
 </section>
 <section id="status">
@@ -1486,35 +1548,40 @@ verb that writes the missing half. Neither verb writes anything.</p>
 │                   dev pods                                                                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)             │
-│ --context               NAME       kubeconfig context                                            │
-│ --container             NAME       container to take over                                        │
-│ --name                  NAME       dev pod name (default: POD-podbench)                          │
-│ --image                 REF        podbench image (default: the image built from this launcher&#39;s │
-│                                    version)                                                      │
-│ --port                  PORT       the port your app serves                                      │
-│ --take-traffic                     copy the origin&#39;s labels so the dev pod shares Service        │
-│                                    traffic with it. Off by default: joining a production Service │
-│                                    silently is a foot-cannon                                     │
-│ --cutover               SERVICE    point SERVICE exclusively at the dev pod, recording its       │
-│                                    selector for an exact restore at teardown                     │
-│ --identity              KEY        ssh key to authorise in the sidecar and name in the generated │
-│                                    stanza                                                        │
-│                                    [default: ~/.ssh/id_ed25519]                                  │
-│ --config-dir            DIR        where the generated ssh config and known_hosts live (default  │
-│                                    ~/.podbench)                                                  │
-│ --host-alias            NAME       ssh Host name for the sidecar                                 │
-│ --delete                           tear the dev pod down                                         │
-│ --timeout               SECONDS    seconds to wait for the dev pod to reach Running. It bounds   │
-│                                    that wait and nothing else: it is `kubectl wait`&#39;s own        │
-│                                    deadline, backed by a kill 15s later, and every other kubectl │
-│                                    call is bounded separately, at 30s                            │
-│                                    [default: 120.0]                                              │
-│ --dry-run                          print the authored pod instead of creating it                 │
-│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
-│                                    with the candidates instead. Already implied when stdin is    │
-│                                    not a tty                                                     │
-│ --help                             Show this message and exit.                                   │
+│ --namespace      -n      NAMESPACE  namespace (default: the kubeconfig context&#39;s own)            │
+│ --context                NAME       kubeconfig context                                           │
+│ --container              NAME       container to take over                                       │
+│ --name                   NAME       dev pod name (default: POD-podbench)                         │
+│ --image                  REF        podbench image (default: the image built from this           │
+│                                     launcher&#39;s version)                                          │
+│ --port                   PORT       the port your app serves                                     │
+│ --take-traffic                      copy the origin&#39;s labels so the dev pod shares Service       │
+│                                     traffic with it. Off by default: joining a production        │
+│                                     Service silently is a foot-cannon                            │
+│ --cutover                SERVICE    point SERVICE exclusively at the dev pod, recording its      │
+│                                     selector for an exact restore at teardown                    │
+│ --identity               KEY        ssh key to authorise in the sidecar and name in the          │
+│                                     generated stanza                                             │
+│                                     [default: ~/.ssh/id_ed25519]                                 │
+│ --config-dir             DIR        where the generated ssh config and known_hosts live (default │
+│                                     ~/.podbench)                                                 │
+│ --host-alias             NAME       ssh Host name for the sidecar                                │
+│ --forward-agent                     let git in the sidecar use your ssh keys: `ForwardAgent yes` │
+│                                     in the stanza, and its known_hosts seeded from your own for  │
+│                                     whatever forge the workspace&#39;s git remotes name. Off by      │
+│                                     default, because `authorized_keys` gates ssh and does not    │
+│                                     gate `kubectl exec`                                          │
+│ --delete                            tear the dev pod down                                        │
+│ --timeout                SECONDS    seconds to wait for the dev pod to reach Running. It bounds  │
+│                                     that wait and nothing else: it is `kubectl wait`&#39;s own       │
+│                                     deadline, backed by a kill 15s later, and every other        │
+│                                     kubectl call is bounded separately, at 30s                   │
+│                                     [default: 120.0]                                             │
+│ --dry-run                           print the authored pod instead of creating it                │
+│ --no-prompt                         never ask which pod: an ambiguous or missing POD is refused  │
+│                                     with the candidates instead. Already implied when stdin is   │
+│                                     not a tty                                                    │
+│ --help                              Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 </pre></div>
 </div>
@@ -1564,15 +1631,16 @@ actually create.</p></li>
 <section id="hotfix">
 <h3><code class="docutils literal notranslate"><span class="pre">hotfix</span></code><a class="headerlink" href="#hotfix" title="Link to this heading">#</a></h3>
 <p>Durable in-place fixes: the project on a ReadWriteOnce claim beside the
-application, every change a git commit, and a <code class="docutils literal notranslate"><span class="pre">status</span></code> that will not let a
+application, ordinary git in the seat, and a <code class="docutils literal notranslate"><span class="pre">status</span></code> that will not let a
 hotfixed pod go unnoticed.</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
 <p>Hotfix mode met a cluster on 2026-08-22: an edit reached a live IOC’s running
 code with <code class="docutils literal notranslate"><span class="pre">restartCount</span></code> unchanged and both seats alive. Two things about it are
 still undemonstrated — survival across pod replacement, which needs a real claim
-rather than the generic ephemeral volume that run used, and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, which
-no cluster has run. <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">values</span> <span class="pre">--from-pod</span></code> was measured against the live
+rather than the generic ephemeral volume that run used, and <code class="docutils literal notranslate"><span class="pre">status</span></code>’s laptop-side
+<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">ls-remote</span></code>, which no cluster has driven. <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">values</span> <span class="pre">--from-pod</span></code> was
+measured against the live
 <code class="docutils literal notranslate"><span class="pre">bl47p-ea-fastcs-01</span></code> and <code class="docutils literal notranslate"><span class="pre">bl47p-mo-ioc-01</span></code> targets, and is where the volume and
 probe warnings below came from.</p>
 </div>
@@ -1588,20 +1656,19 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
  Usage: podbench hotfix [OPTIONS] COMMAND [ARGS]...
 
- Durable in-place fixes: the project on a claim beside the application, every change a commit, and
- a status command that will not let a hotfixed pod go unnoticed.
+ Durable in-place fixes: the project on a claim beside the application, ordinary git in the seat,
+ and a status command that will not let a hotfixed pod go unnoticed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
-│ values       emit the helm values an application&#39;s chart needs                                   │
-│ check        say what would stop a hotfix on this target, before starting one                    │
-│ init         seed the claim from the running container, clone the source, rebuild the venv       │
-│ apply        commit the change on the claim and relaunch the running child                       │
-│ status       every hotfixed pod in the namespace, and its drift                                  │
-│ consolidate  push the claim&#39;s checkout as a branch for the rebuild                               │
-│ retire       what is left of retiring this hotfix, and the one step podbench can take            │
+│ values   emit the helm values an application&#39;s chart needs                                       │
+│ check    say what would stop a hotfix on this target, before starting one                        │
+│ init     seed the claim from the running container, clone the source, rebuild the venv           │
+│ restart  relaunch the application on the claim, committing nothing                               │
+│ status   every hotfixed pod in the namespace, measured                                           │
+│ retire   what is left of retiring this hotfix, and the one step podbench can take                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 </pre></div>
 </div>
@@ -1621,26 +1688,24 @@ seat, where the claim is already in this process’s own mount namespace.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">init</span> <span class="pre">TARGET</span></code></p></td>
 <td><p>seed the claim from the running application container, clone the source onto it, rebuild the venv, record the base commit</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">apply</span> <span class="pre">-m</span> <span class="pre">MSG</span> <span class="pre">TARGET</span></code></p></td>
-<td><p>commit the checkout, reinstall if packaging metadata changed, write the manifest to the claim, and relaunch the application’s own child so the fix is what runs</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">restart</span> <span class="pre">TARGET</span></code></p></td>
+<td><p>relaunch the application’s own child on whatever is on the claim — no message, no commit, no manifest write — and say whether the code now running is committed; <code class="docutils literal notranslate"><span class="pre">--reinstall</span></code> rebuilds the venv first</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">status</span></code></p></td>
-<td><p>every hotfixed pod in the namespace — or, with <code class="docutils literal notranslate"><span class="pre">-A</span></code>, the cluster — its drift, and what is wrong with it</p></td>
+<td><p>every hotfixed pod in the namespace — or, with <code class="docutils literal notranslate"><span class="pre">-A</span></code>, the cluster — measured: how far ahead the claim is, what is uncommitted, whether anything upstream has it, and whether the image moved</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">consolidate</span> <span class="pre">--branch</span> <span class="pre">B</span> <span class="pre">TARGET</span></code></p></td>
-<td><p>push the checkout as a branch and print the retirement checklist</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">retire</span> <span class="pre">TARGET</span></code></p></td>
-<td><p>which steps of that checklist have landed, measured against the cluster, and <code class="docutils literal notranslate"><span class="pre">--delete-claim</span></code> to take the last one</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">retire</span> <span class="pre">TARGET</span></code></p></td>
+<td><p>which steps of retirement have landed, measured against the cluster, and <code class="docutils literal notranslate"><span class="pre">--delete-claim</span></code> to take the last one</p></td>
 </tr>
 </tbody>
 </table>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">TARGET</span></code> is <code class="docutils literal notranslate"><span class="pre">pod/NAME</span></code>, <code class="docutils literal notranslate"><span class="pre">deployment/NAME</span></code> or <code class="docutils literal notranslate"><span class="pre">statefulset/NAME</span></code>. Shared flags
-across <code class="docutils literal notranslate"><span class="pre">init</span></code>, <code class="docutils literal notranslate"><span class="pre">apply</span></code> and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code>: <code class="docutils literal notranslate"><span class="pre">--container</span></code>, <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, <code class="docutils literal notranslate"><span class="pre">--local</span></code>,
-<code class="docutils literal notranslate"><span class="pre">--author</span></code>, and <code class="docutils literal notranslate"><span class="pre">--venv</span></code> — which is the mountPath the claim is mounted at,
-beside the application’s own project and never over it, and which is <strong>read off
-the pod</strong> rather than asked for. <code class="docutils literal notranslate"><span class="pre">check</span></code> takes <code class="docutils literal notranslate"><span class="pre">--container</span></code> and <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, and
+across <code class="docutils literal notranslate"><span class="pre">init</span></code> and <code class="docutils literal notranslate"><span class="pre">restart</span></code>: <code class="docutils literal notranslate"><span class="pre">--container</span></code>, <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, <code class="docutils literal notranslate"><span class="pre">--local</span></code>, and <code class="docutils literal notranslate"><span class="pre">--venv</span></code> —
+which is the mountPath the claim is mounted at, beside the application’s own
+project and never over it, and which is <strong>read off the pod</strong> rather than asked
+for. No verb takes <code class="docutils literal notranslate"><span class="pre">--author</span></code> or <code class="docutils literal notranslate"><span class="pre">-m</span></code>: podbench writes no commits, so there is
+nothing to name. <code class="docutils literal notranslate"><span class="pre">check</span></code> takes <code class="docutils literal notranslate"><span class="pre">--container</span></code> and <code class="docutils literal notranslate"><span class="pre">--seat</span></code>, and
 <code class="docutils literal notranslate"><span class="pre">retire</span></code> takes <code class="docutils literal notranslate"><span class="pre">--container</span></code>. <code class="docutils literal notranslate"><span class="pre">values</span></code> runs before any of that exists, so it
 takes a <code class="docutils literal notranslate"><span class="pre">--from-pod</span> <span class="pre">POD</span></code> rather than a <code class="docutils literal notranslate"><span class="pre">TARGET</span></code> and has its own flags, listed
 below.</p>
@@ -1686,8 +1751,9 @@ builds, so <code class="docutils literal notranslate"><span class="pre">hotfix</
 have to agree. <code class="docutils literal notranslate"><span class="pre">init</span></code> sets <code class="docutils literal notranslate"><span class="pre">UV_PROJECT_ENVIRONMENT</span></code> whenever it is not uv’s own
 <code class="docutils literal notranslate"><span class="pre">.venv</span></code>, because otherwise the rebuild lands beside the venv the supervisor is
 looking for and the pod goes on quietly running the image’s code. <code class="docutils literal notranslate"><span class="pre">init</span></code>
-records it in the manifest and <code class="docutils literal notranslate"><span class="pre">apply</span></code> reads it from there; <code class="docutils literal notranslate"><span class="pre">apply</span></code> has no such
-flag, because a rebuild that has to be told twice is one that gets told once
+records it in the manifest and <code class="docutils literal notranslate"><span class="pre">restart</span> <span class="pre">--reinstall</span></code> reads it from there; that
+flag has no <code class="docutils literal notranslate"><span class="pre">--claim-venv</span></code> of its own, because a rebuild that has to be told
+twice is one that gets told once
 (<a class="reference external" href="https://github.com/gilesknap/podbench/issues/209">#209</a>).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">--venv</span></code> is read off the pod, and a value that disagrees is refused.</strong> The
 claim is podbench’s own <code class="docutils literal notranslate"><span class="pre">podbench-app</span></code> volume, so its <code class="docutils literal notranslate"><span class="pre">mountPath</span></code> in the
@@ -1704,8 +1770,8 @@ podbench reads <code class="docutils literal notranslate"><span class="pre">org.
 anonymously and with a short timeout. The old default for the base was
 <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">rev-parse</span> <span class="pre">HEAD</span></code> of the fresh clone, which without <code class="docutils literal notranslate"><span class="pre">--ref</span></code> is the default
 branch’s tip and is almost never what the released image was built from —
-while <code class="docutils literal notranslate"><span class="pre">status</span></code>’s <code class="docutils literal notranslate"><span class="pre">+N</span> <span class="pre">commit(s)</span></code> and everything <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> pushes are
-differences against it. A revision the clone does not contain is not believed.</p>
+while <code class="docutils literal notranslate"><span class="pre">status</span></code>’s <code class="docutils literal notranslate"><span class="pre">claim</span></code> row is a difference against it. A revision the clone
+does not contain is not believed.</p>
 <p><strong>The labels themselves are corroborated first.</strong> OCI labels are inherited, so
 a derived image advertises its base image’s repository and revision unless the
 build overrides them — measured on
@@ -1713,24 +1779,81 @@ build overrides them — measured on
 <code class="docutils literal notranslate"><span class="pre">…/ubuntu-devcontainer</span></code>. Checking the revision against the clone cannot catch
 that, because the clone came from the same label. podbench asks the seeded
 checkout’s <code class="docutils literal notranslate"><span class="pre">origin</span></code> instead, and where it disagrees <code class="docutils literal notranslate"><span class="pre">origin</span></code> wins.</p>
-<p>Where nothing corroborates them the base is recorded as <strong>assumed</strong> and <code class="docutils literal notranslate"><span class="pre">status</span></code>
-prints <code class="docutils literal notranslate"><span class="pre">+N</span> <span class="pre">commit(s)</span> <span class="pre">from</span> <span class="pre">an</span> <span class="pre">assumed</span> <span class="pre">base</span></code> rather than a derived count wearing
-a measurement’s clothes.</p>
+<p>Where nothing corroborates them the base is recorded as <strong>assumed</strong> and the
+<code class="docutils literal notranslate"><span class="pre">claim</span></code> row says <code class="docutils literal notranslate"><span class="pre">an</span> <span class="pre">assumed</span> <span class="pre">base,</span> <span class="pre">so</span> <span class="pre">the</span> <span class="pre">count</span> <span class="pre">is</span> <span class="pre">a</span> <span class="pre">guess</span></code> rather than
+printing a difference wearing a measurement’s clothes.</p>
 </li>
 <li><p>The editable install runs in the <strong>application</strong> container, not the seat: the
 venv is shared but its interpreter is not. <code class="docutils literal notranslate"><span class="pre">--no-install</span></code> skips it.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">consolidate</span></code> does not open a PR; it prints the <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">pr</span> <span class="pre">create</span></code> line.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">restart</span></code> is the inner loop, and it writes nothing.</strong> No <code class="docutils literal notranslate"><span class="pre">-m</span></code>, no commit, no
+index, no manifest — you restart twenty times and commit once, with ordinary
+git in the seat. What it prints in exchange is whether the code now running is
+committed: <code class="docutils literal notranslate"><span class="pre">the</span> <span class="pre">claim</span> <span class="pre">is</span> <span class="pre">dirty</span> <span class="pre">and</span> <span class="pre">running:</span> <span class="pre">2</span> <span class="pre">files</span> <span class="pre">uncommitted</span> <span class="pre">(…)</span></code>, or the
+clean form naming the sha the new process loaded. An uncommitted change on a
+live process is the one divergence no repository anywhere records, which is
+what makes relaunch-without-commit sound rather than a hole in the model. It
+refuses a container with no supervisor — there is nothing to relaunch, and the
+kill would take the seat with it — and it refuses before anything is killed.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--reinstall</span></code> is the one thing <code class="docutils literal notranslate"><span class="pre">restart</span></code> does that is not a relaunch.</strong> An
+editable install bakes the packaging in at install time, so a change to
+<code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> or the lockfile needs <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span></code> run again on the claim or a
+new entry point is simply not there. It is a flag rather than an inference
+because the input the old <code class="docutils literal notranslate"><span class="pre">apply</span></code> inferred from — the range of commits since
+the last one — is exactly what a mode with no recorded commit does not have.
+Where a packaging file is among the <em>uncommitted</em> paths, <code class="docutils literal notranslate"><span class="pre">restart</span></code> says the
+install is stale and names the flag.</p></li>
+<li><p><strong>The pid <code class="docutils literal notranslate"><span class="pre">restart</span></code> names is the supervisor’s own child</strong>, which is what
+<code class="docutils literal notranslate"><span class="pre">/tmp/podbench-child.pid</span></code> holds and is <em>not</em> the process a breakpoint goes in:
+measured on <code class="docutils literal notranslate"><span class="pre">bl47p-ea-fastcs-01</span></code>, the file held 7 and the <code class="docutils literal notranslate"><span class="pre">fastcs-example</span></code>
+under it was 13, three levels down. The kill is a tree kill rooted at the
+recorded pid, so <code class="docutils literal notranslate"><span class="pre">stopped</span> <span class="pre">the</span> <span class="pre">supervisor</span> <span class="pre">child</span> <span class="pre">pid</span> <span class="pre">7</span> <span class="pre">and</span> <span class="pre">its</span> <span class="pre">tree</span></code> is the
+whole of what stopped; <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code> is how to see the rest of it.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">restart</span></code> refreshes a debug configuration only where one already exists.</strong>
+Every configuration podbench authors is pid-keyed and a relaunch changes the
+pid, so a <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> on the claim is re-authored by re-running
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--provision</span></code> in the seat and F5 keeps working across
+the loop. No <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> means nothing runs at all: <code class="docutils literal notranslate"><span class="pre">--provision</span></code> ptraces the
+workload and installs into it, and a restart is not an ask for a debugger. A
+refresh that fails is a line in the report rather than a failed restart — the
+application is already back by then, and only F5 is still pointing at the old
+process.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">status</span></code> measures; it does not read a record.</strong> Under each pod are four rows.
+<code class="docutils literal notranslate"><span class="pre">claim</span></code> counts commits between the manifest’s base and the checkout’s <code class="docutils literal notranslate"><span class="pre">HEAD</span></code>;
+<code class="docutils literal notranslate"><span class="pre">dirty</span></code> names what is uncommitted, which is the state no repository anywhere
+records and the one most worth surfacing; <code class="docutils literal notranslate"><span class="pre">remote</span></code> says whether any branch is
+at that commit; <code class="docutils literal notranslate"><span class="pre">image</span></code> compares the manifest’s <code class="docutils literal notranslate"><span class="pre">baseImageDigest</span></code> against the
+live <code class="docutils literal notranslate"><span class="pre">imageID</span></code>, and is the row that needs no git at all — an image that moved
+under the mount means the claim’s venv is shadowing whatever was released.</p></li>
+<li><p><strong>Three of those rows come from git in the claim, and go <code class="docutils literal notranslate"><span class="pre">unmeasured</span></code> without
+it.</strong> <code class="docutils literal notranslate"><span class="pre">status</span></code> reads the claim through the <em>application</em> container, not through
+a seat, because the listing’s value is that it finds a hotfix nobody told you
+about — on a pod you have not attached to. A distroless application image has
+no git, and the report then says so once rather than reporting the claim as
+clean.</p></li>
+<li><p><strong>The <code class="docutils literal notranslate"><span class="pre">remote</span></code> row is asked from the laptop.</strong> An exec session has no
+<code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK</span></code> — agent forwarding exists only inside an ssh session — so the
+pod could not ask even with an agent forwarded to a seat; measured on the live
+p47 pod, <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span></code> in its seat answers <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">key</span> <span class="pre">verification</span> <span class="pre">failed</span></code>. The
+laptop holds both halves, so podbench reads the shas out over exec and runs
+<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">ls-remote</span></code> here, once per distinct repository and under a 5s bound. A
+failure is <strong>unmeasured</strong>, never “not pushed”. <code class="docutils literal notranslate"><span class="pre">ls-remote</span></code> returns ref <em>tips</em>,
+so the row can say a commit is the tip of a branch and never that it was
+merged. <code class="docutils literal notranslate"><span class="pre">--no-remote</span></code> turns the network half off, leaving what the claim last
+fetched.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">status</span></code> exits <strong>1</strong> when any pod needs attention, so “no hotfix here needs somebody
-today” is a testable shutdown assertion. It is <strong>not</strong> the assertion “nothing here is
-still to be retired”: a consolidated fix whose image has not moved is a live hotfix
+today” is a testable shutdown assertion. Nothing on the four measured rows moves it:
+a dirty claim is the ordinary inner loop, an unpushed one is the ordinary state of a
+fix made an hour ago, and a row that could not be measured is not an assertion in
+either direction. It is also <strong>not</strong> the assertion “nothing here is still to be
+retired”: a fix whose image has not moved is a live hotfix
 doing its job, so retirement is not part of a row’s <code class="docutils literal notranslate"><span class="pre">ok</span></code> and <code class="docutils literal notranslate"><span class="pre">status</span></code> can exit 0 on a
 pod <code class="docutils literal notranslate"><span class="pre">retire</span></code> reports several steps short. <code class="docutils literal notranslate"><span class="pre">retire</span></code> is the verb that stays red until a
 retirement is finished. <code class="docutils literal notranslate"><span class="pre">-A</span></code>/<code class="docutils literal notranslate"><span class="pre">--all-namespaces</span></code> is that assertion for the
 whole cluster, with the same exit code — the facility-wide form used to be a shell
 loop the operator had to write and keep correct. Every pod is still read through a
 client bound to its own namespace.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">retire</span></code> is the retirement checklist as a measurement rather than as prose. Four
-rows — <code class="docutils literal notranslate"><span class="pre">branch</span></code>, <code class="docutils literal notranslate"><span class="pre">image</span></code>, <code class="docutils literal notranslate"><span class="pre">wiring</span></code>, <code class="docutils literal notranslate"><span class="pre">claim</span></code> — because those are the four a cluster
+<li><p><code class="docutils literal notranslate"><span class="pre">retire</span></code> is the retirement checklist as a measurement rather than as prose. Three
+rows — <code class="docutils literal notranslate"><span class="pre">image</span></code>, <code class="docutils literal notranslate"><span class="pre">wiring</span></code>, <code class="docutils literal notranslate"><span class="pre">claim</span></code> — because those are the three a cluster
 can be asked about, and <code class="docutils literal notranslate"><span class="pre">[x]</span></code> goes on <strong>only</strong> a step that was measured done: an
 unmeasured one is <code class="docutils literal notranslate"><span class="pre">[</span> <span class="pre">]</span></code> with a detail saying why, and it moves the exit code in
 neither direction. It is read-only and lands no seat unless <code class="docutils literal notranslate"><span class="pre">--delete-claim</span></code> is
@@ -1741,9 +1864,11 @@ reschedule. A pod listing that could not be read declines too. Deleting it print
 deletion: nothing mounted the claim, so what was on it went unread, and a chart that
 still declares the claim will have the next sync recreate it. Exit <strong>1</strong> while any
 measured step is outstanding.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">retire</span></code>’s <code class="docutils literal notranslate"><span class="pre">branch</span></code> step is <strong>done</strong> on a claim that records no commits: a seeded
-claim nobody ever <code class="docutils literal notranslate"><span class="pre">apply</span></code>-ed has nothing to consolidate and nothing that retiring it
-discards, and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> refuses that same claim.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">retire</span></code> has no <code class="docutils literal notranslate"><span class="pre">branch</span></code> row.</strong> It read a field <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> wrote, and one
+hand push made that field a lie — which is the whole objection that deleted both.
+Whether the fix is anywhere but the claim is a live question, asked by <code class="docutils literal notranslate"><span class="pre">status</span></code>
+against the forge; retirement turns only on what can be measured from the cluster
+in front of you.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">retire</span></code>’s <code class="docutils literal notranslate"><span class="pre">wiring</span></code> row names both volumes, the mount and the supervisor loop in
 <code class="docutils literal notranslate"><span class="pre">command</span></code> and <code class="docutils literal notranslate"><span class="pre">args</span></code>, and it says to take those <em>entries</em> out of the application’s
 values rather than the whole <code class="docutils literal notranslate"><span class="pre">volumes</span></code> and <code class="docutils literal notranslate"><span class="pre">volumeMounts</span></code> keys — a helm list replaces
@@ -1762,7 +1887,7 @@ the supervisor loop.</p></li>
 read-only: it writes nothing and lands no seat, because an ephemeral container
 cannot be taken back off a pod and a verb run to ask a question must not spend
 one. A non-exec <code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> is <code class="docutils literal notranslate"><span class="pre">warn</span></code> rather than a blocker by design: it
-breaks <code class="docutils literal notranslate"><span class="pre">apply</span></code>’s hold rather than <code class="docutils literal notranslate"><span class="pre">init</span></code>. <code class="docutils literal notranslate"><span class="pre">check</span></code> takes <code class="docutils literal notranslate"><span class="pre">--repo</span></code> because <code class="docutils literal notranslate"><span class="pre">init</span></code>
+breaks the hold a later <code class="docutils literal notranslate"><span class="pre">restart</span></code> takes rather than <code class="docutils literal notranslate"><span class="pre">init</span></code>. <code class="docutils literal notranslate"><span class="pre">check</span></code> takes <code class="docutils literal notranslate"><span class="pre">--repo</span></code> because <code class="docutils literal notranslate"><span class="pre">init</span></code>
 does — an image naming no source repository is a state <code class="docutils literal notranslate"><span class="pre">init</span></code> refuses, so it is
 a blocker here, and a check that could not hear the flag would refuse a target
 the next command accepts. A label that <em>is</em> there is corroborated rather than
@@ -2754,7 +2879,7 @@ session inherits the image’s value regardless, where <code class="docutils lit
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vscode"><code class="docutils literal notranslate"><span class="pre">vscode</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sizing-the-pod">Sizing the pod</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#opening-the-editor">Opening the editor</a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#provisioning">Provisioning</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-debug-step-offered-rather-than-taken">The debug step, offered rather than taken</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ssh-config"><code class="docutils literal notranslate"><span class="pre">ssh-config</span></code></a></li>

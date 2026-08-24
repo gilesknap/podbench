@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What attach does &#8212; podbench 0.9.2.dev10+g4aff5d245 documentation</title>
+    <title>What attach does &#8212; podbench 0.9.2.dev33+g97cec977c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4e410589"></script>
+    <script src="../_static/documentation_options.js?v=264b474c"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -631,11 +631,12 @@ this codebase.</p>
 │ DRIVE THE CLIENT                                                 │
 │                                                                  │
 │   exec -c SEAT -- podbench debug-config --print-config           │
-│        one assessment; its adapter types name the extensions     │
+│        one assessment; its adapter types name the extensions.    │
+│        Prints, so it writes and probes nothing                   │
 │   ssh &lt;alias&gt; &gt; ~/.vscode-server/data/Machine/settings.json      │
 │        the /proc excludes and the target&#39;s interpreter,          │
-│        BEFORE the window: the walk starts when it opens          │
-│   write &lt;home&gt;/.vscode/launch.json    ← the only folder file     │
+│        BEFORE the window: the walk starts when it opens.         │
+│        The only file this run writes anywhere                    │
 │   code --remote ssh-remote+&lt;alias&gt; --install-extension …         │
 │        only this flavour&#39;s, and attempted rather than believed:  │
 │        it answers from THIS machine&#39;s install list               │
@@ -955,7 +956,7 @@ attach on the probe’s own forked child. It is the rung that survives when the 
 do not, and it is measured rather than assumed: a seccomp filter that rejects
 <code class="docutils literal notranslate"><span class="pre">ptrace</span></code> takes it away along with everything else;</p></li>
 <li><p><strong>iterate</strong> — unavailable on an ordinary pod, naming <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">dev</span></code> as the way to
-it; ticked on a pod carrying the hotfix layout, where <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">apply</span></code> runs
+it; ticked on a pod carrying the hotfix layout, where <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">restart</span></code> runs
 the loop on the live workload;</p></li>
 <li><p><strong>ssh seat</strong> and <strong>exec seat</strong>, reported separately, because the ssh half needs an
 NSS identity the exec half does not.</p></li>
@@ -989,12 +990,13 @@ wrapped, readiness still drops the pod out of the Service, and suppressing both 
 trade one wrong report for another.</p>
 <p>Then, inside the seat, <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span></code> writes a <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code>
 whose pid, sysroot-prefixed program path and setup ordering are things the
-launcher knows and a human cannot guess. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> runs that same
-command over <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code> and follows it with the two steps nobody should have
-to get right by hand: which folder to open — a verb that picks the folder is a verb
-that cannot pick <code class="docutils literal notranslate"><span class="pre">/</span></code> — and installing the extension in the <em>remote</em> window,
-where the debug adapter has to run for any <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> path to mean
-anything.</p>
+launcher knows and a human cannot guess. It is a step you run when you want a
+debugger, and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> offers the command rather than running it: every
+entry it authors is keyed on a pid, and a restart changes the pid. What <code class="docutils literal notranslate"><span class="pre">vscode</span></code>
+does take on are the two steps nobody should have to get right by hand: which
+folder to open — a verb that picks the folder is a verb that cannot pick <code class="docutils literal notranslate"><span class="pre">/</span></code> —
+and installing the extension in the <em>remote</em> window, where the debug adapter has
+to run for any <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> path to mean anything.</p>
 </section>
 <section id="see-also">
 <h2>See also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>

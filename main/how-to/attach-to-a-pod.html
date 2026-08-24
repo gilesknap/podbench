@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Attach to a pod &#8212; podbench 0.9.2.dev10+g4aff5d245 documentation</title>
+    <title>Attach to a pod &#8212; podbench 0.9.2.dev33+g97cec977c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4e410589"></script>
+    <script src="../_static/documentation_options.js?v=264b474c"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -561,7 +561,7 @@ answer, which is neither of those two:</p>
 </pre></div>
 </div>
 <p>Read it as the conditional it is. The wrapper short-circuits only while the hold
-file exists — the window <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">apply</span></code> opens around a relaunch — and
+file exists — the window <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">restart</span></code> opens around a relaunch — and
 outside that window the target’s own check applies and <code class="docutils literal notranslate"><span class="pre">61-91s</span></code> is your budget
 again. The arithmetic is reported rather than discarded because it was never
 wrong: it is what a pause costs once the hold is gone, and what podbench stopped
@@ -816,7 +816,7 @@ Python</span></a>) and never the live workload.</p>
 <p>On a pod carrying the <a class="reference internal" href="../explanations/hotfix-flow.html"><span class="std std-doc">hotfix layout</span></a> both halves
 of that sentence are false, and the row is ticked instead:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>  [x] iterate (edit, relaunch, verify through the Service)
-      `podbench hotfix apply` relaunches the application&#39;s own child in
+      `podbench hotfix restart` relaunches the application&#39;s own child in
       place: this pod carries the supervisor, so the loop runs on the live
       workload without a second pod and without restarting the container.
 </pre></div>
@@ -992,15 +992,18 @@ it sends the write, so <code class="docutils literal notranslate"><span class="p
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench vscode web -n demo
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> is this whole page plus the three things an editor needs and a
-bare seat does not — it sizes the pod’s memory for vscode-server, installs
-debugpy into the target where the target says that is the blocker, and then
-configures the folder, installs the extensions <strong>in the remote window</strong> and
-opens the seat’s home: <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> on a <code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume.
-Never <code class="docutils literal notranslate"><span class="pre">/</span></code>, which is the one folder that can end the seat.</p>
-<p>Two of those steps change the workload, which is why they are not on <code class="docutils literal notranslate"><span class="pre">attach</span></code>:
-adding a container to the pod is the whole of what this verb does, and that is
-the promise the <a class="reference internal" href="../explanations/ways-in.html"><span class="std std-doc">mode table</span></a> makes for it.</p>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> is this whole page plus the things an editor needs and a bare
+seat does not — it sizes the pod’s memory for vscode-server, writes the
+folder-walk excludes into the seat, installs the extensions <strong>in the remote
+window</strong> and opens the seat’s home: <code class="docutils literal notranslate"><span class="pre">/root</span></code>, or <code class="docutils literal notranslate"><span class="pre">/home/podbench</span></code> on a
+<code class="docutils literal notranslate"><span class="pre">podbench-home</span></code> volume. Never <code class="docutils literal notranslate"><span class="pre">/</span></code>, which is the one folder that can end the seat.
+On a hotfixed pod it opens the claim instead.</p>
+<p>It writes nothing into that folder and installs nothing into your application.
+Debugging is a second command, run in the seat, and the report offers it:
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--provision</span></code>.</p>
+<p>The resize is the one step that changes the workload, which is why it is not on
+<code class="docutils literal notranslate"><span class="pre">attach</span></code>: adding a container to the pod is the whole of what that verb does, and
+that is the promise the <a class="reference internal" href="../explanations/ways-in.html"><span class="std std-doc">mode table</span></a> makes for it.</p>
 <p><a class="reference internal" href="vscode-remote-ssh.html"><span class="std std-doc">VS Code Remote-SSH</span></a> has what it writes and why, and the
 warning that no GUI client has driven this yet.</p>
 </section>

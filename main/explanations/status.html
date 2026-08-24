@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What is proven, and what is not &#8212; podbench 0.9.2.dev10+g4aff5d245 documentation</title>
+    <title>What is proven, and what is not &#8212; podbench 0.9.2.dev33+g97cec977c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4e410589"></script>
+    <script src="../_static/documentation_options.js?v=264b474c"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -592,9 +592,10 @@ untested</strong>, as is a second Kubernetes version.</p>
 <p><strong><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> has now been driven end to end against a GUI client</strong>, on
 2026-08-21, against a live EPICS IOC on a Diamond production cluster
 (<code class="docutils literal notranslate"><span class="pre">p47-beamline/bl47p-ea-fastcs-01-0</span></code>, seat <code class="docutils literal notranslate"><span class="pre">0.4.0b3</span></code>, over an ssh API tunnel
-from home). The verb probes the alias, sizes the pod, provisions debugpy, writes
-the three <code class="docutils literal notranslate"><span class="pre">.vscode</span></code> files, installs the remote extensions and opens the seat’s
-home. Everything but the provisioning step worked first time: the extensions
+from home). At the time the verb probed the alias, sized the pod, provisioned
+debugpy, wrote the three <code class="docutils literal notranslate"><span class="pre">.vscode</span></code> files, installed the remote extensions and
+opened the seat’s home. Everything but the provisioning step worked first time:
+the extensions
 unpacked in the remote, Remote-SSH connected, and after the server was started
 the debugger attached, <strong>breakpoints bound and source resolved</strong> through the
 <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> path mappings — so issue #112’s collision did not bite even
@@ -603,15 +604,17 @@ verb against the same pod reconnects to the existing seat correctly.</p>
 <p>What the run found is that the provisioning step <em>never fired</em>, because its
 trigger was the wrong one: it keyed on a target that cannot import debugpy,
 where this target ships its own, so the emitted <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> connected to a
-port nothing was listening on. That is fixed — the trigger is now the seat
-naming <code class="docutils literal notranslate"><span class="pre">--provision</span></code>, which it does for either blocker — but the fix is itself
-only unit-tested, and <strong>the resize path remains unproven live</strong>: this pod had
-1513 MiB of headroom against vscode-server’s measured 1215 MiB, so nothing had
-to be resized.</p>
-<p>Two of the verb’s steps mutate the workload <strong>by default</strong> — <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> and
-<code class="docutils literal notranslate"><span class="pre">--no-provision</span></code> opt out — and both carry the caveats already recorded under
-resize and provisioning. The headroom it sizes from is read with
-<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">top</span> <span class="pre">pod</span></code>, and reports <strong>unmeasured</strong> where there is no metrics API.</p>
+port nothing was listening on. <strong>The whole of that machinery is gone</strong> (#230):
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> writes no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> and provisions nothing, and debugging
+is <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--provision</span></code>, run in the seat when you want one. What
+that run proved about the parts that remain — the alias probe, the extensions,
+Remote-SSH, the path mappings — still holds. <strong>The resize path remains unproven
+live</strong>: this pod had 1513 MiB of headroom against vscode-server’s measured
+1215 MiB, so nothing had to be resized.</p>
+<p>The verb has one mutation left and it is <strong>on by default</strong> — <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> opts
+out — carrying the caveats already recorded under resize. The headroom it sizes
+from is read with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">top</span> <span class="pre">pod</span></code>, and reports <strong>unmeasured</strong> where there is
+no metrics API.</p>
 <p><strong>Hotfix mode has met a cluster, and two things about it are still
 undemonstrated.</strong> On 2026-08-22 an edit reached the running code of a live IOC
 on a real beamline with <code class="docutils literal notranslate"><span class="pre">restartCount</span></code> unchanged and both seats alive: the
@@ -630,7 +633,8 @@ untouched, and stays on issue #34.</p>
 <p>What that run did <strong>not</strong> show is survival across pod replacement — it used a
 generic ephemeral volume, which dies with its pod, because a real claim needs
 <code class="docutils literal notranslate"><span class="pre">create</span></code> on persistentvolumeclaims that the test account does not have — and
-<code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, which no cluster has ever run. Everything else here is unit-tested
+<code class="docutils literal notranslate"><span class="pre">status</span></code>’s laptop-side <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">ls-remote</span></code>, which no cluster has driven. Everything
+else here is unit-tested
 against a temp directory and a fake <code class="docutils literal notranslate"><span class="pre">kubectl</span></code>. See
 <a class="reference internal" href="hotfix-flow.html"><span class="std std-doc">What <code class="docutils literal notranslate"><span class="pre">hotfix</span></code> does</span></a>.</p>
 <p><strong>Which half you are running is now measured, not guessed.</strong> The launcher and

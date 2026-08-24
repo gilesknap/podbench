@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Hotfix a running pod &#8212; podbench 0.9.2.dev10+g4aff5d245 documentation</title>
+    <title>Hotfix a running pod &#8212; podbench 0.9.2.dev33+g97cec977c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4e410589"></script>
+    <script src="../_static/documentation_options.js?v=264b474c"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -511,13 +511,17 @@ also <strong>Python-only</strong> and <strong>single-replica only</strong> — t
 and one checkout cannot serve two writers.</p>
 </div>
 <p>Five verbs, in the order you run them:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>values       emit the chart values the mode needs, read off the target
-check        say what would stop a hotfix here, before you start one
-init         seed the claim from the running container, clone, rebuild
-apply        commit the edit and relaunch the child in place
-consolidate  push the fix as a branch  →  retire  measure the way back out
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>values   emit the chart values the mode needs, read off the target
+check    say what would stop a hotfix here, before you start one
+init     seed the claim from the running container, clone, rebuild
+restart  relaunch the application on what is on the claim
+retire   measure the way back out, and delete the claim
 </pre></div>
 </div>
+<p>Committing and pushing are <strong>ordinary git in the seat</strong>. podbench had verbs for
+both once and neither earned its place: <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">commit</span></code> in the checkout is a commit,
+and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code>’s push handled no credentials, so it was exactly as hard with it
+as without (<a class="reference external" href="https://github.com/gilesknap/podbench/issues/232">#232</a>).</p>
 <p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">status</span></code> is not a step. It is the one to run habitually, and the
 one to leave in a shutdown checklist.</p>
 <section id="emit-the-values-and-deploy-them">
@@ -730,8 +734,8 @@ installer.</p></li>
 <p>It is safe to run twice: a claim already carrying <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> short-circuits
 the whole seed.</p>
 </section>
-<section id="edit-then-apply">
-<h2>4. Edit, then apply<a class="headerlink" href="#edit-then-apply" title="Link to this heading">#</a></h2>
+<section id="edit-restart-commit">
+<h2>4. Edit, restart, commit<a class="headerlink" href="#edit-restart-commit" title="Link to this heading">#</a></h2>
 <p>The edit happens <strong>in the seat</strong>, in the checkout on the claim. Get a seat the
 usual way and work in <code class="docutils literal notranslate"><span class="pre">/podbench/app</span></code>, which is the claim’s mount point and the
 checkout both — the project sits at the root of the volume exactly as it sits in
@@ -744,19 +748,12 @@ $ cd /podbench/app &amp;&amp; $EDITOR src/fastcs_example/temp_controller.py
 <p><a class="reference internal" href="attach-to-a-pod.html"><span class="std std-doc">Attach to a pod</span></a> and <a class="reference internal" href="vscode-remote-ssh.html"><span class="std std-doc">VS Code over
 Remote-SSH</span></a> are the two routes in; either works, and so
 does <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>.</p>
-<p>Then, from anywhere:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix apply bl47p-ea-fastcs-01-0 -n p47-beamline \
-      -m &quot;clamp the setpoint before the ramp&quot;
-committed as giles &lt;giles@example.org&gt;
-no packaging metadata changed; editable install still valid
-1 commit(s) ahead of 4d9a1c2
-relaunched the application in bl47p-ea-fastcs-01 without a restart
+<p>Then, from anywhere, put the edit into the running process:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix restart bl47p-ea-fastcs-01-0 -n p47-beamline
+stopped the supervisor child pid 7 and its tree, started pid 2446
+the claim is dirty and running: 1 file uncommitted (src/fastcs_example/temp_controller.py)
 </pre></div>
 </div>
-<p>Every <code class="docutils literal notranslate"><span class="pre">apply</span></code> is a commit — a hotfix that is only a working-tree edit has no sha,
-and without a sha nothing can say what is running or push it anywhere later.
-Committing by hand in the seat first is fine; <code class="docutils literal notranslate"><span class="pre">apply</span></code> then reports “working tree
-clean; nothing new to commit” and carries on.</p>
 <p>The relaunch holds the pod’s liveness probe for at most 120 seconds, kills the
 supervisor’s child and its whole descendant tree, and lets the supervisor start
 it again. <code class="docutils literal notranslate"><span class="pre">restartCount</span></code> does not move and the seat is untouched.</p>
@@ -765,22 +762,86 @@ it again. <code class="docutils literal notranslate"><span class="pre">restartCo
 epics-containers IOC — can leave its real process reparented onto PID 1 still
 holding the port, and both “the pid file moved” and “the port answers” look fine
 in that state.</p>
-<p><code class="docutils literal notranslate"><span class="pre">--no-bounce</span></code> commits without relaunching, for a change you want to take effect
-at the next restart instead.</p>
+<p>The loop most editing actually is — change a line, run it, look — is twenty
+restarts and one commit at the end, and the commit is git’s:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ cd /podbench/app &amp;&amp; git commit -am &quot;clamp the setpoint before the ramp&quot;
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">restart</span></code> writes nothing at all — no commit, no index, no manifest write — and
+<code class="docutils literal notranslate"><span class="pre">restartCount</span></code> still does not move.</p>
+<p>Four things about what it prints:</p>
+<ul class="simple">
+<li><p><strong>The dirty line is the point of the verb, not decoration.</strong> An uncommitted
+change on a live process is the one divergence no repository anywhere records.
+When the tree is clean the line says so and names the sha the new process
+loaded. <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> measures the same thing from the other end.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--reinstall</span></code> after a packaging change.</strong> An editable install bakes the
+packaging in at install time, so a new entry point or a renamed package needs
+<code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span></code> run again on the claim: <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">restart</span> <span class="pre">…</span> <span class="pre">--reinstall</span></code>
+rebuilds the venv before the relaunch. Where <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> or the lockfile
+is among the uncommitted paths, <code class="docutils literal notranslate"><span class="pre">restart</span></code> says the install is stale and names
+the flag rather than rebuilding on every iteration.</p></li>
+<li><p><strong>The pid is the supervisor’s own child</strong>, which is what
+<code class="docutils literal notranslate"><span class="pre">/tmp/podbench-child.pid</span></code> holds. It is not the process you would set a
+breakpoint in: on <code class="docutils literal notranslate"><span class="pre">bl47p-ea-fastcs-01</span></code> the file held 7 — the <code class="docutils literal notranslate"><span class="pre">stdio-socket</span></code>
+wrapper — and the <code class="docutils literal notranslate"><span class="pre">fastcs-example</span></code> under it was 13, three levels down. The
+kill is a tree kill from that pid, so everything below it went too. Use
+<a class="reference internal" href="../reference/cli.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">pids</span></code></span></a> in the seat to see the tree.</p></li>
+<li><p><strong>A debug configuration is refreshed only if you already made one.</strong> If the
+claim has a <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code>, restart re-runs <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span> <span class="pre">--provision</span></code> in the seat so F5 still reaches the new process — every
+configuration podbench can author names a pid, and the relaunch just changed
+it. With no <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> it does nothing: <code class="docutils literal notranslate"><span class="pre">--provision</span></code> ptraces the workload,
+and a restart is not an ask for a debugger. See <a class="reference internal" href="vscode-remote-ssh.html"><span class="std std-doc">VS Code over
+Remote-SSH</span></a> for the debug step itself.</p></li>
+</ul>
+<p><strong>A <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span></code> or <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">push</span></code> in the seat needs <code class="docutils literal notranslate"><span class="pre">--forward-agent</span></code>.</strong> The seat
+holds no credential of its own, and the first thing an ssh remote fails on there
+is <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">key</span> <span class="pre">verification</span> <span class="pre">failed</span></code> rather than authentication. Landing the seat
+with <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--forward-agent</span></code> — or adding it to an existing one with
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">ssh-config</span> <span class="pre">--forward-agent</span></code> — lends it your agent for the session and
+seeds its <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code> from your own for the forge the claim’s remote names. If
+you were already connected, an ssh master left open by the earlier session
+inherits its own settings rather than the new stanza’s; podbench checks for that
+and names the <code class="docutils literal notranslate"><span class="pre">ssh</span> <span class="pre">-O</span> <span class="pre">exit</span></code> that clears it.
+Read what that costs first: it is <a class="reference internal" href="vscode-remote-ssh.html#git-in-the-seat"><span class="std std-ref">one section</span></a> of the
+VS Code how-to, and the short version is that <code class="docutils literal notranslate"><span class="pre">authorized_keys</span></code> gates ssh and does not gate <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>.</p>
 </section>
 <section id="watch-it-hotfix-status">
 <h2>5. Watch it: <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code><a class="headerlink" href="#watch-it-hotfix-status" title="Link to this heading">#</a></h2>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix status -n p47-beamline
-  [ok]    p47-beamline/bl47p-ea-fastcs-01-0  +1 commit(s)  9c1f2ab  active — hotfixed, base image unchanged
-    base 4d9a1c2 · giles · 2026-08-23T10:14:02Z
-      9c1f2ab  clamp the setpoint before the ramp
+  [ok]    p47-beamline/bl47p-ea-fastcs-01-0  active — hotfixed, and nothing here needs attention
+    claim   9c1f2ab is 1 commit ahead of 4d9a1c2
+    dirty   nothing uncommitted; what is running is what is committed
+    remote  9c1f2ab is the tip of hotfix/beamtime-14, checked just now
+    image   unchanged since the hotfix was made (sha256:aaaa1111ffff)
 </pre></div>
 </div>
-<p>The row’s own columns carry the count and the sha, so nothing under it repeats
-them. On a claim carrying no commits at all the line below reads <code class="docutils literal notranslate"><span class="pre">on</span> <span class="pre">its</span> <span class="pre">base</span> <span class="pre">commit</span> <span class="pre">·</span> <span class="pre">…</span></code>, because at <code class="docutils literal notranslate"><span class="pre">+0</span></code> the claim <em>is</em> its base and the only thing left to
-say is who seeded it and when.</p>
+<p><strong>Every one of those four rows is measured on the run, and none of it is
+recorded.</strong> The manifest keeps only what git cannot know — where the claim came
+from, and which commit and image it was seeded against — because the seat has
+ordinary git in it and one hand commit would make a recorded count false while
+<code class="docutils literal notranslate"><span class="pre">status</span></code> went on printing it.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">claim</span></code> and <code class="docutils literal notranslate"><span class="pre">dirty</span></code> come from <code class="docutils literal notranslate"><span class="pre">git</span></code> in the claim, over <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">exec</span></code>. They
+need no network and no credential. Where the <em>application</em> container has no
+git — a distroless image, and <code class="docutils literal notranslate"><span class="pre">status</span></code> is most useful on a colleague’s pod
+where you have no seat — all three git rows collapse into one saying
+<code class="docutils literal notranslate"><span class="pre">unmeasured</span></code>. Never “clean”.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">remote</span></code> is asked <strong>from your laptop</strong>, not from the pod: an exec session has
+no <code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK</span></code>, so the pod cannot use your agent even when one is
+forwarded to a seat. podbench reads the shas out over exec and runs <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">ls-remote</span></code> here, once per repository and under a five-second bound. A forge
+that does not answer makes the row <code class="docutils literal notranslate"><span class="pre">unmeasured</span></code> — never “not pushed” — and
+<code class="docutils literal notranslate"><span class="pre">--no-remote</span></code> skips it. It compares branch <em>tips</em>, so it can say a commit is
+the tip of a branch and never that it has been merged.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">image</span></code> needs no git at all, and is the most valuable of the four: an image
+that moved under the mount means the claim’s venv is now shadowing whatever
+was released.</p></li>
+</ul>
 <p>It exits <strong>0</strong> only when every row is <code class="docutils literal notranslate"><span class="pre">active</span></code> and unheld, which is what makes it
-usable as an assertion rather than a report:</p>
+usable as an assertion rather than a report. Nothing on the four rows moves that:
+a dirty claim is the ordinary inner loop, an unpushed one is the ordinary state of
+a fix made an hour ago, and a row that could not be measured is not an assertion
+in either direction.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix status -A || echo &quot;something is still hotfixed&quot;
 </pre></div>
 </div>
@@ -788,10 +849,8 @@ usable as an assertion rather than a report:</p>
 verdicts worth knowing on sight:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>image-changed  the image was upgraded under a live hotfix, so the upgrade has
                not reached the running code — the claim shadows the image
-superseded     consolidated AND the image has moved since: the claim is now an
-               older copy of a fix that shipped
 interpreter    the venv&#39;s bin/python will not run, or its version moved
-not-hotfixed   held, but nothing hotfixed here — an apply that died mid-flight
+not-hotfixed   held, but nothing hotfixed here — a relaunch that died mid-flight
 held …         a hold, orthogonal to all of the above; &quot;expiry unmeasured&quot; is
                never &quot;no deadline&quot;
 </pre></div>
@@ -799,20 +858,21 @@ held …         a hold, orthogonal to all of the above; &quot;expiry unmeasured
 </section>
 <section id="get-it-back-into-an-image-then-retire-the-claim">
 <h2>6. Get it back into an image, then retire the claim<a class="headerlink" href="#get-it-back-into-an-image-then-retire-the-claim" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix consolidate bl47p-ea-fastcs-01-0 -n p47-beamline \
-      --branch hotfix/beamtime-14
+<p>Push the branch with git, from wherever your credentials are:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ cd /podbench/app &amp;&amp; git push origin HEAD:refs/heads/hotfix/beamtime-14
 </pre></div>
 </div>
-<p>That pushes the claim’s checkout as a branch (<code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> says what it would
-push), records the branch in the manifest, and prints the checklist: open the PR,
-merge it, let CI build the image, roll the workload onto it, take the volumes,
-volumeMount, command, args and podSecurityContext back out of the application’s
-own values, and turn the claim off.</p>
+<p>In the seat if it can reach your forge, and from a laptop clone if it cannot —
+measured on this very pod, the seat has no key and no <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code>, so a push
+to its <code class="docutils literal notranslate"><span class="pre">git&#64;github.com:…</span></code> remote answers <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">key</span> <span class="pre">verification</span> <span class="pre">failed</span></code>. Whether
+it landed is the <code class="docutils literal notranslate"><span class="pre">remote</span></code> row of <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code>, which asks the forge from your
+laptop.</p>
+<p>Then: open the PR, merge it, let CI build the image, roll the workload onto it,
+take the volumes, volumeMount, command, args and podSecurityContext back out of
+the application’s own values, and turn the claim off.</p>
 <p>The last two are the ones nobody does, so they are measured rather than
 remembered:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ podbench hotfix retire bl47p-ea-fastcs-01-0 -n p47-beamline
-  [x]     branch         consolidated onto hotfix/beamtime-14, so the
-                         claim is no longer the only copy of this fix
   [ ]     image          the deployed image is still sha256:aaaa1111,
                          the one the hotfix was made against
   [ ]     wiring         bl47p-ea-fastcs-01-0 still carries the
@@ -837,7 +897,7 @@ remembered:</p>
   [ ]     claim          bl47p-ea-fastcs-01-podbench-project still
                          exists
 ------------------------------------------------------------------------
-VERDICT: 3 of 4 steps of retirement remain (exit 1)
+VERDICT: 3 of 3 steps of retirement remain (exit 1)
 REMAINING: image, wiring, claim
 </pre></div>
 </div>
@@ -854,11 +914,12 @@ the <strong>seat’s</strong> home volume: <code class="docutils literal notrans
 declares it, so a pod that finished its retirement and kept it has still
 finished — counted, it would leave <code class="docutils literal notranslate"><span class="pre">retire</span></code> red forever on a step nothing could
 close. Both are named on the row whether or not anything else is outstanding.</p>
-<p>A claim that never carried a commit — seeded and never <code class="docutils literal notranslate"><span class="pre">apply</span></code>-ed — has its
-<code class="docutils literal notranslate"><span class="pre">branch</span></code> step <strong>done</strong>, not outstanding: nothing it <em>records</em> would be discarded
-by retiring it, and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> refuses that claim for the same reason. The
-hedge is deliberate: the count comes off the manifest, written by <code class="docutils literal notranslate"><span class="pre">init</span></code> and
-<code class="docutils literal notranslate"><span class="pre">apply</span></code>, so commits made in the seat by hand without <code class="docutils literal notranslate"><span class="pre">apply</span></code> are not in it.</p>
+<p><strong>There is no <code class="docutils literal notranslate"><span class="pre">branch</span></code> row</strong>, and its absence is deliberate. It read a field
+<code class="docutils literal notranslate"><span class="pre">consolidate</span></code> wrote into the manifest, and one push by hand made that field a
+lie. Whether the fix exists anywhere but the claim is a live question now, asked
+by <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> against the forge; retirement turns only on what can be
+measured from the cluster in front of you. Check <code class="docutils literal notranslate"><span class="pre">status</span></code>’s <code class="docutils literal notranslate"><span class="pre">remote</span></code> row before
+<code class="docutils literal notranslate"><span class="pre">--delete-claim</span></code>, because the deletion is the step that discards commits.</p>
 <p>Read-only, it lands no seat, and it exits <strong>1</strong> while any measured step is
 outstanding. <code class="docutils literal notranslate"><span class="pre">[x]</span></code> means <em>measured done</em>; a step that could not be measured stays
 <code class="docutils literal notranslate"><span class="pre">[</span> <span class="pre">]</span></code> with a detail saying why, and moves the exit code in neither direction.</p>
@@ -950,7 +1011,7 @@ than <code class="docutils literal notranslate"><span class="pre">attach</span><
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#seed-the-claim">3. Seed the claim</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#edit-then-apply">4. Edit, then apply</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#edit-restart-commit">4. Edit, restart, commit</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#watch-it-hotfix-status">5. Watch it: <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#get-it-back-into-an-image-then-retire-the-claim">6. Get it back into an image, then retire the claim</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See also</a></li>

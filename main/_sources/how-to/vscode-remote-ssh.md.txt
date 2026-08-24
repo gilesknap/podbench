@@ -140,9 +140,14 @@ podbench vscode pod/api-5f6c9b7d8-qz4tn -n demo
 ```
 
 That is the whole command for the common case. It is a separate verb rather
-than a flag on `attach` because two of those steps *change the workload*, and
-`attach`'s contract is that it does not: choosing this verb is asking for an
-editor and for everything an editor costs.
+than a flag on `attach` because one of those steps *changes the workload* — it
+can raise the target's memory limit — and `attach`'s contract is that it does
+not: choosing this verb is asking for an editor and for everything an editor
+costs.
+
+**It writes nothing into the folder it opens, and installs nothing into your
+application.** Debugging is a second command you run when you want one; see
+[Debugging is a step you run](#debugging-is-a-step-you-run) below.
 
 **It proves the alias first** — one `ssh <alias> true`, before anything is
 written or downloaded — and if that does not reach the seat, it prints ssh's own
@@ -153,19 +158,27 @@ the argv, so the connection happens in the GUI afterwards, and a
 also leaves a `ControlMaster` behind, so the window's own connect is the fast
 one.
 
-**It writes** the seat's machine settings — the excludes, and on a hotfixed pod
+**It writes** one file, and it is in the seat rather than in your project: the
+machine settings — the folder-walk excludes, and on a hotfixed pod
 `python.defaultInterpreterPath` for the interpreter your application actually
-runs — then `.vscode/launch.json` into the folder it is about to open, installs
-only the extensions this target's debugger needs **in the remote window**, and
-opens the seat's home or, on a pod carrying the hotfix layout, the claim. Those
-are the two steps most easily got wrong by hand, and both fail quietly: the
-wrong folder can end the seat, and a locally installed extension runs the debug
-adapter on your laptop. See [the CLI reference](../reference/cli.md) for the
-order and the refusals.
+runs. Then it installs only the extensions this target's debugger needs **in the
+remote window**, and opens the seat's home or, on a pod carrying the hotfix
+layout, the claim. Those are the two steps most easily got wrong by hand, and
+both fail quietly: the wrong folder can end the seat, and a locally installed
+extension runs the debug adapter on your laptop. See [the CLI
+reference](../reference/cli.md) for the order and the refusals.
 
-`launch.json` is the **only** file it puts in your folder. On a hotfixed pod
-that folder is your own committed checkout on a shared volume, so anything
-written there is a permanent line in somebody's `git status`.
+Nothing at all lands in the folder. On a hotfixed pod that folder is your own
+committed checkout on a shared volume, so anything written there is a permanent
+line in somebody's `git status` — and a `launch.json` written at window-open is
+stale as soon as you restart, because every configuration podbench can author is
+keyed on a pid and a restart changes it. On the p47 replica the same process was
+pid 12, then 2446, then 13.
+
+To learn which extensions this target needs, podbench does ask the seat — one
+`podbench debug-config --print-config`, which prints and therefore writes and
+probes nothing. That answer is what says whether this is a Python seat or a C++
+one, which is not something the laptop can see.
 
 **It sizes the pod.** vscode-server measured 1215 MiB live with one extension,
 and the headroom that decides is read on every attach anyway — so where this pod
@@ -176,12 +189,12 @@ the raise and keeps the warning. Read [Attach to a pod](attach-to-a-pod.md) on
 what an in-place resize costs — chiefly that it lives on the pod and not on its
 controller, so the next rollout takes it away.
 
-**It provisions the target when the target says it needs it** — see the next
-section. With one exception: in a dev pod it provisions nothing and says so.
-Iterate mode launches the application *from* the seat, so debugpy is already
-where the launch configuration needs it and the workload container has been
-idled to `sleep` — injecting into that would succeed against `sleep` and report
-a debugger nobody can reach.
+**It offers the debug step rather than taking it** — see [Debugging is a step
+you run](#debugging-is-a-step-you-run). On a dev pod the offer is shorter and
+the run says why: Iterate mode launches the application *from* the seat, so
+debugpy is already where the launch configuration needs it and the workload
+container has been idled to `sleep` — injecting into that would succeed against
+`sleep` and report a debugger nobody can reach.
 
 **It uses the seat that is already there**, whichever of the three modes made
 it. A pod you have already `attach`ed is reconnected to; a **dev pod** is
@@ -227,7 +240,6 @@ editor
   [ok] ssh reaches the seat, so Remote-SSH will too
   [ok] wrote ~/.vscode-server/data/Machine/settings.json in the seat: the
        folder-walk excludes
-  [ok] wrote launch.json in /root/.vscode
   [ok] installing ms-python.python, ms-python.debugpy in the seat; the first
        bootstraps vscode-server, so this is a download (1215 MiB measured, on
        the workload's ephemeral-storage budget in Observe mode)
@@ -241,6 +253,7 @@ next
   add this to ~/.ssh/config once:  Include ~/.podbench/config.d/*.conf
   or let podbench check and add it:  podbench doctor --fix
   reconnect later with:  ssh podbench-demo-api-5f6c9b7d8-qz4tn-1
+  to debug, in the seat:  podbench debug-config --provision
   if the window says 'could not establish connection', the local VS Code has
   no Remote-SSH extension (ms-vscode-remote.remote-ssh); ssh itself reached
   the seat a moment ago with the same config.
@@ -252,11 +265,20 @@ mechanism behind each of them is on this page rather than in the terminal —
 this block used to say all of it inline, and the reliably-skipped part of a
 report is the part written as prose.
 
-Lines with no tick are the **seat's own stderr**, relayed exactly as it
-arrived. `debug-config` is the only thing that can see the target, so its
-account of what is missing *is* the diagnosis; it also carries the injection
-command, whose first line ends in a `\` that means nothing once anything
-follows it, which is why nothing on this side rewraps or reflows it.
+**The assessment does not narrate here.** The one `debug-config
+--print-config` this verb runs is an internal probe of it: it says which
+extensions the seat needs and what the target's interpreter is, and those are
+the only two things it is asked. Its account of *debuggers* — which mechanism
+refused, which port a server would listen on, the injection command to run by
+hand — stays in the seat, because this run set none of that up. Measured on a
+live Diamond pod on 2026-08-24 it was 15 lines of a 90-line report, and one of
+them read `also emitting for pid 7` after a run that emitted nothing and wrote
+nothing anywhere.
+
+If it could not be read at all, that is one `[warn]` line, quoting
+`debug-config`'s own last word and naming the command to run in the seat to see
+the rest. Run it there and you get all of it, unabridged — it prints, so it
+still writes and probes nothing.
 
 `next` is printed whether or not the editor step succeeded. A run that ends at
 "ssh does not reach the seat" still landed a seat, and `podbench dbg` and
@@ -291,41 +313,48 @@ laptop, where none of the `/proc/<pid>/root` paths in `launch.json` exist, and
 the failure reads as a bad configuration (`program path is missing or invalid`)
 rather than as a wrong machine.
 
-### A stock Python workload needs debugpy, and this is where it gets it
+(debugging-is-a-step-you-run)=
+### Debugging is a step you run
 
-`podbench vscode` does not compute the debug configuration itself: it asks the
-seat, and `debug-config` is the only thing that can see the target. On a Python
-app whose image has no debugpy that ask *refuses*, because the injection
-bootstrap runs in the target's own interpreter and therefore needs debugpy
-importable **there**.
-
-The seat says so in its own words, and names `--provision` in the refusal — and
-it names it for debugpy and for no other flavour, since there is no
-`--provision` for a missing delve. So the answer is already in hand when the
-refusal arrives, and the verb acts on it: it installs debugpy into the target
-with `uv`, starts the debugpy server inside the app, and authors the
-configuration against it. F5 works when the command finishes.
-
-This used to be a round trip: podbench printed "re-run with `--provision`",
-asking you to retype a fact it had just measured.
-
-It is still a mutation and it is still refusable. It writes ~15 MB into the
-workload's writable layer, on an ephemeral-storage budget the seat *shares with
-the workload and cannot reserve*; it needs egress from the pod, since uv
-downloads from an index; starting the server ptraces the app, which stops
-answering probes for the few seconds that takes (~3 s measured — compare it
-against the deadlines the report prints); and a restart of the target container
-ends the debugging.
+`podbench vscode` opens an editor. When you want a debugger too, run the step
+the report offered you, **in the seat** — the integrated terminal of the window
+that just opened is already in the right directory:
 
 ```
-podbench vscode pod/api-5f6c9b7d8-qz4tn -n demo --no-provision
+podbench debug-config --provision
 ```
 
-declines it, and you get the offer printed where the act would have been: the
-excludes, the folder and the alias, and no `launch.json`.
+It writes `.vscode/launch.json` into the directory it is run from, which is the
+folder VS Code opened, and F5 works when it finishes. With no pid it picks the
+best candidate — the deepest non-shell process — and `podbench pids` is how you
+choose another:
 
-A target that already has a debugger is never provisioned. The consent the verb
-carries is spent only where the seat said debugpy is the blocker.
+```
+podbench pids
+podbench debug-config 2446 --provision
+```
+
+Two commands rather than one, knowingly. Editing needs a seat, a mounted claim
+and a window; debugging needs ptrace, a 15 MB install, a one-shot injection and
+a port — and most runs never debug. Paying the second bill at window-open
+charged everybody for it, on a **guessed pid** that the next restart invalidated.
+
+`--provision` is what a stock Python workload needs. The injection bootstrap
+runs in the target's own interpreter, so debugpy has to be importable *there*;
+where it is not, `debug-config` refuses and says so, naming this flag. It names
+it for debugpy and for no other flavour — there is no `--provision` for a
+missing delve. It also names it for the target that *can* import debugpy, whose
+configuration would otherwise connect to a port nothing is listening on.
+
+It is a mutation. It writes ~15 MB into the workload's writable layer, on an
+ephemeral-storage budget the seat *shares with the workload and cannot reserve*;
+it needs egress from the pod, since uv downloads from an index; starting the
+server ptraces the app, which stops answering probes for the few seconds that
+takes (~3 s measured — compare it against the deadlines the report prints); and
+a restart of the target container ends the debugging.
+
+Leave the flag off and `debug-config` authors whatever fits the target as it
+stands, and prints the injection command rather than running it.
 
 The two halves do not expire together. The **server** never survives a restart:
 it is a live process inside the one that died. The **install** survives one only
@@ -343,23 +372,27 @@ On a **hotfixed** pod the default destination is not `/opt/podbench-debugpy`,
 and cannot be. The seat there runs at the target's own uid with no capabilities,
 `/opt` in the target is a root-owned `0755` directory, and the install is
 refused by ordinary file permissions — which costs the whole cascade behind it:
-no importable debugpy, no configurations, no `launch.json`, and no debug adapter
-installed into the seat either. So `podbench vscode` installs into
-`<claim>/.podbench-debugpy` instead, where the claim is mounted, and names it in
-the `editor` block beside the folder it opened. That path is writable by the
-seat, is the same directory in both mount namespaces, and is a volume, so this
-is also the case where the install outlives a restart. There is deliberately no
-fallback in either direction: a destination that changed after a refusal would
-leave you guessing which one is live. A seat in a hotfixed pod that does not
-carry the claim mount keeps `/opt/podbench-debugpy` — the claim is the same
-directory in both mount namespaces only where both containers mount it, and
-podbench decides this on the mount rather than on the assumption.
+no importable debugpy, no configuration, no `launch.json`, and no debug adapter
+installed into the seat either. Only the laptop can see that, so `podbench
+vscode` spells the right destination into the step it offers you:
 
-A **bare** `debug-config` in the seat, with no `--provision`, still only prints
-the injection command rather than running it: that really is authoring a
-`launch.json` and nothing more, and ptracing the workload is not something it
-may do on its own. The verb relays the seat's own output either way, so the
-command is printed with the rest, along with every mechanism that said no.
+```
+to debug, in the seat:  podbench debug-config --provision --provision-dest /podbench/app/.podbench-debugpy
+```
+
+Paste it as printed. That path is writable by the seat, is the same directory in
+both mount namespaces, and is a volume, so this is also the case where the
+install outlives a restart. There is deliberately no fallback in either
+direction: a destination that changed after a refusal would leave you guessing
+which one is live. A seat in a hotfixed pod that does not carry the claim mount
+keeps `/opt/podbench-debugpy` — the claim is the same directory in both mount
+namespaces only where both containers mount it, and podbench decides this on the
+mount rather than on the assumption.
+
+A later `podbench vscode` against the same pod passes that destination to its
+assessment run too, as an extra place to look for the target's debugpy — so once
+you have run the step, the window that follows knows this is a Python seat and
+installs the Python extensions for it.
 
 ### Re-running it on a window that is already connected? Reload it
 
@@ -503,6 +536,7 @@ lines are load-bearing in ways that fail *silently*:
 | no `-t`, ever | from a script kubectl silently degrades to non-tty and appears to work; with a **real** TTY forced onto the ProxyCommand the ssh client hangs indefinitely |
 | `ControlPath /tmp/podbench-cm/%C-<digest>` | `sun_path` is 108 bytes. A control socket next to a kubeconfig or in a workspace directory hits `ControlPath too long`. The multiplexed connection is also a ~6× speedup: 0.345 s cold, 0.058 s over the master. The digest is the seat's, and it is what keeps the multiplexing honest: `%C` hashes the *resolved* `HostName`, which every seat in a pod shares, so on its own it would let a second alias ride the first seat's connection — **skipping the host-key check**, since a multiplexed session never repeats it |
 | `ServerAliveInterval`/`CountMax` | a *stalled* transport — what an apiserver or konnectivity hiccup looks like — hangs ssh **forever** without them, and fails in 19 s with them. A hard kill or pod deletion is detected instantly either way |
+| `ForwardAgent yes` | present only under `--forward-agent`, and absent otherwise because OpenSSH's own client default is `no`. It lends your agent to everyone who can `kubectl exec` into the namespace for the life of the session — see {ref}`Git in the seat <git-in-the-seat>` before adding it by hand |
 | `HostKeyAlias` + `UserKnownHostsFile` | podbench manages its own `known_hosts`, keyed on the pod UID **and the seat**, rather than teaching you `StrictHostKeyChecking no`. Every seat mints its own host key, so one alias over two of them would arrive as a host-key mismatch; a re-created pod is a *new host*, not a MITM warning |
 
 Transport budget, for reference: ~10–11 MB RSS per live session, 26 MB/s
@@ -625,6 +659,168 @@ arguments. It kills the server after exactly five minutes idle.
   in-pod verb is there as `podbench <verb>` — `podbench pids`, `podbench dbg`,
   `podbench capreport`, `podbench debug-config`, `podbench dev-bootstrap`,
   `podbench run`, `podbench stop`.
+
+(git-in-the-seat)=
+## Git in the seat: agent forwarding
+
+A seat holds no credentials, so `git fetch` in one fails — and the first thing it
+fails on is **not** authentication. Measured in a live seat on p47, 2026-08-24:
+
+```console
+$ cd /podbench/app && git fetch origin
+Host key verification failed.
+```
+
+`podbench attach --forward-agent` fixes both halves at once, because either on
+its own leaves git exactly as broken:
+
+* it puts `ForwardAgent yes` in the generated stanza, so ssh in the seat can use
+  the keys your local agent holds. Nothing else was needed for this: OpenSSH's
+  client default is `ForwardAgent no` and sshd's is `AllowAgentForwarding yes`,
+  so the seat was always willing and the stanza simply never asked. VS Code
+  picks it up because Remote-SSH connects through the stanza;
+* it copies the **forge's** entries out of your own `~/.ssh/known_hosts` into the
+  seat's. Which forge is not guessed: podbench runs `git remote -v` in the seat,
+  over **every directory the seat mounts** and its home, and seeds only the ssh
+  hosts those remotes name. Mounts rather than one chosen folder, because a
+  checkout can be on a hotfix claim, on a PVC the application declared, or in
+  the home, and `git -C` on a directory that is not a repository prints nothing.
+  On p47 `podbench-home` is an `emptyDir`, so a host accepted interactively dies
+  with the pod; this is why it is done programmatically rather than left to you.
+
+The flag is on `attach`, `vscode`, `ssh-config` and `dev`.
+
+Three things it will not do, all deliberate:
+
+* **it never invents trust.** No entry of yours for that host means no entry in
+  the seat, and it says so. podbench does not teach `StrictHostKeyChecking no`
+  and does not bake a forge's key into the image, for the same reason it does
+  neither for the seat's own host key: one is a habit you will apply elsewhere,
+  and the other goes stale silently;
+* **it copies entries, not your file.** Each copied line is rewritten to name
+  the one host it matched, so a `*.example.com` pattern of yours does not become
+  a wildcard the seat holds, and the comment goes the way it already does for
+  the seat's own entry;
+* **`@revoked` and `@cert-authority` lines are skipped.** A marker dropped in the
+  copy inverts its meaning — a revoked key rewritten as a plain entry would be
+  installed as trusted — so a CA-based setup reports as *no entry found* rather
+  than as trust invented for it.
+
+An **https** clone of a public repository needs none of this. If your remote is
+`https://github.com/…` the flag has nothing to do, and podbench says so instead
+of pretending it seeded something.
+
+**On a brand-new `podbench dev` pod there is nothing to scan yet.** The stanza is
+generated when the pod is created, and `dev-bootstrap` clones after that, so the
+seeding half finds no remote and says so — the forwarding half works from the
+first connection. If that first clone is an ssh one, seed the host by hand in
+the seat before you run it:
+
+```console
+$ ssh-keyscan github.com >> ~/.ssh/known_hosts
+```
+
+A dev pod that inherits a volume with a checkout already on it — the origin's
+volumes are copied wholesale — is scanned like any other seat.
+
+### Adding the flag to a seat you are already connected to
+
+**A connection that is already open swallows it.** Every stanza podbench writes
+carries `ControlMaster auto` and `ControlPersist`, so a second `ssh` — and
+Remote-SSH, which multiplexes the same way — rides the master that is already
+there and inherits the settings *it* was opened with. Not the stanza on disk.
+Measured on p47, 2026-08-24, with the flag on and the stanza correct:
+
+```console
+$ ssh <alias> 'echo $SSH_AUTH_SOCK; cd /podbench/app && git fetch --dry-run origin'
+SSH_AUTH_SOCK=unset
+git@github.com: Permission denied (publickey).
+$ ssh -O exit <alias>
+$ ssh <alias> 'echo $SSH_AUTH_SOCK; cd /podbench/app && git fetch --dry-run origin'
+SSH_AUTH_SOCK=/tmp/ssh-WN68Z62b2K/agent.2572
+From github.com:DiamondLightSource/fastcs-example …
+```
+
+An earlier `podbench vscode` had left the master open without forwarding. The
+symptom is `Permission denied (publickey)`, which reads as a key problem and is
+not one.
+
+podbench checks for this rather than leaving you to find it: under
+`--forward-agent` it asks `ssh -O check` about the `ControlPath` it wrote, and
+where a master is running it asks that master what `SSH_AUTH_SOCK` a session on
+it gets. A master opened by an earlier `--forward-agent` run already forwards
+and is left alone; one with no agent earns a warning and the command that fixes
+it:
+
+```
+close it first:  ssh -O exit podbench-<namespace>-<pod>-<seat>
+```
+
+It is not closed for you. The connection riding that socket is routinely a VS
+Code window, and tearing one down from a verb whose job is to write a config
+file would replace one surprise with another. Close it, then reconnect — the
+next connection reads the stanza.
+
+### What it costs, exactly
+
+`authorized_keys` gates ssh. It does **not** gate `kubectl exec`, and podbench's
+own report advertises that path. So while the session is up, anyone with
+`pods/exec` in the namespace can reach the forwarded socket and authenticate as
+you — and an agent forwards *keys*, not a destination, so that means **any host
+that trusts the key**: jump boxes, other beamline machines, other organisations.
+Bounded in time to the session, unbounded in reach within it.
+
+**Read the rolebinding before you decide.** A facility's RBAC group routinely
+contains service accounts and CI identities alongside humans, so "who can exec
+here" is often a larger set than "my colleagues".
+
+It is still the least-bad credential to put in a seat, which is why the flag
+exists at all: nothing is written to disk, and `SSH_AUTH_SOCK` is set only in the
+*ssh session's* environment, so a colleague's `kubectl exec` shell does not have
+it and cannot stumble into it. The private key never enters the pod, so the
+exposure ends when the session does. A cached `gh` token or a `.git-credentials`
+file on a shared path is the opposite on every count — persistent, copyable,
+silently reused, and still working next week.
+
+Worth keeping in frame: the established route into these pods is `kubectl exec`
+anyway. podbench's ssh layer is *adding* a boundary here, not removing one.
+
+### Forward only the git key
+
+An agent forwards **an agent**, not individual keys, so the granularity comes
+from pointing at a different one. Keep a git-only agent:
+
+```console
+$ ssh-agent -a /run/user/1000/git-agent.sock
+$ SSH_AUTH_SOCK=/run/user/1000/git-agent.sock ssh-add ~/.ssh/id_git
+```
+
+and hand it to the editor podbench launches:
+
+```console
+$ podbench vscode --agent-socket /run/user/1000/git-agent.sock
+```
+
+`--agent-socket` implies `--forward-agent`, and podbench refuses a path that is
+not a listening socket rather than starting a run that would fail in the seat
+minutes later. It sets `SSH_AUTH_SOCK` for every child of that run — `code`, the
+preflight, and the ssh calls that write the machine settings — so only the keys
+in that agent ever reach the pod, and the "unbounded in reach" objection above
+collapses to one repository host. There is no OpenSSH version floor.
+
+**One caveat, and it is a real one.** `code --remote` hands the argv to a VS Code
+that may already be running, and that instance spawns ssh with the environment
+*it* was started with. If a window is already open, close it first or export
+`SSH_AUTH_SOCK` in the shell you start VS Code from; `podbench attach
+--forward-agent` plus your own `ssh` has no such problem.
+
+Two more mitigations, both entirely yours to apply:
+
+* **`ssh-add -c`** makes the agent prompt locally on every use, so a key cannot
+  be used silently by anybody, including you;
+* **destination-constrained keys** (`ssh-add -h`, OpenSSH 8.9 and later) bind a
+  key to named destinations, which closes the "any host that trusts the key"
+  half directly rather than by keeping agents apart.
 
 ## What the seat configures for you
 

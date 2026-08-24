@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Glossary &#8212; podbench 0.9.2.dev10+g4aff5d245 documentation</title>
+    <title>Glossary &#8212; podbench 0.9.2.dev33+g97cec977c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4e410589"></script>
+    <script src="../_static/documentation_options.js?v=264b474c"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -1016,10 +1016,14 @@ against a generated config file of its own rather than the image’s, so the wor
 configuration is a reviewable artifact and the distro’s sshd is left alone.</p>
 </dd>
 <dt id="term-vscode">vscode<a class="headerlink" href="#term-vscode" title="Link to this term">#</a></dt><dd><p>The laptop verb that lands an Observe-mode seat, sizes the pod against
-<a class="reference internal" href="#term-vscode-server"><span class="xref std std-term">vscode-server</span></a>’s measured footprint, provisions debugpy into the target
-and opens the editor on the seat’s home. Both mutations are <strong>on by default</strong> —
-<code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> and <code class="docutils literal notranslate"><span class="pre">--no-provision</span></code> decline them — which makes it the only verb
-that changes a running workload without being asked for a number. See
+<a class="reference internal" href="#term-vscode-server"><span class="xref std std-term">vscode-server</span></a>’s measured footprint, and opens the editor on the seat’s
+home — or, on a hotfixed pod, on the claim. It writes no project or claim file
+and installs nothing into the target; the one file it writes is the seat’s own
+<code class="docutils literal notranslate"><span class="pre">~/.vscode-server/data/Machine/settings.json</span></code>, which sits below the opened
+folder whenever that folder is the home. Debugging is a step it offers, run in
+the seat as <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">debug-config</span></code>. The resize is its one mutation, <strong>on by
+default</strong> with <code class="docutils literal notranslate"><span class="pre">--no-resize</span></code> to decline, which makes it the only verb that
+changes a running workload without being asked for a number. See
 <a class="reference internal" href="#term-resize-subresource"><span class="xref std std-term">resize subresource</span></a> and <a class="reference internal" href="#term-mode"><span class="xref std std-term">mode</span></a>.</p>
 </dd>
 <dt id="term-vscode-server">vscode-server<a class="headerlink" href="#term-vscode-server" title="Link to this term">#</a></dt><dd><p>The server half of <a class="reference internal" href="#term-Remote-SSH"><span class="xref std std-term">Remote-SSH</span></a>, unpacked into the seat’s home on first

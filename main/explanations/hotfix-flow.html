@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>What hotfix does &#8212; podbench 0.9.2.dev10+g4aff5d245 documentation</title>
+    <title>What hotfix does &#8212; podbench 0.9.2.dev33+g97cec977c documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4e410589"></script>
+    <script src="../_static/documentation_options.js?v=264b474c"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -524,10 +524,17 @@ kubelet’s CrashLoopBackOff ladder: 15s, then 23s, then 45s. The in-place relau
 ~6.8s and costs the seat nothing (<a class="reference internal" href="spikes/s7.html"><span class="std std-doc">S7</span></a>).</p>
 <p>It is the one mode that needs deploy-time cooperation. It is Python-only and
 single-replica-only.</p>
-<p>Seven verbs: <code class="docutils literal notranslate"><span class="pre">values</span></code>, <code class="docutils literal notranslate"><span class="pre">check</span></code>, <code class="docutils literal notranslate"><span class="pre">init</span></code>, <code class="docutils literal notranslate"><span class="pre">apply</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, <code class="docutils literal notranslate"><span class="pre">retire</span></code>.
+<p>Six verbs: <code class="docutils literal notranslate"><span class="pre">values</span></code>, <code class="docutils literal notranslate"><span class="pre">check</span></code>, <code class="docutils literal notranslate"><span class="pre">init</span></code>, <code class="docutils literal notranslate"><span class="pre">restart</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, <code class="docutils literal notranslate"><span class="pre">retire</span></code>.
 <code class="docutils literal notranslate"><span class="pre">values</span></code> reads the target pod and emits the chart snippet the whole thing depends on;
 <code class="docutils literal notranslate"><span class="pre">check</span></code> says whether the deployed result is one <code class="docutils literal notranslate"><span class="pre">init</span></code> can work on; <code class="docutils literal notranslate"><span class="pre">retire</span></code> says how
 far the fix has got back out again.</p>
+<p><strong>Committing and pushing are ordinary git in the seat.</strong> There were two more verbs,
+<code class="docutils literal notranslate"><span class="pre">apply</span></code> and <code class="docutils literal notranslate"><span class="pre">consolidate</span></code>, and each was git plus one field written into the manifest.
+Both are gone (<a class="reference external" href="https://github.com/gilesknap/podbench/issues/232">#232</a>): the seat has
+a working git since 0.9.0, and a manifest that records what git did is a record one
+hand commit or one hand push makes false without anything noticing. What is left is
+the work git cannot do from in there — relaunching the application, and measuring
+where the claim has got to.</p>
 <section id="the-layout-it-requires">
 <h2>The layout it requires<a class="headerlink" href="#the-layout-it-requires" title="Link to this heading">#</a></h2>
 <p>The claim mounts <strong>beside</strong> the application’s project, never over it.</p>
@@ -704,7 +711,7 @@ thing this mode cannot get wrong from a desk is checked from one.</p>
       exec &lt;your entrypoint&gt;
     ) &amp;
     child=$!
-    echo $child &gt; /tmp/podbench-child.pid                ← what `apply` kills
+    echo $child &gt; /tmp/podbench-child.pid                ← what `restart` kills
     wait $child; rc=$?
     kill -TERM -&quot;$child&quot; 2&gt;/dev/null || true             ← reap the strays
     [ -e /tmp/podbench-hold ] || exit $rc                ← fail-fast by default
@@ -714,7 +721,7 @@ thing this mode cannot get wrong from a desk is checked from one.</p>
 <p>Three things about it, each of which failed silently before it was measured:</p>
 <ul class="simple">
 <li><p><strong>The runtime switch is inside the loop.</strong> Evaluated once at container start it can
-never see a claim seeded afterwards, so the first <code class="docutils literal notranslate"><span class="pre">apply</span></code> after an <code class="docutils literal notranslate"><span class="pre">init</span></code> would
+never see a claim seeded afterwards, so the first <code class="docutils literal notranslate"><span class="pre">restart</span></code> after an <code class="docutils literal notranslate"><span class="pre">init</span></code> would
 relaunch the <em>image’s</em> code and report success — new pids, <code class="docutils literal notranslate"><span class="pre">restartCount</span></code> 0, and the
 old binary still serving. The <code class="docutils literal notranslate"><span class="pre">.venv</span></code> it looks for is <code class="docutils literal notranslate"><span class="pre">--claim-venv</span></code>’s default, and
 the same value has to reach <code class="docutils literal notranslate"><span class="pre">init</span></code>: a switch looking for one directory and a rebuild
@@ -779,7 +786,7 @@ before the attach. <code class="docutils literal notranslate"><span class="pre">
 distroless container is a real possibility, and is reported as <strong>not measured</strong> rather
 than as a project that is absent.</p></li>
 <li><p><strong>A <code class="docutils literal notranslate"><span class="pre">warn</span></code> is not a blocker</strong>, the way it is not in <code class="docutils literal notranslate"><span class="pre">doctor</span></code>. A non-exec
-<code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> is one: <code class="docutils literal notranslate"><span class="pre">init</span></code> accepts such a target and it is <code class="docutils literal notranslate"><span class="pre">apply</span></code>’s hold the
+<code class="docutils literal notranslate"><span class="pre">livenessProbe</span></code> is one: <code class="docutils literal notranslate"><span class="pre">init</span></code> accepts such a target and it is the relaunch’s hold the
 kubelet will cut short, so it is a thing to deal with rather than a reason for this
 command to stop.</p></li>
 <li><p><strong>It asks <code class="docutils literal notranslate"><span class="pre">init</span></code>’s questions in <code class="docutils literal notranslate"><span class="pre">init</span></code>’s terms, which is why it takes <code class="docutils literal notranslate"><span class="pre">--repo</span></code>.</strong>
@@ -860,7 +867,7 @@ asked.</p></li>
 │   can carry the supervisor while the container runs something    │
 │   else — an image whose ENTRYPOINT wins, values that never       │
 │   reached this pod. A refusal, not a warning: with nothing to    │
-│   relaunch, `apply` would kill the application, the kubelet      │
+│   relaunch, a restart would kill the application, the kubelet    │
 │   would restart the container, and your seat would go with it.   │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ├─ no supervisor ──────────────▶ exit 2
@@ -946,7 +953,11 @@ asked.</p></li>
 │ RECORD THE PROVENANCE — on the claim, and only there             │
 │   write /podbench/app/.podbench-hotfix.json                      │
 │     checkout, repo, base image + digest, interpreter, container, │
-│     commit, base_commit, author, timestamp                       │
+│     base_commit (+ whether it was assumed), claim venv           │
+│                                                                  │
+│   Only what git cannot answer. No commit, no count, no author,   │
+│   no timestamp: the claim is a clone with a real origin, and     │
+│   `status` asks it (#232).                                       │
 │                                                                  │
 │   Not on the workload&#39;s pod template. A GitOps controller        │
 │   reconciles a volume towards its spec but strips an annotation  │
@@ -987,8 +998,8 @@ for and the one <code class="docutils literal notranslate"><span class="pre">uv<
 landed beside the venv the supervisor is looking for would leave the pod quietly
 running the image’s code — the one failure this whole mode exists to avoid. Passing it
 to <code class="docutils literal notranslate"><span class="pre">init</span></code> means passing the same value to <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">values</span></code>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">init</span></code> records it in the manifest, and <code class="docutils literal notranslate"><span class="pre">apply</span></code> reads it from there rather than
-taking a flag of its own
+<p><code class="docutils literal notranslate"><span class="pre">init</span></code> records it in the manifest, and <code class="docutils literal notranslate"><span class="pre">restart</span> <span class="pre">--reinstall</span></code> reads it from there
+rather than taking a flag of its own
 (<a class="reference external" href="https://github.com/gilesknap/podbench/issues/209">#209</a>). Before it did, a
 packaging change under <code class="docutils literal notranslate"><span class="pre">init</span> <span class="pre">--claim-venv</span> <span class="pre">env</span></code> was rebuilt into <code class="docutils literal notranslate"><span class="pre">.venv</span></code> while the
 switch went on looking in <code class="docutils literal notranslate"><span class="pre">env</span></code> — the same silent revert, arrived at from the one
@@ -1029,15 +1040,18 @@ label’s own revision. So podbench asks the seeded checkout’s <code class="do
 naming of the repository that did not come out of the image. Where <code class="docutils literal notranslate"><span class="pre">origin</span></code>
 disagrees it wins, and the base is recorded as assumed.</p>
 <p>Where nothing corroborates them — no labels, a registry that wants credentials,
-or no checkout in the image to ask — the base is recorded as <strong>assumed</strong> and <code class="docutils literal notranslate"><span class="pre">status</span></code> says
-<code class="docutils literal notranslate"><span class="pre">+N</span> <span class="pre">commit(s)</span> <span class="pre">from</span> <span class="pre">an</span> <span class="pre">assumed</span> <span class="pre">base</span></code>. That is the point of the item rather than a
-fallback from it: a derived count printed as though it were measured is worse
-than one that admits what it stands on.</p>
+or no checkout in the image to ask — the base is recorded as <strong>assumed</strong> and the
+<code class="docutils literal notranslate"><span class="pre">claim</span></code> row says <code class="docutils literal notranslate"><span class="pre">an</span> <span class="pre">assumed</span> <span class="pre">base,</span> <span class="pre">so</span> <span class="pre">the</span> <span class="pre">count</span> <span class="pre">is</span> <span class="pre">a</span> <span class="pre">guess</span></code>. That is the point of the
+item rather than a fallback from it: a derived count printed as though it were
+measured is worse than one that admits what it stands on.</p>
 </section>
 </section>
-<section id="hotfix-apply-commit-rebuild-if-needed-relaunch">
-<h2><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">apply</span></code> — commit, rebuild if needed, relaunch<a class="headerlink" href="#hotfix-apply-commit-rebuild-if-needed-relaunch" title="Link to this heading">#</a></h2>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench hotfix apply TARGET -m &quot;message&quot; [--no-bounce]
+<section id="hotfix-restart-relaunch-the-application-in-place">
+<h2><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">restart</span></code> — relaunch the application in place<a class="headerlink" href="#hotfix-restart-relaunch-the-application-in-place" title="Link to this heading">#</a></h2>
+<p>The inner loop: you restart twenty times and commit once, when it works. It writes
+nothing at all — no <code class="docutils literal notranslate"><span class="pre">add</span></code>, no <code class="docutils literal notranslate"><span class="pre">commit</span></code>, no manifest — because committing is <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">commit</span></code> in the seat and a verb that required <code class="docutils literal notranslate"><span class="pre">-m</span></code> per iteration is what pushed the
+edit-run-look loop out of podbench altogether.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench hotfix restart TARGET [--reinstall]
     │
     ▼
    resolve the target and the seat (exactly as init does)
@@ -1047,44 +1061,22 @@ than one that admits what it stands on.</p>
     │
     ├─ absent ──────────────────────────────────▶ exit 2  (&quot;run init first&quot;)
     ▼
+   require_supervisor — before anything is killed, not after: with no
+   supervisor the tree-kill takes the application down with nothing
+   behind it, and the kubelet restarts the container and the seat with it
+    │
+    ▼
+   --reinstall?  yes → env UV_CACHE_DIR=… uv sync … in the APPLICATION
+                       container, into the venv the manifest records.
+                       Before the kill: a relaunch onto a half-built venv
+                       is the state this mode exists to avoid.
+    │
+    ▼
+   cat /tmp/podbench-child.pid                       → the pid before
+    │
+    ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ COMMIT                                                           │
-│   git -C SRC status --porcelain                                  │
-│     dirty → git add -A                                           │
-│             git -c user.name=… -c user.email=… commit -m &quot;…&quot;     │
-│     clean → &quot;nothing new to commit&quot; (a hand commit in the seat   │
-│             is a normal way to get here)                         │
-│                                                                  │
-│   Not optional: a hotfix that is only a working-tree edit has no │
-│   sha, and without a sha the manifest cannot say what is running │
-│   and `consolidate` has nothing to push.                         │
-└─────────────────────────────────┬────────────────────────────────┘
-                                  ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ MEASURE THE DRIFT                                                │
-│   git -C SRC rev-parse HEAD                                      │
-│   git -C SRC log &lt;base_commit&gt;..HEAD     → commits ahead         │
-│   git -C SRC diff --name-only &lt;last recorded commit&gt;..HEAD       │
-│                                                                  │
-│   Keyed on the commit range, not on whether the tree was dirty:  │
-│   several hand commits can accumulate between two applies.       │
-└─────────────────────────────────┬────────────────────────────────┘
-                                  ▼
-                 pyproject.toml / setup.py / setup.cfg / MANIFEST.in
-                 among the changed paths?
-                    │                          │
-                yes │                          │ no
-                    ▼                          ▼
-       rerun the venv rebuild          &quot;editable install still valid&quot;
-       in the application container    (an editable install is a path
-                    │                   redirection: new code is free,
-                    │                   a new entry point is not)
-                    └───────────┬─────────────┘
-                                ▼
-   write the manifest back      (commit, author, timestamp, ahead, commits[:20])
-                                ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ RELAUNCH  (unless --no-bounce) — one exec, three steps           │
+│ RELAUNCH — one exec, three steps                                 │
 │                                                                  │
 │   1  date -u -d &quot;+120 seconds&quot; +%s &gt; /tmp/podbench-hold          │
 │      trap &#39;rm -f /tmp/podbench-hold&#39; EXIT                        │
@@ -1111,9 +1103,54 @@ than one that admits what it stands on.</p>
 │   mattering, which is what lets this work on a bare pod.         │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ▼
+   cat /tmp/podbench-child.pid                       → the pid after
+    │
+    ▼
+   git -C SRC status --porcelain      ← one read, two readings
+     dirty → &quot;the claim is dirty and running: N files uncommitted (…)&quot;
+     clean → &quot;the claim is clean and running: the new process loaded &lt;sha&gt;&quot;
+     pyproject.toml / setup.py / setup.cfg / MANIFEST.in among the
+     uncommitted paths, and no --reinstall → &quot;the editable install still
+     describes the old packaging … re-run with `--reinstall`&quot;
+    │
+    ▼
+   SRC/.vscode/launch.json exists?
+     no  → nothing (a restart is not an ask for a debugger)
+     yes → podbench debug-config --provision --provision-dest &lt;claim&gt;
+                                 --output SRC/.vscode/launch.json
+           failure → a line in the report, not a failed restart
+    │
+    ▼
                         actions printed, exit 0
 </pre></div>
 </div>
+<p>What <code class="docutils literal notranslate"><span class="pre">restart</span></code> owes in exchange for writing nothing is the <strong>dirty line</strong>. An
+uncommitted change on a live process is the one divergence no repository anywhere
+records — a larger one than a committed change, not a smaller — so it is said on every
+restart, clean or dirty. <code class="docutils literal notranslate"><span class="pre">status</span></code> measures the same thing from the other end.</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">--reinstall</span></code> is where <code class="docutils literal notranslate"><span class="pre">apply</span></code>’s one non-git step went.</strong> An editable install is a
+path redirection: new <em>code</em> is picked up for free, which is what makes this loop
+cheap, but a new entry point or a renamed package is baked into the <code class="docutils literal notranslate"><span class="pre">.dist-info</span></code> at
+install time. <code class="docutils literal notranslate"><span class="pre">apply</span></code> inferred that from the range of commits it had just made, and
+that input is exactly what a mode with no recorded commit does not have — so it is a
+flag. The half the working tree <em>can</em> see is said as a line rather than acted on: a
+<code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span></code> on every restart would cost the inner loop the thing that makes it one.</p>
+<p>Two things the report is careful about:</p>
+<ul class="simple">
+<li><p><strong>Which pid.</strong> <code class="docutils literal notranslate"><span class="pre">/tmp/podbench-child.pid</span></code> holds the <em>supervisor’s</em> child, and
+on the measured target (<code class="docutils literal notranslate"><span class="pre">bl47p-ea-fastcs-01-0</span></code>, 2026-08-24) that was pid 7,
+<code class="docutils literal notranslate"><span class="pre">stdio-socket</span> <span class="pre">--ptty</span></code>, with the <code class="docutils literal notranslate"><span class="pre">fastcs-example</span></code> anybody would debug at pid 13
+three levels below it. The line says <code class="docutils literal notranslate"><span class="pre">stopped</span> <span class="pre">the</span> <span class="pre">supervisor</span> <span class="pre">child</span> <span class="pre">pid</span> <span class="pre">7</span> <span class="pre">and</span> <span class="pre">its</span> <span class="pre">tree</span></code> because the kill is a tree kill and because calling 7 “the
+application” would send a reader to the wrong process.</p></li>
+<li><p><strong>Which debug configuration.</strong> Every configuration podbench authors is
+pid-keyed, so an untouched <code class="docutils literal notranslate"><span class="pre">launch.json</span></code> after a relaunch names a closed port
+— which presents as a broken adapter rather than as a stale file. Refreshing
+it is cheap: debugpy’s files are already on the claim and a fresh process can
+be served again, so the one-shot problem does not arise. The gate is the
+document’s existence and nothing weaker, because <code class="docutils literal notranslate"><span class="pre">--provision</span></code> ptraces the
+workload and installs into it; the justification for doing that without asking
+again is entirely that the user ran the debug step and has not retracted it.</p></li>
+</ul>
 </section>
 <section id="hotfix-status-the-point-of-the-whole-mode">
 <h2><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> — the point of the whole mode<a class="headerlink" href="#hotfix-status-the-point-of-the-whole-mode" title="Link to this heading">#</a></h2>
@@ -1160,6 +1197,23 @@ shutdown-checklist assertion.</p>
     ├─ neither a manifest nor a hold → not listed
     │      (a deployed-but-unused claim is not a hotfix)
     │
+    ├─ a SECOND exec, only where there is a manifest — ordinary git in
+    │  the claim, reading local objects and refs:
+    │      command -v git                            ← 90: unmeasured
+    │      git -C SRC status --porcelain             ← dirty, and which
+    │      git -C SRC rev-parse HEAD                 ← what is running
+    │      git -C SRC rev-list --count &lt;base&gt;..HEAD  ← how far ahead
+    │      git -C SRC branch -r --contains HEAD      ← as of the clone
+    │
+    │   Two execs and not one because the count is measured from the
+    │   manifest&#39;s base commit, and the manifest arrives in the first
+    │   one. No network, no credential, no agent: measured in a seat on
+    │   the live p47 pod with `git fetch` in the same session dying on
+    │   host verification, and every one of these answered.
+    │
+    ├─ ONE `git ls-remote --heads &lt;repo&gt;` per distinct repository, run
+    │  HERE, on the laptop, under a 5s bound (unless --no-remote)
+    │
     ├─ read the container&#39;s current image + imageID from status
     │
     ├─ digest differs from the one recorded?
@@ -1170,14 +1224,22 @@ shutdown-checklist assertion.</p>
 
      interpreter   the venv&#39;s bin/python will not run, or its version
                    moved
-     superseded    consolidated onto a branch AND the image has changed
-                   since: the claim is now shadowing the released fix
-                   with an older copy of it
      image-changed the image was upgraded under a live hotfix, so the
                    upgrade has not reached the running code
      unreadable    a manifest is present on the claim and will not parse
      not-hotfixed  held, but nothing hotfixed here
-     active        hotfixed, base image unchanged, N commits ahead
+     active        hotfixed, and nothing here needs attention
+    │
+    ▼
+   and four measured rows under each pod:
+
+     claim   &lt;head&gt; is N commits ahead of &lt;base&gt;
+     dirty   N files uncommitted, and they are what is running (…)
+     remote  &lt;head&gt; is the tip of &lt;branch&gt;, checked just now
+     image   unchanged since the hotfix was made (sha256:…)
+
+   with the first three replaced by one `git` row saying `unmeasured`
+   wherever the claim&#39;s container has no git
     │
     ▼
    plus a `held` column, orthogonal to all of the above:
@@ -1192,52 +1254,85 @@ shutdown-checklist assertion.</p>
    exit 0 only if every row is `active` AND unheld
 </pre></div>
 </div>
+<p><strong>The four rows are measured on every run, and nothing about them is recorded.</strong> The
+manifest used to carry the commit, the count, the author, the timestamp and the branch,
+and #232 removed all five: the seat has ordinary git, so one hand commit or one hand
+push makes a recorded field false while everything goes on printing it. What the
+manifest keeps is what git cannot know — where the claim came from, which commit and
+which image it was seeded against, how it is laid out.</p>
+<p><strong>Three of the four need a git in the claim’s container, and say so when there is
+none.</strong> <code class="docutils literal notranslate"><span class="pre">status</span></code> reads the claim through the <em>application</em> container rather than
+through a seat, because the whole value of the listing is finding a hotfix nobody told
+you about — which is a pod you have not attached to. A distroless application image
+has no git; the report then prints one <code class="docutils literal notranslate"><span class="pre">git</span>&#160; <span class="pre">unmeasured</span> <span class="pre">…</span></code> row rather than three rows
+reporting an unread claim as clean. (Measured on <code class="docutils literal notranslate"><span class="pre">bl47p-ea-fastcs-01-0</span></code>: that container
+<em>does</em> carry <code class="docutils literal notranslate"><span class="pre">/usr/bin/git</span></code>, which is a property of that image and not a rule.)</p>
+<p><strong>The <code class="docutils literal notranslate"><span class="pre">remote</span></code> row is asked from the laptop.</strong> An exec session has no <code class="docutils literal notranslate"><span class="pre">SSH_AUTH_SOCK</span></code>
+— agent forwarding exists only inside an ssh session — so the pod could not use a
+forwarded agent even once one is offered, and the claim’s remote on the live target is
+ssh: <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">fetch</span> <span class="pre">--dry-run</span> <span class="pre">origin</span></code> in its seat answers <code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">key</span> <span class="pre">verification</span> <span class="pre">failed</span></code>.
+The laptop already holds both halves, credentials and connectivity, so podbench reads
+the shas out over exec and runs <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">ls-remote</span></code> here. Three rules on that row, each
+with the failure it stops:</p>
+<ul class="simple">
+<li><p><strong>It is bounded</strong> (5s, once per repository). A status verb that hangs on a network
+call is worse than one that says less.</p></li>
+<li><p><strong>A failure is <code class="docutils literal notranslate"><span class="pre">unmeasured</span></code>, never “not pushed”.</strong> A forge that is down, a
+repository that wants a credential this laptop does not have, a <code class="docutils literal notranslate"><span class="pre">git</span></code> that is not
+installed: none of those is evidence that nobody pushed. Where the query fails the
+row falls back to what the <em>clone</em> last fetched, and says that is what it is.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ls-remote</span></code> returns ref tips, not ancestry.</strong> The row can say a commit is the tip
+of a branch. It cannot cheaply say it has been merged, so it does not imply it.</p></li>
+</ul>
+<p><strong>Nothing on those rows moves the exit code.</strong> A dirty claim is the ordinary inner
+loop, an unpushed one is the ordinary state of a fix made an hour ago, and a row that
+could not be measured is not an assertion in either direction. The exit code stays what
+it has always been: does a hotfix in this namespace need somebody today?</p>
 <p><code class="docutils literal notranslate"><span class="pre">-A</span></code>/<code class="docutils literal notranslate"><span class="pre">--all-namespaces</span></code> is the same listing over the cluster, with the same exit code.
 That is the difference between the shutdown-checklist assertion this command’s exit
 code has always sold and a shell loop over namespaces the operator has to write and
 keep correct (<a class="reference external" href="https://github.com/gilesknap/podbench/issues/205">#205</a> item 5). Each
 pod is still read through a client bound to <em>its own</em> namespace: one <code class="docutils literal notranslate"><span class="pre">-n</span></code> wrong on an
 exec reads a claim out of a different pod, or out of none.</p>
-<p>A row whose hotfix has been consolidated also carries a <strong>retirement</strong> line naming
-which steps are left — see <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">retire</span></code> below. <code class="docutils literal notranslate"><span class="pre">superseded</span></code> on its own was correct
-and indefinite, which is a state nobody can act on.</p>
+<p>A row whose <strong>image has moved</strong> also carries a <strong>retirement</strong> line naming which steps
+are left — see <code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">retire</span></code> below. That gate used to be the recorded
+<code class="docutils literal notranslate"><span class="pre">consolidated_branch</span></code>; the image is the better one of the two, because it turns on the
+cluster in front of you rather than on somebody having run a verb.</p>
 <p>The hold is a column and not a clause in the health sentence because they are
 different questions and either can be true alone: a perfectly healthy hotfix can sit in
 a pod nobody released, and a pod that was <strong>never hotfixed at all</strong> can be left held by
-an <code class="docutils literal notranslate"><span class="pre">apply</span></code> that died mid-flight. That second case is real and nothing else will notice
+a relaunch that died mid-flight. That second case is real and nothing else will notice
 it — its liveness probe is short-circuited and its supervisor is relaunching without
 backoff — which is why a held pod is listed whether or not it carries a manifest, and
 why the hold moves the exit code.</p>
 </section>
-<section id="hotfix-consolidate-get-it-back-into-an-image">
-<h2><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">consolidate</span></code> — get it back into an image<a class="headerlink" href="#hotfix-consolidate-get-it-back-into-an-image" title="Link to this heading">#</a></h2>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>podbench hotfix consolidate TARGET --branch fix/thing [--dry-run]
-    │
-    ▼
-   read the manifest; git -C SRC log &lt;base&gt;..HEAD
-    │
-    ├─ not ahead ───────────────────────────────▶ exit 2
-    ▼        (&quot;if the fix is already in the image, retire the claim instead&quot;)
-   git -C SRC push origin HEAD:refs/heads/&lt;branch&gt;
-    │
-    ▼
-   record consolidated_branch in the manifest (on the claim)
-    │        → from now on `status` can call a stale claim `superseded`
-    ▼        rather than leaving it a mystery
-   print the retirement checklist:
-     1. gh pr create --head &lt;branch&gt; …
-     2. merge; let CI build and publish the image
-     3. roll the workload onto it and confirm it is healthy
-     4. take the five values back out of the application&#39;s own chart
-     5. turn the claim&#39;s boolean off and delete the claim
-   … and name `podbench hotfix retire`, which measures which of
-     those have landed
-</pre></div>
-</div>
-<p>The PR is not opened here: that needs a forge client podbench does not depend on, and
-a printed <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">pr</span> <span class="pre">create</span></code> is one paste. Until step 5 the claim keeps shadowing the
-image’s project — the runtime switch prefers a seeded claim, and it does not care that
-the fix is now in the image too.</p>
+<section id="getting-it-back-into-an-image">
+<h2>Getting it back into an image<a class="headerlink" href="#getting-it-back-into-an-image" title="Link to this heading">#</a></h2>
+<p>podbench has no verb for this half, and deleting the one it had is
+<a class="reference external" href="https://github.com/gilesknap/podbench/issues/232">#232</a>. <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> was
+<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">push</span> <span class="pre">origin</span> <span class="pre">HEAD:refs/heads/&lt;branch&gt;</span></code> plus a manifest field, and it handled no
+credentials — so pushing from the seat was exactly as hard with it as without it, and
+on the pod it was built for it did not work at all: the claim’s remote is
+<code class="docutils literal notranslate"><span class="pre">git&#64;github.com:…</span></code>, the seat has no key and no <code class="docutils literal notranslate"><span class="pre">known_hosts</span></code>, and the push dies on
+<code class="docutils literal notranslate"><span class="pre">Host</span> <span class="pre">key</span> <span class="pre">verification</span> <span class="pre">failed</span></code> (measured on <code class="docutils literal notranslate"><span class="pre">bl47p-ea-fastcs-01-0</span></code>, 2026-08-24). The
+manifest field it wrote was worse than useless once anybody pushed by hand.</p>
+<p>The steps themselves have not changed, and they are still the order:</p>
+<ol class="arabic simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">push</span></code> the claim’s checkout as a branch — from the seat once it can reach the
+forge, or from a laptop clone;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">pr</span> <span class="pre">create</span></code>, merge, and let CI build and publish the image;</p></li>
+<li><p>roll the workload onto the new image and confirm it is healthy;</p></li>
+<li><p>take the volume, volumeMount, <code class="docutils literal notranslate"><span class="pre">command</span></code>, <code class="docutils literal notranslate"><span class="pre">args</span></code> and <code class="docutils literal notranslate"><span class="pre">podSecurityContext</span></code> back out
+of the <em>application’s</em> own values, and redeploy;</p></li>
+<li><p>turn the claim off (<code class="docutils literal notranslate"><span class="pre">podbench-hotfix-claim.enabled=false</span></code>, or
+<code class="docutils literal notranslate"><span class="pre">hotfixProject.enabled=false</span></code> on the central route) <strong>and</strong> delete it — it is
+annotated <code class="docutils literal notranslate"><span class="pre">Prune=false</span></code>, so the flip alone leaves it.</p></li>
+</ol>
+<p>Steps 4 and 5 are the two nobody does, and they are two because the first lives in the
+application’s values and the second in the claim’s chart: turning the claim off leaves
+the pod wired, which is how a claim goes on shadowing a fixed image. <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">status</span></code> says whether step 1 has happened — it asks the forge — and <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">retire</span></code> measures 3, 4 and 5.</p>
+<p>Until step 5 the claim keeps shadowing the image’s project — the runtime switch prefers
+a seeded claim, and it does not care that the fix is now in the image too.</p>
 <p>Step 5 is two actions and not one, deliberately. The claim carries both
 <code class="docutils literal notranslate"><span class="pre">helm.sh/resource-policy:</span> <span class="pre">keep</span></code> and
 <code class="docutils literal notranslate"><span class="pre">argocd.argoproj.io/sync-options:</span> <span class="pre">Prune=false,Delete=false</span></code>, so turning the
@@ -1256,9 +1351,7 @@ it (issue #190).</p>
 <p>Steps 4 and 5 above are the ones nobody does, and nothing tracked them
 (<a class="reference external" href="https://github.com/gilesknap/podbench/issues/205">#205</a> item 4). <code class="docutils literal notranslate"><span class="pre">retire</span></code> asks the
 cluster where a retirement has actually got to, and performs the one step podbench can:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  [x]     branch         consolidated onto hotfix/beamtime-14, so the claim is
-                         no longer the only copy of this fix
-  [x]     image          the deployed image is sha256:bbbb…, and the hotfix was
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  [x]     image          the deployed image is sha256:bbbb…, and the hotfix was
                          made against sha256:aaaa…. Whether the rebuild included
                          the fix is *not* measured — podbench compares digests,
                          not contents.
@@ -1277,7 +1370,7 @@ cluster where a retirement has actually got to, and performs the one step podben
                          hotfix is not measured here …
   [ ]     claim          bl47p-ea-fastcs-01-podbench-project still exists …
 ------------------------------------------------------------------------
-VERDICT: 2 of 4 steps of retirement remain (exit 1)
+VERDICT: 2 of 3 steps of retirement remain (exit 1)
 REMAINING: wiring, claim
 </pre></div>
 </div>
@@ -1290,23 +1383,24 @@ mounting the claim and still running the supervisor loop. The boolean disables t
 Somebody had done step 5 and not step 4, and the state that leaves — a pod wired to a
 claim its chart no longer declares — is worse than either end of the checklist, because
 it fails only when that PVC is finally pruned and only at the next reschedule.</p>
-<p>Four rows and not five, because these are the four a cluster can be <em>asked</em> about:
-opening the PR and merging it leave no trace podbench can read, while rolling the
-image, unwiring the pod and deleting the claim each do.</p>
+<p>Three rows and not five, because these are the three a cluster can be <em>asked</em> about:
+getting the fix onto a branch, opening the PR and merging it leave no trace podbench
+can read, while rolling the image, unwiring the pod and deleting the claim each do.</p>
+<p>There was a fourth, <code class="docutils literal notranslate"><span class="pre">branch</span></code>, and #232 dropped it with the field it read.
+<code class="docutils literal notranslate"><span class="pre">consolidated_branch</span></code> was written by <code class="docutils literal notranslate"><span class="pre">consolidate</span></code> and could be made a lie by one hand
+push — the whole objection that deleted the verb. Whether the fix exists anywhere but
+the claim is a live question now, asked by <code class="docutils literal notranslate"><span class="pre">status</span></code> against the forge and reported as
+<code class="docutils literal notranslate"><span class="pre">unmeasured</span></code> when the forge cannot be reached; retirement turns only on what can be
+measured from the cluster in front of you.</p>
 <p>The rules the report keeps, each with the failure it exists to stop:</p>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">[x]</span></code> only for a step that was measured done.</strong> An unmeasured step is <code class="docutils literal notranslate"><span class="pre">[</span> <span class="pre">]</span></code> with a
 detail saying why, and it moves the exit code in neither direction. A retirement that
 lies is worse than the checklist it replaces, which is #205 item 4’s own
 falsification.</p></li>
-<li><p><strong>The manifest can only be read while something mounts the claim</strong>, so <code class="docutils literal notranslate"><span class="pre">branch</span></code> and
-<code class="docutils literal notranslate"><span class="pre">image</span></code> go unmeasured the moment the pod is unwired — which is exactly when the
-deletion becomes safe. The verb says so rather than carrying the last answer forward.</p></li>
-<li><p><strong>A step with nothing in it is done, not outstanding.</strong> A claim that was seeded and
-never <code class="docutils literal notranslate"><span class="pre">apply</span></code>-ed carries no commits, so <code class="docutils literal notranslate"><span class="pre">branch</span></code> is <code class="docutils literal notranslate"><span class="pre">[x]</span></code>: there is nothing to
-consolidate and nothing that retiring the claim discards. It read <code class="docutils literal notranslate"><span class="pre">[</span> <span class="pre">]</span>&#160; <span class="pre">0</span> <span class="pre">commit(s)</span> <span class="pre">…</span> </code>podbench hotfix consolidate …<code class="docutils literal notranslate"> <span class="pre">first</span></code> on the live target, about a claim
-<code class="docutils literal notranslate"><span class="pre">consolidate</span></code> refuses with “there is no hotfix to consolidate … retire the claim
-instead” — two verbs pointing at each other, and a count of four when three remained.</p></li>
+<li><p><strong>The manifest can only be read while something mounts the claim</strong>, so <code class="docutils literal notranslate"><span class="pre">image</span></code> goes
+unmeasured the moment the pod is unwired — which is exactly when the deletion becomes
+safe. The verb says so rather than carrying the last answer forward.</p></li>
 <li><p><strong>The <code class="docutils literal notranslate"><span class="pre">wiring</span></code> row names what <code class="docutils literal notranslate"><span class="pre">values</span></code> emits, and does not send anyone at the keys.</strong>
 It named three things when six values were wired, and its closing clause pointed at
 “the values <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">hotfix</span> <span class="pre">values</span></code> emitted” — which under <code class="docutils literal notranslate"><span class="pre">--from-pod</span></code> is
@@ -1350,28 +1444,43 @@ claim is gone.</p>
 </section>
 <section id="every-cluster-call-in-order">
 <h2>Every cluster call, in order<a class="headerlink" href="#every-cluster-call-in-order" title="Link to this heading">#</a></h2>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  init / apply / consolidate:
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  init / restart:
    1  kubectl config view --minify -o jsonpath={..namespace}   # only without -n
    2  kubectl -n NS get deployment NAME -o json     ┐ or get pod NAME -o json,
    3  kubectl -n NS get pods -l &lt;matchLabels&gt; -o json│ then get replicaset / get
    4  kubectl -n NS get pod POD -o json             ┘ deployment walking upwards
                                                      (+ the seat lookup)
    5  kubectl -n NS exec -c APP  POD -- test -e /tmp/podbench-child.pid
-                                                     # init: require the supervisor
+                                                     # init and restart: require
+                                                     # the supervisor
    6  kubectl -n NS exec -c SEAT POD -- &lt;cp / git / cat / test / sh -c &#39;cat &gt; …&#39;&gt;
                                                      # the seed, and every claim
                                                      # read and write
    7  kubectl -n NS exec -c APP  POD -- env UV_CACHE_DIR=… uv sync …
-                                                     # init, and apply when
-                                                     # packaging metadata moved
-   8  kubectl -n NS exec -c APP  POD -- bash -c &#39;&lt;hold; kill the tree; release&gt;&#39;
-                                                     # apply, unless --no-bounce
+                                                     # init, and restart under
+                                                     # --reinstall
+   8  kubectl -n NS exec -c APP  POD -- cat /tmp/podbench-child.pid
+                                                     # restart, either side of 9
+   9  kubectl -n NS exec -c APP  POD -- bash -c &#39;&lt;hold; kill the tree; release&gt;&#39;
+                                                     # every restart
+  10  kubectl -n NS exec -c SEAT POD -- podbench debug-config --provision …
+                                                     # restart, only where the
+                                                     # claim already has a
+                                                     # .vscode/launch.json
 
   status:
    1  kubectl -n NS get pods -o json
    2  kubectl -n NS exec -c APP POD -- sh -c &#39;cat manifest; cat hold; date&#39;
                                                      # per candidate pod
-   3  kubectl -n NS exec -c APP POD -- python3 -V    # only for a changed digest
+   3  kubectl -n NS exec -c APP POD -- sh -c &#39;&lt;git status/rev-parse/rev-list/
+                                               branch -r&gt;&#39;
+                                                     # only where there is a
+                                                     # manifest to count from
+   4  kubectl -n NS exec -c APP POD -- python3 -V    # only for a changed digest
+   5  git ls-remote --heads REPO                     # NOT kubectl: run here,
+                                                     # once per repository,
+                                                     # bounded, and skipped
+                                                     # under --no-remote
 
   values:
    1  kubectl config view --minify -o jsonpath={..namespace}   # only without -n
@@ -1431,8 +1540,8 @@ cluster terms Hotfix mode is now watching, plus the one deletion that ends it.</
 keeps running the claim’s code, so the upgrade does not reach what is executing.
 The manifest records the digest it was made against and <code class="docutils literal notranslate"><span class="pre">status</span></code> compares it, which
 is what turns a silent shadow into <code class="docutils literal notranslate"><span class="pre">image-changed</span></code>.</p></li>
-<li><p><strong>Single replica only.</strong> RWO, one checkout, one venv; an <code class="docutils literal notranslate"><span class="pre">apply</span></code> on either of two
-pods is a race with no winner.</p></li>
+<li><p><strong>Single replica only.</strong> RWO, one checkout, one venv; an edit and a restart on
+either of two pods is a race with no winner.</p></li>
 </ol>
 <p>There used to be a third — an interpreter bump breaking the venv, because <code class="docutils literal notranslate"><span class="pre">bin/python</span></code>
 pointed at a path inside the image. That is now <em>fixed</em> rather than reported: the
@@ -1517,9 +1626,9 @@ other term used here without explanation.</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-values-the-flags-no-longer-ask-for">Two values the flags no longer ask for</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix-apply-commit-rebuild-if-needed-relaunch"><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">apply</span></code> — commit, rebuild if needed, relaunch</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix-restart-relaunch-the-application-in-place"><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">restart</span></code> — relaunch the application in place</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix-status-the-point-of-the-whole-mode"><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">status</span></code> — the point of the whole mode</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix-consolidate-get-it-back-into-an-image"><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">consolidate</span></code> — get it back into an image</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#getting-it-back-into-an-image">Getting it back into an image</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hotfix-retire-the-checklist-becomes-a-measurement"><code class="docutils literal notranslate"><span class="pre">hotfix</span> <span class="pre">retire</span></code> — the checklist becomes a measurement</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#every-cluster-call-in-order">Every cluster call, in order</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#two-things-the-claim-does-not-fix">Two things the claim does not fix</a></li>
