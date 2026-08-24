@@ -291,6 +291,41 @@ users and not others**, which is itself worth settling.
 
 ---
 
+## 6b — the alternative that needs no credential in the seat **OPEN**
+
+Raised by Giles, 2026-08-24, and it may be a better answer than slice 6 entirely.
+
+**How `consolidate` worked, for the record.** It never brought anything to the
+laptop. `HotfixStore`'s own docstring says the claim is only ever mounted in the
+cluster, so the default `PodStore` sends *every* read, write and git invocation
+through `kubectl exec` into the seat. `consolidate` therefore read the manifest
+in the seat, computed `drift_commits` in the seat, and ran `git push origin
+HEAD:refs/heads/<branch>` **in the seat** — a remote-control button for a push
+executed by a container with no credentials, no key and no `known_hosts`. Only
+the manifest write and the printed checklist happened locally.
+
+**The alternative**: bring the commits *out* and push them from the laptop, where
+the user's credentials already work.
+
+- `git bundle create` in the seat, copy the bundle out over exec, `git fetch` it
+  into a local clone, push from there; or
+- use `kubectl exec` as a git **transport**, so the laptop fetches directly from
+  the claim's checkout — the same trick the ssh transport already plays, and the
+  more idiomatic of the two here.
+
+**Why it may beat slice 6.** The seat never needs a credential at all. That
+removes Q1 and Q2 outright — no forwarded agent, so no lending of a git identity
+to anyone holding `pods/exec`; no host-trust problem, because the seat never
+talks to a forge. And it makes Q3 answerable, because the *laptop* can fetch.
+
+**What it does not give you** is git-in-the-seat for the human: a `git push` typed
+into the window's own terminal still fails. So the two are not strictly
+alternatives — slice 6 serves the person working in the seat, this serves the
+tooling. Deciding whether the first is wanted at all is the real question, and it
+is upstream of both.
+
+---
+
 ## The three open questions
 
 **Q1 — is `ForwardAgent` a flag or a default?** Recommendation: an opt-in flag
