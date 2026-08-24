@@ -1190,6 +1190,39 @@ def seat_claim_path(
     return _mount_path(mount) if mount is not None else ""
 
 
+def seat_container_spec(
+    pod_json: Mapping[str, Any], name: str
+) -> Mapping[str, Any] | None:
+    """This seat's own container spec, of either kind of container.
+
+    :func:`~podbench.spec.ephemeral_container` reads ``spec.ephemeralContainers``
+    and nothing else, which is the right question for an ``attach`` seat and the
+    wrong one for a ``podbench dev`` sidecar: that is an ordinary container in
+    ``spec.containers`` (:func:`dev_seat`), so an ephemeral-only lookup answers
+    ``None`` for it. Every caller here wants the seat's ``volumeMounts``, and a
+    dev pod's are the whole point - the workspace volume is where the checkout
+    goes.
+
+    Ephemeral first, because that is the common seat and because a pod cannot
+    hold an ephemeral container and an ordinary one under one name anyway: the
+    API server refuses a duplicate across the three lists.
+
+    >>> pod = {"spec": {"containers": [{"name": "podbench", "image": "sidecar"}]}}
+    >>> seat_container_spec(pod, "podbench")
+    {'name': 'podbench', 'image': 'sidecar'}
+    >>> seat_container_spec(pod, "podbench-1") is None
+    True
+    """
+    ephemeral = ephemeral_container(pod_json, name)
+    if ephemeral is not None:
+        return ephemeral
+    for entry in _as_list(as_dict(pod_json.get("spec")).get("containers")):
+        container = as_dict(entry)
+        if _entry_name(container) == name:
+            return container
+    return None
+
+
 def seat_directories(
     session: Session, seat_spec: Mapping[str, Any] | None
 ) -> list[str]:
@@ -5237,7 +5270,13 @@ def emit_ssh_config(
         # editor would open: `editor_folder` is gated on `session.hotfixed`,
         # which `ssh-config` does not set, so on p47 the scan missed the claim
         # it was looking at and said there was no remote (2026-08-24).
-        seat_spec = ephemeral_container(pod_json, session.seat.container)
+        #
+        # Of either container list. A `podbench dev` seat is an ordinary
+        # sidecar, so an ephemeral-only lookup returns None there and the scan
+        # falls back to the home alone - which is the same false "no ssh git
+        # remote found in the seat", on a pod whose workspace volume holds the
+        # checkout, and `dev` takes this flag.
+        seat_spec = seat_container_spec(pod_json, session.seat.container)
         forge = forge_seed_notes(
             kubectl,
             session,

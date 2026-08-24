@@ -7570,6 +7570,42 @@ def test_the_seat_is_asked_about_every_directory_it_mounts(
     assert cluster.forge_dirs == [seat_layout(session).home]
 
 
+def test_a_dev_pods_workspace_is_scanned_though_its_seat_is_no_ephemeral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`podbench dev`'s seat is an ordinary sidecar in `spec.containers`, so the
+    ephemeral-only lookup answered None for it and the scan fell back to the
+    home alone - the same false "no ssh git remote found in the seat" this
+    branch had just fixed for `ssh-config`, on the pod whose workspace volume is
+    where `dev-bootstrap` puts the checkout. `dev` takes `--forward-agent`."""
+    laptop_known_hosts(monkeypatch, tmp_path, GITHUB_KEY + "\n")
+    cluster = FakeCluster(
+        pod_document(
+            uid=1000,
+            sidecar={"name": "podbench", "volumeMounts": [{"mountPath": "/workspace"}]},
+        ),
+        git_remotes=ORIGIN,
+    )
+    session = Session(
+        seat=ContainerRef(PodRef("demo", "target"), "podbench"),
+        workload="app",
+        rung=Rung.DEGRADED,
+        reused=False,
+        uid=1000,
+    )
+
+    emit_ssh_config(
+        talking_to(cluster),
+        session,
+        identity=identity(tmp_path),
+        config_dir=str(tmp_path / "cfg"),
+        forward_agent=True,
+    )
+
+    assert "/workspace" in cluster.forge_dirs
+    assert cluster.seat_known_hosts == GITHUB_KEY + "\n"
+
+
 def test_the_claim_is_scanned_even_where_nothing_set_hotfixed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
