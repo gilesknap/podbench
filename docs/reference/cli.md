@@ -652,13 +652,19 @@ below are its own. (`attach --print-config` is the one option `vscode` does
 vscode-server measured **1215 MiB** live with a single extension, which does not
 fit in most of the pods it is aimed at. The headroom that decides is read on
 every attach already, so the verb uses it rather than asking for it back: where
-the free memory is under that figure, the *target's* memory limit is raised by
-the shortfall, rounded up to the next whole GiB, before the seat lands.
+the free memory is under that figure, the *target's* memory limit is raised to a
+flat **6Gi** before the seat lands.
 
 The target's limit, because it is the only one a seat can move — an ephemeral
 container may not declare `resources` at all (report 3.9), so it lives in the
 pod's cgroup and the pod's ceiling is the sum of its containers' limits. Raising
-the target by the shortfall therefore raises that ceiling by the same amount.
+the target therefore raises that ceiling by the same amount.
+
+The target is flat rather than computed, because the memory a computed one reads
+is the memory the editor is spending: the shortfall arithmetic this replaces
+took one pod from 1Gi to 2Gi over two runs, and would have gone again on a
+third. A pod already at or above 6Gi is left alone rather than shrunk, and a
+second `podbench vscode` against a pod the first one sized changes nothing.
 
 It says both the reading and the number it chose, and the raise carries every
 caveat `attach --resize` carries — chiefly that the raised limit lives on the

@@ -427,9 +427,10 @@ It states the intent and the new limit, not the shortfall that produced them:
 this line, :func:`try_resize`'s outcome and :data:`EDITOR_HEADROOM_WARNING` are
 three reports of one resize, so each says only the part the others cannot.
 
-The number is arithmetic, not a default: :func:`podbench.resize.editor_limit`
-raises the target by the shortfall against
-:data:`podbench.resize.EDITOR_HEADROOM` and rounds up to the next whole GiB.
+The number is a flat default - :data:`podbench.resize.EDITOR_LIMIT`, which the
+headroom decides whether to apply and never how big to make. A reader who wants
+a different one types ``--resize MEMORY``, which is what makes the flat default
+defensible.
 Naming the container is what makes it checkable - the raise goes on the
 *target's* limit, because an ephemeral container may not declare ``resources``
 at all and the pod's ceiling is the sum of its containers'.
@@ -6135,8 +6136,8 @@ def _land(
     nothing there decides to spend the pod's memory, so a resize happens only
     where a flag asked for one, which is #54's decision. ``vscode`` does,
     because the editor it is about to open is the one cost measured not to fit
-    (:data:`podbench.resize.EDITOR_HEADROOM`), and the number that fixes it is
-    arithmetic on a headroom this code already reads.
+    (:data:`podbench.resize.EDITOR_HEADROOM`), against a headroom this code
+    already reads.
 
     ``editor`` is the separate question of whether that cost is about to be
     *spent*, and the two come apart at ``--no-resize``: declining the raise is
@@ -6229,8 +6230,10 @@ def _editor_memory(
     The measurement is the same one ``attach`` prints on its ``memory`` row, and
     reading it here costs one extra ``kubectl top pod`` before the seat lands.
     That the seat is not yet in the sum errs by 13-23 MiB
-    (:data:`podbench.resize.SEAT_FOOTPRINT`) against a 1215 MiB threshold, which
-    is under a rounding step of the answer.
+    (:data:`podbench.resize.SEAT_FOOTPRINT`) against a 1215 MiB threshold, and
+    only the threshold is read from the measurement: the limit it asks for is
+    :data:`podbench.resize.EDITOR_LIMIT`, so a seat's worth of drift cannot move
+    the answer at all.
 
     An unmeasured pod is the one case that earns a line without an action. It is
     not a hazard - :attr:`podbench.resize.Headroom.summary` states it as

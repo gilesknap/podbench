@@ -6409,9 +6409,9 @@ def test_vscode_sizes_the_pod_from_the_headroom_it_already_reads(
 
     1Gi of headroom carries a 13-23 MiB seat with room to spare; vscode-server
     measured 1215 MiB live with a single extension (2026-08-16), so this pod is
-    1215Mi - 1Gi short. `editor_limit` raises the *target's* limit by that
-    shortfall - the only limit a seat can move, since an ephemeral container may
-    not declare `resources` at all - and rounds up to the next whole GiB.
+    short and `editor_limit` says so. What it raises the *target's* limit to is
+    the flat `EDITOR_LIMIT` - the target because it is the only limit a seat can
+    move, since an ephemeral container may not declare `resources` at all.
     """
     cluster = FakeCluster(limited_pod("4Gi"), top="target   1m   3Gi\n")
     code = main(
@@ -6422,10 +6422,10 @@ def test_vscode_sizes_the_pod_from_the_headroom_it_already_reads(
     assert code == 0
     out = " ".join(capsys.readouterr().out.split())
     assert "for the 1215Mi vscode-server measured" in out
-    assert "app's memory limit was raised to 5Gi" in out
+    assert "app's memory limit was raised to 6Gi" in out
     # Read back after the raise, which is the whole point of reading it there:
     # the editor now fits, so the OOM warning has nothing to say.
-    assert "memory 2Gi free of 5Gi (3Gi in use)" in out
+    assert "memory 3Gi free of 6Gi (3Gi in use)" in out
     assert "the overflow OOM-kills" not in out
 
     # …and the same pod, attached without the editor, is neither warned nor
@@ -6458,7 +6458,7 @@ def test_no_resize_declines_the_raise_and_keeps_the_warning(
 def test_a_pod_with_room_is_left_alone(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Sizing is a shortfall, not a policy: a pod that already carries the
+    """Sizing answers a shortfall, not a policy: a pod that already carries the
     editor gets no patch and no line about one."""
     cluster = FakeCluster(limited_pod("8Gi"), top="target   1m   1Gi\n")
     assert (
@@ -6471,6 +6471,47 @@ def test_a_pod_with_room_is_left_alone(
     assert not [call for call in cluster.calls if "patch" in call]
     assert "sized for the editor" not in out
     assert "the overflow OOM-kills" not in out
+
+
+def test_a_pod_already_above_the_editor_limit_is_warned_but_never_shrunk(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The two questions the flat limit separates, on the case that separates
+    them: 8Gi of ceiling with 7Gi in use is 1Gi free, so the editor does not
+    fit and the warning fires - but the limit is already past `EDITOR_LIMIT`
+    and lowering it to the default would take memory off a running workload to
+    make room for an editor.
+    """
+    cluster = FakeCluster(limited_pod("8Gi"), top="target   1m   7Gi\n")
+    assert (
+        main(
+            vscode_argv(tmp_path), runner=cluster, which=lambda name: f"/usr/bin/{name}"
+        )
+        == 0
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert not [call for call in cluster.calls if "patch" in call]
+    assert "sized for the editor" not in out
+    assert "vscode-server measured 1215Mi live and this pod has 1Gi" in out
+
+
+def test_an_explicit_resize_beats_the_editors_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--resize` is the escape hatch that makes a flat default defensible, so
+    the default must never be computed over the top of one somebody typed."""
+    cluster = FakeCluster(limited_pod("4Gi"), top="target   1m   3Gi\n")
+    assert (
+        main(
+            vscode_argv(tmp_path, "--resize", "3Gi"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 0
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert "resized app to memory 3Gi" in out
+    assert "6Gi" not in out
 
 
 def test_an_unmeasured_pod_is_told_that_nothing_sized_it(

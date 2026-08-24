@@ -164,9 +164,9 @@ refusals.
 
 **It sizes the pod.** vscode-server measured 1215 MiB live with one extension,
 and the headroom that decides is read on every attach anyway — so where this pod
-has less, the target's memory limit is raised by the shortfall before the seat
-lands, rounded up to the next whole GiB, and the number and the reading are both
-printed. `--resize MEMORY` chooses the number yourself; `--no-resize` declines
+has less, the target's memory limit is raised to a flat 6Gi before the seat
+lands, and the number and the reading are both printed. Flat, so a second
+`podbench vscode` against the same pod is a no-op rather than another raise. `--resize MEMORY` chooses the number yourself; `--no-resize` declines
 the raise and keeps the warning. Read [Attach to a pod](attach-to-a-pod.md) on
 what an in-place resize costs — chiefly that it lives on the pod and not on its
 controller, so the next rollout takes it away.
