@@ -366,6 +366,14 @@ what that seat can actually do.
 │ --host-alias                NAME             ssh Host name for the seat                          │
 │ --print-config                               print the ssh stanza instead of writing it to the   │
 │                                              config dir                                          │
+│ --forward-agent                              let git in the seat use your ssh keys:              │
+│                                              `ForwardAgent yes` in the stanza, and the seat's    │
+│                                              known_hosts seeded from your own for whatever forge │
+│                                              its git remotes name. Off by default, because       │
+│                                              `authorized_keys` gates ssh and does not gate       │
+│                                              `kubectl exec` - anyone with pods/exec in the       │
+│                                              namespace can authenticate as you for the life of   │
+│                                              the session                                         │
 │ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
 │                                              that wait and nothing else: one kubectl call is     │
 │                                              bounded separately, at 30s                          │
@@ -494,6 +502,23 @@ Notes:
     that a pod somebody prepared for podbench does not read as one whose
     preparation failed. Where a seat *does* carry the identity, the same line
     credits it.
+* **`--forward-agent` is what makes git in the seat work**, and it is two
+  changes rather than one: `ForwardAgent yes` in the stanza, and the seat's
+  `known_hosts` seeded with the entries your own file already holds for the ssh
+  hosts its git remotes name. The measured first failure in a seat is `Host key
+  verification failed`, not an authentication error, so either half alone
+  leaves `git fetch` exactly as broken. Nothing is invented: a host you have
+  never verified is reported as such, entries are rewritten to name one host
+  each, and `@revoked`/`@cert-authority` lines are never copied. An https clone
+  of a public repository needs none of it.
+  * It is a flag and not a default because the exposure is real:
+    `authorized_keys` gates ssh and does **not** gate `kubectl exec`, so anyone
+    with `pods/exec` in the namespace can authenticate as you, to any host that
+    trusts the forwarded keys, until the session ends. One line on the report
+    says so; the mechanism, the `ssh-add -c` and destination-constrained-key
+    mitigations, and the caution that facility RBAC groups often include
+    service accounts and CI identities are in
+    [VS Code Remote-SSH](../how-to/vscode-remote-ssh.md).
 * `--resize` and `--resize-cpu` are opt-in and only partly proven, and need
   `get` and `patch` on `pods/resize`. An attach that used neither prints one
   line offering them; one that used either prints what it cost — including that
@@ -540,7 +565,7 @@ into the target**. Debugging is a step you run, and the run offers it: see
                                                                                                     
  Usage: podbench vscode [OPTIONS] [POD]                                                             
                                                                                                     
- land a seat sized for an editor, and open a window on it                                          
+ land a seat sized for an editor, and open a window on it                                           
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │   POD      <str>  pod/NAME, a bare NAME, or any substring of one. Anything that does not settle  │
@@ -622,6 +647,21 @@ into the target**. Debugging is a step you run, and the run offers it: see
 │                                              [default: ~/.ssh/id_ed25519]                        │
 │ --ssh-user                  NAME             login name to put in the stanza                     │
 │ --host-alias                NAME             ssh Host name for the seat                          │
+│ --forward-agent                              let git in the seat use your ssh keys:              │
+│                                              `ForwardAgent yes` in the stanza, and the seat's    │
+│                                              known_hosts seeded from your own for whatever forge │
+│                                              its git remotes name. Off by default, because       │
+│                                              `authorized_keys` gates ssh and does not gate       │
+│                                              `kubectl exec` - anyone with pods/exec in the       │
+│                                              namespace can authenticate as you for the life of   │
+│                                              the session                                         │
+│ --agent-socket              SOCKET           forward this agent rather than the one your shell   │
+│                                              has, and turn `--forward-agent` on. `ssh-agent -a   │
+│                                              SOCKET` then `SSH_AUTH_SOCK=SOCKET ssh-add          │
+│                                              ~/.ssh/id_git` keeps a git-only agent, so only that │
+│                                              key reaches the pod. It is set for the `code` this  │
+│                                              run launches, so a VS Code already running has the  │
+│                                              environment it was started with instead             │
 │ --timeout                   SECONDS          seconds to wait for the seat to start. It bounds    │
 │                                              that wait and nothing else: one kubectl call is     │
 │                                              bounded separately, at 30s                          │
@@ -641,6 +681,16 @@ into the target**. Debugging is a step you run, and the run offers it: see
 `POD` and every option `attach` takes mean the same thing here; only the two
 below are its own. (`attach --print-config` is the one option `vscode` does
 *not* take — see below.)
+
+`--agent-socket` is this verb's alone, and it is the reason the flag is worth
+having here: podbench launches `code`, so it can set `SSH_AUTH_SOCK` for that
+child. Point it at an agent holding only your git key
+(`ssh-agent -a SOCKET; SSH_AUTH_SOCK=SOCKET ssh-add ~/.ssh/id_git`) and only
+that key ever reaches the pod. It implies `--forward-agent`, refuses a path
+that is not a listening socket, and applies to every child of the run — `code`,
+the preflight, and the ssh calls that write the machine settings. A VS Code
+that is **already running** spawns ssh with the environment it was started
+with, so close the window first or export `SSH_AUTH_SOCK` before launching it.
 
 #### Sizing the pod
 
@@ -839,23 +889,31 @@ the pod.
 │                   on a single pod lists the namespace and asks                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --identity              KEY        ssh key to authorise in the seat and name in the generated    │
-│                                    stanza                                                        │
-│                                    [default: ~/.ssh/id_ed25519]                                  │
-│ --ssh-user              NAME       login name to put in the stanza                               │
-│ --host-alias            NAME       ssh Host name for the seat                                    │
-│ --print-config                     print the ssh stanza instead of writing it to the config dir  │
-│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
-│                                    with the candidates instead. Already implied when stdin is    │
-│                                    not a tty                                                     │
-│ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context's own)             │
-│ --context               NAME       kubeconfig context                                            │
-│ --kubectl               BIN        kubectl binary to use [default: kubectl]                      │
-│ --config-dir            DIR        where the generated ssh config and known_hosts live (default  │
-│                                    ~/.podbench)                                                  │
-│ --help                             Show this message and exit.                                   │
+│ --identity               KEY        ssh key to authorise in the seat and name in the generated   │
+│                                     stanza                                                       │
+│                                     [default: ~/.ssh/id_ed25519]                                 │
+│ --ssh-user               NAME       login name to put in the stanza                              │
+│ --host-alias             NAME       ssh Host name for the seat                                   │
+│ --print-config                      print the ssh stanza instead of writing it to the config dir │
+│ --forward-agent                     let git in the seat use your ssh keys: `ForwardAgent yes` in │
+│                                     the stanza, and the seat's known_hosts seeded from your own  │
+│                                     for whatever forge its git remotes name. Off by default,     │
+│                                     because `authorized_keys` gates ssh and does not gate        │
+│                                     `kubectl exec` - anyone with pods/exec in the namespace can  │
+│                                     authenticate as you for the life of the session              │
+│ --no-prompt                         never ask which pod: an ambiguous or missing POD is refused  │
+│                                     with the candidates instead. Already implied when stdin is   │
+│                                     not a tty                                                    │
+│ --namespace      -n      NAMESPACE  namespace (default: the kubeconfig context's own)            │
+│ --context                NAME       kubeconfig context                                           │
+│ --kubectl                BIN        kubectl binary to use [default: kubectl]                     │
+│ --config-dir             DIR        where the generated ssh config and known_hosts live (default │
+│                                     ~/.podbench)                                                 │
+│ --help                              Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+`--forward-agent` means here exactly what it means on `attach`, and it is the way to add agent forwarding and the forge's host keys to a seat that is already running: the stanza is regenerated and the seat's `known_hosts` is seeded on the spot.
 
 Fails if there is no running podbench container in the pod.
 
@@ -940,35 +998,40 @@ Author a sacrificial dev pod from a target's spec — Iterate mode.
 │                   dev pods                                                                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --namespace     -n      NAMESPACE  namespace (default: the kubeconfig context's own)             │
-│ --context               NAME       kubeconfig context                                            │
-│ --container             NAME       container to take over                                        │
-│ --name                  NAME       dev pod name (default: POD-podbench)                          │
-│ --image                 REF        podbench image (default: the image built from this launcher's │
-│                                    version)                                                      │
-│ --port                  PORT       the port your app serves                                      │
-│ --take-traffic                     copy the origin's labels so the dev pod shares Service        │
-│                                    traffic with it. Off by default: joining a production Service │
-│                                    silently is a foot-cannon                                     │
-│ --cutover               SERVICE    point SERVICE exclusively at the dev pod, recording its       │
-│                                    selector for an exact restore at teardown                     │
-│ --identity              KEY        ssh key to authorise in the sidecar and name in the generated │
-│                                    stanza                                                        │
-│                                    [default: ~/.ssh/id_ed25519]                                  │
-│ --config-dir            DIR        where the generated ssh config and known_hosts live (default  │
-│                                    ~/.podbench)                                                  │
-│ --host-alias            NAME       ssh Host name for the sidecar                                 │
-│ --delete                           tear the dev pod down                                         │
-│ --timeout               SECONDS    seconds to wait for the dev pod to reach Running. It bounds   │
-│                                    that wait and nothing else: it is `kubectl wait`'s own        │
-│                                    deadline, backed by a kill 15s later, and every other kubectl │
-│                                    call is bounded separately, at 30s                            │
-│                                    [default: 120.0]                                              │
-│ --dry-run                          print the authored pod instead of creating it                 │
-│ --no-prompt                        never ask which pod: an ambiguous or missing POD is refused   │
-│                                    with the candidates instead. Already implied when stdin is    │
-│                                    not a tty                                                     │
-│ --help                             Show this message and exit.                                   │
+│ --namespace      -n      NAMESPACE  namespace (default: the kubeconfig context's own)            │
+│ --context                NAME       kubeconfig context                                           │
+│ --container              NAME       container to take over                                       │
+│ --name                   NAME       dev pod name (default: POD-podbench)                         │
+│ --image                  REF        podbench image (default: the image built from this           │
+│                                     launcher's version)                                          │
+│ --port                   PORT       the port your app serves                                     │
+│ --take-traffic                      copy the origin's labels so the dev pod shares Service       │
+│                                     traffic with it. Off by default: joining a production        │
+│                                     Service silently is a foot-cannon                            │
+│ --cutover                SERVICE    point SERVICE exclusively at the dev pod, recording its      │
+│                                     selector for an exact restore at teardown                    │
+│ --identity               KEY        ssh key to authorise in the sidecar and name in the          │
+│                                     generated stanza                                             │
+│                                     [default: ~/.ssh/id_ed25519]                                 │
+│ --config-dir             DIR        where the generated ssh config and known_hosts live (default │
+│                                     ~/.podbench)                                                 │
+│ --host-alias             NAME       ssh Host name for the sidecar                                │
+│ --forward-agent                     let git in the sidecar use your ssh keys: `ForwardAgent yes` │
+│                                     in the stanza, and its known_hosts seeded from your own for  │
+│                                     whatever forge the workspace's git remotes name. Off by      │
+│                                     default, because `authorized_keys` gates ssh and does not    │
+│                                     gate `kubectl exec`                                          │
+│ --delete                            tear the dev pod down                                        │
+│ --timeout                SECONDS    seconds to wait for the dev pod to reach Running. It bounds  │
+│                                     that wait and nothing else: it is `kubectl wait`'s own       │
+│                                     deadline, backed by a kill 15s later, and every other        │
+│                                     kubectl call is bounded separately, at 30s                   │
+│                                     [default: 120.0]                                             │
+│ --dry-run                           print the authored pod instead of creating it                │
+│ --no-prompt                         never ask which pod: an ambiguous or missing POD is refused  │
+│                                     with the candidates instead. Already implied when stdin is   │
+│                                     not a tty                                                    │
+│ --help                              Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

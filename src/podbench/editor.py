@@ -74,10 +74,14 @@ machine settings are the exception, and :data:`MACHINE_SETTINGS` says why.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import stat
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from shlex import quote
 from typing import Any, cast
 
@@ -103,6 +107,7 @@ __all__ = [
     "DEFAULT_SSH",
     "EXTENSIONS_DIR",
     "MACHINE_SETTINGS",
+    "SSH_AUTH_SOCK",
     "SSH_CONNECT_TIMEOUT",
     "EditorError",
     "PROVISION_DEST_FLAG",
@@ -112,6 +117,7 @@ __all__ = [
     "OK",
     "WARN",
     "check_reachable",
+    "forwarded_agent",
     "interpreter_for_folder",
     "is_step",
     "open_seat",
@@ -451,6 +457,67 @@ def _quoted(output: str) -> str:
     return "\n".join(f"    {line}" for line in lines) or "    (nothing)"
 
 
+SSH_AUTH_SOCK = "SSH_AUTH_SOCK"
+"""The one variable that decides *which* keys a forwarded agent lends the seat.
+
+An agent forwards an agent, not a key and not a destination, so the only
+granularity available is to point at a different one - which is why
+``--agent-socket`` exists and why the recipe in
+``docs/how-to/vscode-remote-ssh.md`` is a second ``ssh-agent`` holding the git
+key alone.
+"""
+
+_NO_AGENT = (
+    "{path} is not a listening socket, so nothing would be forwarded and git "
+    "in the seat would fail on authentication several minutes from now. Start "
+    "the agent first: `ssh-agent -a {path}`, then `SSH_AUTH_SOCK={path} "
+    "ssh-add ~/.ssh/id_git`."
+)
+
+
+@contextmanager
+def forwarded_agent(socket: str | None) -> Generator[None]:
+    """Point :data:`SSH_AUTH_SOCK` at ``socket`` for everything spawned inside.
+
+    Through :data:`os.environ` rather than through the runner, deliberately.
+    :class:`podbench.kubectl.Runner` takes no environment, it is implemented by
+    fakes throughout the test suite, and the setting has to reach *every* child
+    this verb starts - the preflight ssh, the three ssh invocations that read
+    and write the machine settings and verify the extensions, and ``code``
+    itself - not one call site. Threading an ``env=`` argument through the
+    protocol would buy nothing but a wider protocol and a fake to update in
+    every test module. :func:`subprocess.run` copies ``os.environ`` at spawn,
+    which is exactly the scope wanted, and it is restored on the way out so a
+    caller's environment is unchanged.
+
+    Refused rather than ignored when the socket is not there. ssh with an
+    ``SSH_AUTH_SOCK`` naming nothing simply forwards nothing and says so
+    nowhere; the failure then arrives in the seat, minutes later, as a git
+    authentication error that points at the key.
+
+    >>> with forwarded_agent(None):
+    ...     pass
+    """
+    if socket is None:
+        yield
+        return
+    try:
+        mode = Path(socket).stat().st_mode
+    except OSError as error:
+        raise EditorError(_NO_AGENT.format(path=socket)) from error
+    if not stat.S_ISSOCK(mode):
+        raise EditorError(_NO_AGENT.format(path=socket))
+    previous = os.environ.get(SSH_AUTH_SOCK)
+    os.environ[SSH_AUTH_SOCK] = socket
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(SSH_AUTH_SOCK, None)
+        else:
+            os.environ[SSH_AUTH_SOCK] = previous
+
+
 def open_seat(
     kubectl: Kubectl,
     seat: ContainerRef,
@@ -463,6 +530,7 @@ def open_seat(
     ssh: str = DEFAULT_SSH,
     runner: Runner | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    agent_socket: str | None = None,
 ) -> None:
     """Install what ``folder`` needs in the seat, and open it. Write nothing.
 
@@ -493,6 +561,11 @@ def open_seat(
     Nothing here installs anything into the target, so it changes no file;
     ``None`` leaves the seat's own search alone.
 
+    ``agent_socket`` is which ssh agent every child of this call sees, and
+    :func:`forwarded_agent` says why it is set through the environment rather
+    than through the runner. ``None`` leaves whatever the user's shell already
+    exported, which is the right answer for ``--forward-agent`` on its own.
+
     Anything that went wrong but left the seat usable is a line rather than an
     exception — an unnameable extension costs an F5, whereas the excludes and
     the folder are what keep the seat alive.
@@ -510,93 +583,100 @@ def open_seat(
             f"{SEAT_HOME_VOLUME}:<path>` is what moves it - or, on a seat that "
             "carries the hotfix claim, wherever the application mounts it."
         )
-    run = runner if runner is not None else run_subprocess
-    # Before anything is written, installed or downloaded: everything below
-    # this line travels over the alias, and the two steps that do - the
-    # extension install and the window itself - both report success without it
-    # (`code --install-extension` exits 0 having only queued the work for a
-    # window that has not connected yet).
-    check_reachable(alias, ssh=ssh, runner=run)
-    report(f"{OK} ssh reaches the seat, so Remote-SSH will too")
-    # Everything from here is one line each: this is a sequence of steps, and
-    # a step that explains itself in a paragraph buries the one that failed.
-    authored = _author(kubectl, seat, report, dest=provision_dest)
-    extensions = extensions_for(authored.configurations)
+    # Every child below inherits this, which is the point: `code` is not
+    # the only one that has to see the git agent - the preflight and the
+    # three ssh calls that follow it all run through the same stanza.
+    with forwarded_agent(agent_socket):
+        run = runner if runner is not None else run_subprocess
+        # Before anything is written, installed or downloaded: everything below
+        # this line travels over the alias, and the two steps that do - the
+        # extension install and the window itself - both report success without it
+        # (`code --install-extension` exits 0 having only queued the work for a
+        # window that has not connected yet).
+        check_reachable(alias, ssh=ssh, runner=run)
+        report(f"{OK} ssh reaches the seat, so Remote-SSH will too")
+        # Everything from here is one line each: this is a sequence of steps, and
+        # a step that explains itself in a paragraph buries the one that failed.
+        authored = _author(kubectl, seat, report, dest=provision_dest)
+        extensions = extensions_for(authored.configurations)
 
-    # The machine settings first, and not merely early: the excludes have to be
-    # on disk before the window that starts the walk. They are also the only
-    # copy now, so this is the run's whole answer to Kill VS Code Server on
-    # Host having deleted the seat's ~/.vscode-server since the last one.
-    _machine_settings(
-        alias,
-        interpreter=interpreter_for_folder(folder, authored.interpreter),
-        ssh=ssh,
-        runner=run,
-        report=report,
-    )
+        # The machine settings first, and not merely early: the excludes have to be
+        # on disk before the window that starts the walk. They are also the only
+        # copy now, so this is the run's whole answer to Kill VS Code Server on
+        # Host having deleted the seat's ~/.vscode-server since the last one.
+        _machine_settings(
+            alias,
+            interpreter=interpreter_for_folder(folder, authored.interpreter),
+            ssh=ssh,
+            runner=run,
+            report=report,
+        )
 
-    authority = remote_authority(alias)
-    if extensions:
-        report(
-            f"{OK} installing {', '.join(extensions)} in the seat; the first "
-            f"bootstraps vscode-server, so this is a download ({_STORAGE_NOTE})"
-        )
-    # Whether anything actually landed, not whether anything was asked for: the
-    # reload note asserts that `--install-extension` unpacked something into the
-    # seat, and a run whose every install failed unpacked nothing. Telling
-    # somebody to reload a window over that sends them to look for an extension
-    # the lines above have just said is not there.
-    attempted = False
-    for extension in extensions:
-        # Unbounded: the first of these bootstraps vscode-server, a 214 MiB
-        # download into the seat over whatever link the cluster has, and a bound
-        # that fired would leave the seat with a half-unpacked server.
-        result = run(
-            [editor, "--remote", authority, "--install-extension", extension],
-            timeout=UNBOUNDED,
-        )
+        authority = remote_authority(alias)
+        if extensions:
+            report(
+                f"{OK} installing {', '.join(extensions)} in the seat; the first "
+                f"bootstraps vscode-server, so this is a download ({_STORAGE_NOTE})"
+            )
+        # Whether anything actually landed, not whether anything was asked for: the
+        # reload note asserts that `--install-extension` unpacked something into the
+        # seat, and a run whose every install failed unpacked nothing. Telling
+        # somebody to reload a window over that sends them to look for an extension
+        # the lines above have just said is not there.
+        attempted = False
+        for extension in extensions:
+            # Unbounded: the first of these bootstraps vscode-server, a 214 MiB
+            # download into the seat over whatever link the cluster has, and a bound
+            # that fired would leave the seat with a half-unpacked server.
+            result = run(
+                [editor, "--remote", authority, "--install-extension", extension],
+                timeout=UNBOUNDED,
+            )
+            if result.returncode != 0:
+                report(
+                    f"{FAIL} could not install {extension}: {_detail(result.stderr)}"
+                )
+                continue
+            attempted = True
+        missing: list[str] = []
+        if attempted:
+            # The exit code above proves nothing, so the seat is asked. See
+            # `unpacked_extensions` — this is the check whose absence let a DLS run
+            # print "is installed" for three extensions that were not.
+            installed, missing = _verify_installed(
+                alias, extensions, ssh=ssh, runner=run, report=report
+            )
+            if installed:
+                report(_RELOAD_NOTE)
+
+        # Unbounded: this hands the argv to a window and returns, and on a cold
+        # start it is waiting for the user's editor to exist.
+        result = run([editor, "--remote", authority, folder], timeout=UNBOUNDED)
         if result.returncode != 0:
-            report(f"{FAIL} could not install {extension}: {_detail(result.stderr)}")
-            continue
-        attempted = True
-    missing: list[str] = []
-    if attempted:
-        # The exit code above proves nothing, so the seat is asked. See
-        # `unpacked_extensions` — this is the check whose absence let a DLS run
-        # print "is installed" for three extensions that were not.
-        installed, missing = _verify_installed(
-            alias, extensions, ssh=ssh, runner=run, report=report
-        )
-        if installed:
-            report(_RELOAD_NOTE)
-
-    # Unbounded: this hands the argv to a window and returns, and on a cold
-    # start it is waiting for the user's editor to exist.
-    result = run([editor, "--remote", authority, folder], timeout=UNBOUNDED)
-    if result.returncode != 0:
-        raise EditorError(
-            f"`{editor} --remote {authority} {folder}` failed: "
-            f"{_detail(result.stderr)}. --remote needs the Remote - SSH "
-            "extension (ms-vscode-remote.remote-ssh) in the local VS Code; the "
-            "alias itself was proven above."
-        )
-    report(f"{OK} asked VS Code to open {folder} over Remote-SSH")
-    # Only now, and this ordering is the fix: the seat's own vscode-server does
-    # not exist until a window has connected and bootstrapped it, so the
-    # fallback cannot run before the line above. What it must never move ahead
-    # of is `settings.json` — the watcher starts walking the moment the window
-    # opens, and that race is the one whose loser is an unrecoverable seat.
-    if missing:
-        wanted = list(missing)
-        missing = _install_through_the_seat(
-            alias, missing, ssh=ssh, runner=run, report=report, sleep=sleep
-        )
-        if len(missing) < len(wanted):
-            report(_SEAT_INSTALL_RELOAD_NOTE)
-    if missing:
-        report(
-            f"{WARN} " + _MISSING_REMEDY.format(missing=", ".join(missing), alias=alias)
-        )
+            raise EditorError(
+                f"`{editor} --remote {authority} {folder}` failed: "
+                f"{_detail(result.stderr)}. --remote needs the Remote - SSH "
+                "extension (ms-vscode-remote.remote-ssh) in the local VS Code; the "
+                "alias itself was proven above."
+            )
+        report(f"{OK} asked VS Code to open {folder} over Remote-SSH")
+        # Only now, and this ordering is the fix: the seat's own vscode-server does
+        # not exist until a window has connected and bootstrapped it, so the
+        # fallback cannot run before the line above. What it must never move ahead
+        # of is `settings.json` — the watcher starts walking the moment the window
+        # opens, and that race is the one whose loser is an unrecoverable seat.
+        if missing:
+            wanted = list(missing)
+            missing = _install_through_the_seat(
+                alias, missing, ssh=ssh, runner=run, report=report, sleep=sleep
+            )
+            if len(missing) < len(wanted):
+                report(_SEAT_INSTALL_RELOAD_NOTE)
+        if missing:
+            report(
+                f"{WARN} "
+                + _MISSING_REMEDY.format(missing=", ".join(missing), alias=alias)
+            )
 
 
 CONNECTION_HINT = (

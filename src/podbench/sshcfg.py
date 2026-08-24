@@ -15,13 +15,16 @@ the ProxyCommand are generated together and never hand-written.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import enum
 import hashlib
+import hmac
 import os
 import re
 import shlex
 import stat
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,9 +54,12 @@ __all__ = [
     "default_home",
     "ensure_control_dir",
     "expanded_control_path_length",
+    "forge_known_hosts",
+    "git_remote_hosts",
     "host_key_alias",
     "known_hosts_entry",
     "proxy_command",
+    "remote_host",
     "proxy_command_string",
     "seat_control_path",
     "sshd_config",
@@ -333,6 +339,192 @@ def known_hosts_entry(binding: HostKeyBinding) -> str:
     return f"{binding.alias} {fields[0]} {fields[1]}\n"
 
 
+# -- the forge the seat has to trust ----------------------------------------
+#
+# Agent forwarding solves authentication and nothing else. The failure a seat
+# hits first is `Host key verification failed`, measured on p47 2026-08-24, and
+# podbench refuses the two usual answers to it for the same reason it refuses
+# them for the seat's own host key: `StrictHostKeyChecking no` teaches a habit,
+# and a forge key baked into the image goes stale silently. The trust decision
+# has already been taken on the laptop, so what travels is a copy of it.
+
+_SSH_SCHEMES = frozenset({"ssh", "git+ssh"})
+"""Git remote schemes that end in an ssh connection.
+
+``https://`` and ``git://`` are deliberately absent: neither presents a host
+key, so a public repo cloned over https needs nothing from this module.
+"""
+
+
+def remote_host(url: str) -> str | None:
+    """The ``known_hosts`` spelling of the host a git remote reaches, or ``None``.
+
+    ``None`` for every remote that is not ssh, which is the common case worth
+    getting right rather than an edge: an https clone of a public repo needs no
+    key and no host key, so there is nothing to seed for it.
+
+    The bracketed form is not decoration. ``known_hosts`` names a non-default
+    port as ``[host]:port`` and matches nothing without it, so a remote on
+    2222 whose entry was copied as a bare hostname would verify against nothing
+    and fail exactly as if it had never been copied.
+
+    >>> remote_host("git@github.com:DiamondLightSource/fastcs-example.git")
+    'github.com'
+    >>> remote_host("ssh://git@gitlab.diamond.ac.uk:2222/x/y.git")
+    '[gitlab.diamond.ac.uk]:2222'
+    >>> remote_host("https://github.com/x/y.git") is None
+    True
+    >>> remote_host("/srv/git/y.git") is None
+    True
+    """
+    text = url.strip()
+    if not text:
+        return None
+    scheme, separator, rest = text.partition("://")
+    if separator:
+        if scheme.lower() not in _SSH_SCHEMES:
+            return None
+        return _known_hosts_host(rest.split("/", 1)[0])
+    if text.startswith(("/", ".", "~")):
+        return None
+    # The scp-like form, `[user@]host:path`. A path is mandatory: `host:` alone
+    # is not a remote, and a bare local path has no colon to find.
+    head, separator, path = text.partition(":")
+    if not separator or not path or "/" in head:
+        return None
+    return _known_hosts_host(head)
+
+
+def _known_hosts_host(authority: str) -> str | None:
+    """An ``[user@]host[:port]`` authority as ``known_hosts`` would write it."""
+    _, _, hostport = authority.rpartition("@")
+    if hostport.startswith("["):
+        host, _, port = hostport.partition("]")
+        host, port = host[1:], port.lstrip(":")
+    else:
+        host, _, port = hostport.partition(":")
+    if not host:
+        return None
+    host = host.lower()
+    return f"[{host}]:{port}" if port and port != "22" else host
+
+
+def git_remote_hosts(remotes: str) -> tuple[str, ...]:
+    """The ssh hosts ``git remote -v`` output names, in the order they appear.
+
+    >>> git_remote_hosts(
+    ...     "origin\\tgit@github.com:x/y.git (fetch)\\n"
+    ...     "origin\\tgit@github.com:x/y.git (push)\\n"
+    ...     "upstream\\thttps://github.com/a/b.git (fetch)\\n"
+    ... )
+    ('github.com',)
+    """
+    hosts: list[str] = []
+    for line in remotes.splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        host = remote_host(fields[1])
+        if host is not None and host not in hosts:
+            hosts.append(host)
+    return tuple(hosts)
+
+
+def forge_known_hosts(known_hosts: str, hosts: Sequence[str]) -> tuple[str, ...]:
+    """``known_hosts`` entries for ``hosts`` only, rewritten to name one host each.
+
+    Three narrowings, and each of them exists because the alternative is worse
+    than copying nothing:
+
+    * **Only the hosts asked for.** Copying the file wholesale would hand a seat
+      the user's trust in every machine they have ever logged into, which is a
+      larger disclosure than the forwarded agent this accompanies.
+    * **Rewritten to the matched host**, dropping the pattern and the comment
+      the way :func:`known_hosts_entry` already does. A ``*.example.com`` entry
+      copied verbatim would carry trust for a wildcard the seat has no reason
+      to hold, and a hashed entry copied verbatim would keep matching by hash
+      but say nothing a reader of the seat's file could check.
+    * **No ``@cert-authority`` or ``@revoked`` line is copied at all.** A marker
+      dropped in the copy inverts its meaning: ``@revoked`` names a key the user
+      has refused, and rewriting it as a plain entry would install that key as
+      trusted. Skipping loses a CA-based setup, which then reports as *no entry
+      found* rather than as trust invented for it.
+
+    Hashed entries are matched rather than skipped - ``ssh-keygen -H`` is common
+    and the seed would otherwise silently find nothing on a hashed file.
+
+    >>> forge_known_hosts("github.com ssh-ed25519 AAAAC3 comment\\n", ["github.com"])
+    ('github.com ssh-ed25519 AAAAC3',)
+    >>> forge_known_hosts("@revoked github.com ssh-rsa BAD\\n", ["github.com"])
+    ()
+    >>> forge_known_hosts("*.dls.ac.uk ssh-rsa K\\n", ["gitlab.dls.ac.uk"])
+    ('gitlab.dls.ac.uk ssh-rsa K',)
+    """
+    lines = known_hosts.splitlines()
+    entries: list[str] = []
+    for host in hosts:
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("#", "@")):
+                continue
+            fields = stripped.split()
+            if len(fields) < 3:
+                continue
+            patterns, keytype, key = fields[0], fields[1], fields[2]
+            if not _host_matches(patterns, host):
+                continue
+            entry = f"{host} {keytype} {key}"
+            if entry not in entries:
+                entries.append(entry)
+    return tuple(entries)
+
+
+def _host_matches(patterns: str, host: str) -> bool:
+    """Whether a ``known_hosts`` first field names ``host``."""
+    if patterns.startswith("|1|"):
+        return _hashed_match(patterns, host)
+    matched = False
+    for pattern in patterns.split(","):
+        negated = pattern.startswith("!")
+        candidate = pattern[1:] if negated else pattern
+        if not _pattern_matches(candidate, host):
+            continue
+        if negated:
+            return False
+        matched = True
+    return matched
+
+
+def _pattern_matches(pattern: str, host: str) -> bool:
+    """OpenSSH's ``*``/``?`` globbing, and nothing else.
+
+    Deliberately not :mod:`fnmatch`: it reads ``[`` as a character class, and
+    every ``known_hosts`` entry for a non-default port begins with one
+    (``[gitlab.example.com]:2222``), so a bracketed host would be matched as a
+    set of single characters and silently miss.
+    """
+    if "*" not in pattern and "?" not in pattern:
+        return pattern.lower() == host.lower()
+    regex = re.escape(pattern).replace(r"\*", ".*").replace(r"\?", ".")
+    return re.fullmatch(regex, host, re.IGNORECASE) is not None
+
+
+def _hashed_match(pattern: str, host: str) -> bool:
+    """Whether a ``|1|salt|hash`` entry is this host's."""
+    parts = pattern.split("|")
+    if len(parts) != 4:
+        return False
+    try:
+        salt = base64.b64decode(parts[2], validate=True)
+        digest = base64.b64decode(parts[3], validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    # SHA-1 because that is the hash OpenSSH's `ssh-keygen -H` writes; this
+    # recognises the user's own file rather than choosing a digest.
+    computed = hmac.new(salt, host.encode(), hashlib.sha1).digest()  # noqa: S324
+    return hmac.compare_digest(computed, digest)
+
+
 def unsafe_set_env(set_env: Mapping[str, str]) -> tuple[str, ...]:
     """The names in ``set_env`` an sshd ``SetEnv`` line cannot carry, sorted.
 
@@ -564,12 +756,28 @@ def client_config(
     kubectl: KubectlInvocation | None = None,
     control_path: str | None = None,
     log_level: str = "ERROR",
+    forward_agent: bool = False,
 ) -> str:
     """An ``Include``-able stanza for the user's ssh config.
 
     Written as an include rather than an edit of ``~/.ssh/config`` so podbench
     can regenerate it wholesale on every attach without ever owning a file the
     user also edits.
+
+    ``forward_agent`` is the *whole* of podbench asking for an agent, and it is
+    off unless a verb was told otherwise. OpenSSH's two defaults are what makes
+    that true: the client's ``ForwardAgent`` is ``no`` and sshd's
+    ``AllowAgentForwarding`` is ``yes``, so the seat has always been willing and
+    this stanza simply never asked. VS Code inherits the line because Remote-SSH
+    connects through the stanza rather than around it.
+
+    It is a flag rather than a default because ``authorized_keys`` gates ssh and
+    does **not** gate ``kubectl exec``: anyone holding ``pods/exec`` in the
+    namespace can reach a forwarded socket and authenticate as the user to any
+    host that trusts the key, for the life of the session. What keeps it the
+    least-bad credential to place in a seat is that nothing is written to disk
+    and ``SSH_AUTH_SOCK`` exists only in the *ssh session's* environment, so an
+    exec session cannot stumble into it.
 
     ``control_path`` defaults to :func:`seat_control_path` of ``host_key``'s
     alias, and is derived here rather than passed in so that the socket and the
@@ -596,6 +804,12 @@ def client_config(
         f"    User {user}",
         f"    IdentityFile {identity_file}",
         "    IdentitiesOnly yes",
+        # Beside `IdentitiesOnly`, because the two answer the same question from
+        # opposite ends: which keys this connection may use, and which keys the
+        # far end may use *as* this user. Emitted only when asked - a stanza
+        # that carried it unconditionally would lend the user's whole agent to
+        # every seat they have ever attached to.
+        *(["    ForwardAgent yes"] if forward_agent else []),
         f"    ProxyCommand {proxy}",
         f"    ServerAliveInterval {SERVER_ALIVE_INTERVAL}",
         f"    ServerAliveCountMax {SERVER_ALIVE_COUNT_MAX}",

@@ -29,10 +29,13 @@ from podbench.sshcfg import (
     default_home,
     ensure_control_dir,
     expanded_control_path_length,
+    forge_known_hosts,
+    git_remote_hosts,
     host_key_alias,
     known_hosts_entry,
     proxy_command,
     proxy_command_string,
+    remote_host,
     seat_control_path,
     sshd_config,
     unsafe_set_env,
@@ -312,6 +315,9 @@ def test_client_config_carries_the_measured_defaults() -> None:
     # The spike's StrictHostKeyChecking no is exactly what must never ship.
     assert "StrictHostKeyChecking yes" in text
     assert "StrictHostKeyChecking no" not in text
+    # Off unless asked. OpenSSH's client default is already `no`, so the line
+    # being absent is the whole of podbench not lending an agent to every seat.
+    assert "ForwardAgent" not in text
 
 
 def test_client_config_rejects_a_long_control_path() -> None:
@@ -400,3 +406,125 @@ def test_the_names_sshd_would_misparse_are_reported_to_the_caller() -> None:
 
 def test_no_session_env_leaves_the_config_as_it_was() -> None:
     assert sshd_config(SshdLayout.for_uid(0)) == sshd_config(SshdLayout.for_uid(0), {})
+
+
+def test_forward_agent_is_one_line_and_only_when_asked() -> None:
+    """The exact line, because it is the whole of the mechanism.
+
+    OpenSSH's two defaults do the rest - the client's ``ForwardAgent`` is
+    ``no`` and sshd's ``AllowAgentForwarding`` is ``yes`` - so the seat was
+    always willing and the stanza simply never asked.
+    """
+    binding = HostKeyBinding.per_attach("uid-1", "/kh", "ssh-ed25519 AAAAC3Nz")
+    text = client_config(
+        TARGET,
+        host_alias="podbench-api",
+        identity_file="/id",
+        host_key=binding,
+        layout=ROOT,
+        forward_agent=True,
+    )
+    assert "    ForwardAgent yes\n" in text
+    # Still verified, still one identity. The flag widens what the far end may
+    # do with the user's keys; it must not loosen anything about the host.
+    assert "StrictHostKeyChecking yes" in text
+    assert "IdentitiesOnly yes" in text
+
+
+def test_remote_host_reads_every_ssh_spelling_and_no_others() -> None:
+    assert remote_host("git@github.com:x/y.git") == "github.com"
+    assert remote_host("ssh://git@github.com/x/y.git") == "github.com"
+    # Port 22 is the default, and known_hosts writes the bare name for it.
+    assert remote_host("ssh://git@github.com:22/x/y.git") == "github.com"
+    assert remote_host("ssh://git@gitlab.example.com:2222/x/y") == (
+        "[gitlab.example.com]:2222"
+    )
+    assert remote_host("GIT@GitHub.COM:x/y.git") == "github.com"
+    for other in ("https://github.com/x/y.git", "git://h/x", "/srv/git/y", "", "  "):
+        assert remote_host(other) is None, other
+
+
+def test_git_remote_hosts_keeps_one_of_each() -> None:
+    output = (
+        "origin\tgit@github.com:x/y.git (fetch)\n"
+        "origin\tgit@github.com:x/y.git (push)\n"
+        "fork\tssh://git@gitlab.example.com:2222/a/b.git (fetch)\n"
+        "public\thttps://github.com/a/b.git (fetch)\n"
+        "\n"
+    )
+    assert git_remote_hosts(output) == ("github.com", "[gitlab.example.com]:2222")
+
+
+def test_only_the_asked_for_host_is_copied_and_the_comment_goes() -> None:
+    """Not the file, and not the pattern it was written under.
+
+    Copying wholesale would hand a seat the user's trust in every machine they
+    have ever logged into, which is a wider disclosure than the forwarded agent
+    it accompanies.
+    """
+    known_hosts = (
+        "# a comment\n"
+        "github.com ssh-ed25519 AAAAC3Nz laptop\n"
+        "github.com ssh-rsa AAAAB3Nz\n"
+        "internal.example.com ssh-ed25519 SECRET\n"
+    )
+    assert forge_known_hosts(known_hosts, ["github.com"]) == (
+        "github.com ssh-ed25519 AAAAC3Nz",
+        "github.com ssh-rsa AAAAB3Nz",
+    )
+
+
+def test_a_hashed_known_hosts_is_matched_rather_than_missed() -> None:
+    """``ssh-keygen -H`` is common, and skipping it would find nothing quietly.
+
+    The entry is copied under the plaintext name it matched, which is narrower
+    than the hash and readable by whoever next looks at the seat's file - the
+    pod already holds a git remote naming that host.
+    """
+    import base64
+    import hashlib
+    import hmac
+
+    salt = b"0123456789abcdefffff"
+    digest = hmac.new(salt, b"github.com", hashlib.sha1).digest()
+    entry = (
+        f"|1|{base64.b64encode(salt).decode()}|{base64.b64encode(digest).decode()}"
+        " ssh-ed25519 AAAAC3Nz\n"
+    )
+    assert forge_known_hosts(entry, ["github.com"]) == (
+        "github.com ssh-ed25519 AAAAC3Nz",
+    )
+    assert forge_known_hosts(entry, ["gitlab.example.com"]) == ()
+
+
+def test_a_bracketed_port_entry_is_not_read_as_a_character_class() -> None:
+    """fnmatch would take ``[gitlab.example.com]`` for a set of characters.
+
+    Every known_hosts entry for a non-default port begins with a bracket, so
+    the miss would be silent and would look like "you have never trusted it".
+    """
+    known_hosts = "[gitlab.example.com]:2222 ssh-ed25519 AAAAC3Nz\n"
+    assert forge_known_hosts(known_hosts, ["[gitlab.example.com]:2222"]) == (
+        "[gitlab.example.com]:2222 ssh-ed25519 AAAAC3Nz",
+    )
+
+
+def test_a_revoked_key_is_never_copied_as_a_trusted_one() -> None:
+    """Dropping the marker would invert the line's meaning.
+
+    ``@revoked`` names a key the user has refused; rewritten without it, the
+    seat would treat exactly that key as the forge's.
+    """
+    known_hosts = (
+        "@revoked github.com ssh-rsa COMPROMISED\n"
+        "@cert-authority *.example.com ssh-ed25519 CA\n"
+    )
+    assert forge_known_hosts(known_hosts, ["github.com", "git.example.com"]) == ()
+
+
+def test_a_negated_pattern_still_refuses() -> None:
+    known_hosts = "*.example.com,!secret.example.com ssh-ed25519 AAAAC3Nz\n"
+    assert forge_known_hosts(known_hosts, ["git.example.com"]) == (
+        "git.example.com ssh-ed25519 AAAAC3Nz",
+    )
+    assert forge_known_hosts(known_hosts, ["secret.example.com"]) == ()
