@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>VS Code Remote-SSH &#8212; podbench 0.7.3.dev58+g5b135814a documentation</title>
+    <title>VS Code Remote-SSH &#8212; podbench 0.8.1.dev9+g03558c220 documentation</title>
   
   
   
@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=4251cbfd"></script>
+    <script src="../_static/documentation_options.js?v=ec14db6a"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -662,14 +662,18 @@ the argv, so the connection happens in the GUI afterwards, and a
 <code class="docutils literal notranslate"><span class="pre">--install-extension</span></code> that never connected still exits 0. The successful probe
 also leaves a <code class="docutils literal notranslate"><span class="pre">ControlMaster</span></code> behind, so the window’s own connect is the fast
 one.</p>
-<p><strong>It writes</strong> <code class="docutils literal notranslate"><span class="pre">.vscode/settings.json</span></code>, <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> and
-<code class="docutils literal notranslate"><span class="pre">.vscode/extensions.json</span></code> into the folder it is about to open, installs only the
-extensions this target’s debugger needs <strong>in the remote window</strong>, and opens the
-seat’s home — or, on a pod carrying the hotfix layout, the claim. Those are the
-two steps most easily got wrong by hand, and both fail quietly: the wrong folder
-can end the seat, and a locally installed extension runs the debug adapter on
-your laptop. See <a class="reference internal" href="../reference/cli.html"><span class="std std-doc">the CLI reference</span></a> for the order and the
-refusals.</p>
+<p><strong>It writes</strong> the seat’s machine settings — the excludes, and on a hotfixed pod
+<code class="docutils literal notranslate"><span class="pre">python.defaultInterpreterPath</span></code> for the interpreter your application actually
+runs — then <code class="docutils literal notranslate"><span class="pre">.vscode/launch.json</span></code> into the folder it is about to open, installs
+only the extensions this target’s debugger needs <strong>in the remote window</strong>, and
+opens the seat’s home or, on a pod carrying the hotfix layout, the claim. Those
+are the two steps most easily got wrong by hand, and both fail quietly: the
+wrong folder can end the seat, and a locally installed extension runs the debug
+adapter on your laptop. See <a class="reference internal" href="../reference/cli.html"><span class="std std-doc">the CLI reference</span></a> for the
+order and the refusals.</p>
+<p><code class="docutils literal notranslate"><span class="pre">launch.json</span></code> is the <strong>only</strong> file it puts in your folder. On a hotfixed pod
+that folder is your own committed checkout on a shared volume, so anything
+written there is a permanent line in somebody’s <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">status</span></code>.</p>
 <p><strong>It sizes the pod.</strong> vscode-server measured 1215 MiB live with one extension,
 and the headroom that decides is read on every attach anyway — so where this pod
 has less, the target’s memory limit is raised to a flat 6Gi before the seat
@@ -719,7 +723,9 @@ and a flatpak VS Code cannot put <code class="docutils literal notranslate"><spa
 next.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">editor</span>
   <span class="p">[</span><span class="n">ok</span><span class="p">]</span> <span class="n">ssh</span> <span class="n">reaches</span> <span class="n">the</span> <span class="n">seat</span><span class="p">,</span> <span class="n">so</span> <span class="n">Remote</span><span class="o">-</span><span class="n">SSH</span> <span class="n">will</span> <span class="n">too</span>
-  <span class="p">[</span><span class="n">ok</span><span class="p">]</span> <span class="n">wrote</span> <span class="n">settings</span><span class="o">.</span><span class="n">json</span><span class="p">,</span> <span class="n">launch</span><span class="o">.</span><span class="n">json</span><span class="p">,</span> <span class="n">extensions</span><span class="o">.</span><span class="n">json</span> <span class="ow">in</span> <span class="o">/</span><span class="n">root</span><span class="o">/.</span><span class="n">vscode</span>
+  <span class="p">[</span><span class="n">ok</span><span class="p">]</span> <span class="n">wrote</span> <span class="o">~/.</span><span class="n">vscode</span><span class="o">-</span><span class="n">server</span><span class="o">/</span><span class="n">data</span><span class="o">/</span><span class="n">Machine</span><span class="o">/</span><span class="n">settings</span><span class="o">.</span><span class="n">json</span> <span class="ow">in</span> <span class="n">the</span> <span class="n">seat</span><span class="p">:</span> <span class="n">the</span>
+       <span class="n">folder</span><span class="o">-</span><span class="n">walk</span> <span class="n">excludes</span>
+  <span class="p">[</span><span class="n">ok</span><span class="p">]</span> <span class="n">wrote</span> <span class="n">launch</span><span class="o">.</span><span class="n">json</span> <span class="ow">in</span> <span class="o">/</span><span class="n">root</span><span class="o">/.</span><span class="n">vscode</span>
   <span class="p">[</span><span class="n">ok</span><span class="p">]</span> <span class="n">installing</span> <span class="n">ms</span><span class="o">-</span><span class="n">python</span><span class="o">.</span><span class="n">python</span><span class="p">,</span> <span class="n">ms</span><span class="o">-</span><span class="n">python</span><span class="o">.</span><span class="n">debugpy</span> <span class="ow">in</span> <span class="n">the</span> <span class="n">seat</span><span class="p">;</span> <span class="n">the</span> <span class="n">first</span>
        <span class="n">bootstraps</span> <span class="n">vscode</span><span class="o">-</span><span class="n">server</span><span class="p">,</span> <span class="n">so</span> <span class="n">this</span> <span class="ow">is</span> <span class="n">a</span> <span class="n">download</span> <span class="p">(</span><span class="mi">1215</span> <span class="n">MiB</span> <span class="n">measured</span><span class="p">,</span> <span class="n">on</span>
        <span class="n">the</span> <span class="n">workload</span><span class="s1">&#39;s ephemeral-storage budget in Observe mode)</span>
@@ -1151,23 +1157,32 @@ that kills a seat is the first one.</p>
 <p><code class="docutils literal notranslate"><span class="pre">files.exclude</span></code> is deliberately <strong>not</strong> set: that would hide <code class="docutils literal notranslate"><span class="pre">/proc</span></code> from the
 explorer, and reading the workload’s files through <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/root</span></code> is what
 Observe mode is for.</p>
-<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> writes all of those a second time, into the
-<code class="docutils literal notranslate"><span class="pre">.vscode/settings.json</span></code> of the folder it opens. It opens a <em>single</em> folder, so
-that file is VS Code’s <strong>workspace</strong> settings, where window- and resource-scoped
-keys are both honoured — including <code class="docutils literal notranslate"><span class="pre">C_Cpp.files.exclude</span></code>, which is the only one
-that stops cpptools’ tag parser, and cpptools is what it installs for a
-C/C++ target. The folder copy matters because it is the one podbench fully
-controls: <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> belongs to the client, and <strong>Kill/Uninstall VS Code
-Server on Host</strong> takes the machine file with it. Inside a home the entry that
-earns its place first is <code class="docutils literal notranslate"><span class="pre">**/.vscode-server/**</span></code> — 700 MiB before a single
-extension, in the folder podbench is about to open.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">/proc</span></code> and <code class="docutils literal notranslate"><span class="pre">/sys</span></code> entries in that copy are belt-and-braces rather than the
-working guard. <code class="docutils literal notranslate"><span class="pre">search.exclude</span></code> patterns are matched <strong>workspace-relative</strong>, so
-from a folder at <code class="docutils literal notranslate"><span class="pre">$HOME</span></code> its <code class="docutils literal notranslate"><span class="pre">**/proc/**</span></code> cannot match anything;
-<code class="docutils literal notranslate"><span class="pre">files.watcherExclude</span></code> and <code class="docutils literal notranslate"><span class="pre">python.analysis.exclude</span></code> are matched against
-absolute paths and do work from either scope. Machine scope is what covers the
-folder you open <em>next</em> — including the <code class="docutils literal notranslate"><span class="pre">/</span></code> that starts the walk with no bottom —
-which is why both copies exist.</p>
+<p><code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> merges into that same file on every run — over ssh, as the
+login user, so <code class="docutils literal notranslate"><span class="pre">~</span></code> is the home vscode-server itself unpacks into — and adds one
+key the agent cannot know:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Why</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">python.defaultInterpreterPath</span></code></p></td>
+<td><p>the interpreter the <em>target</em> runs, which is what answers “no Python interpreter found” on a pod where attach then works. Written only where the folder being opened is the tree that holds it — on a hotfixed pod, the claim, which resolves to the same file in the seat and in the application. Anywhere else the seat’s file at that path is a <em>different</em> file, and naming it would be a confident wrong answer</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The key is <code class="docutils literal notranslate"><span class="pre">machine-overridable</span></code>, so a value you set in your own workspace still
+wins over podbench’s.</p>
+<p>Nothing goes into the opened folder’s <code class="docutils literal notranslate"><span class="pre">.vscode/settings.json</span></code> any more, and that
+is a deliberate trade: your folder is often a committed checkout on a shared
+volume, and an exclude list is not worth a permanent line in your <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">status</span></code>.
+The cost is that <strong>Kill/Uninstall VS Code Server on Host</strong> now deletes
+podbench’s excludes with everything else under <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code>. Re-running
+<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code> puts them back before it opens the folder; a window you keep
+open through a Kill Server and let VS Code reconnect on its own does not get
+them, so re-run the verb rather than reconnecting from the window.</p>
 <p>Settings you have written yourself are never overwritten. The file is read as
 JSONC — comments and a trailing comma, which is what VS Code writes and what a
 real project commits — and edited in place, so the agent adds only the keys that
@@ -1176,9 +1191,10 @@ deliberate <code class="docutils literal notranslate"><span class="pre">&quot;**
 left exactly as it is, with the reason reported by <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">agent</span> <span class="pre">--self-check</span></code>
 and in the container’s start-up output.</p>
 <p>The one thing that removes them is Remote-SSH’s <strong>Kill/Uninstall VS Code Server
-on Host</strong>, which deletes <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> wholesale. Nothing rewrites the file
-until the agent next starts, so re-attach (<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--new</span></code>) or re-create
-the dev pod before opening a folder again.</p>
+on Host</strong>, which deletes <code class="docutils literal notranslate"><span class="pre">~/.vscode-server</span></code> wholesale. Re-run <code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">vscode</span></code>,
+which rewrites the file before it opens anything; re-attaching
+(<code class="docutils literal notranslate"><span class="pre">podbench</span> <span class="pre">attach</span> <span class="pre">--new</span></code>) or re-creating the dev pod works too, because the
+agent writes them at start-up.</p>
 </section>
 <section id="when-it-goes-wrong">
 <h2>When it goes wrong<a class="headerlink" href="#when-it-goes-wrong" title="Link to this heading">#</a></h2>

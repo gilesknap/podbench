@@ -720,15 +720,22 @@ for. A pod that carries the layout while this seat does not carry the mount gets
 the home and a `[warn]` saying so. `<home>` below means that folder.
 
 In order it:
-* writes `<home>/.vscode/settings.json` with every exclude `podbench agent`
-  writes at machine scope — the watcher, search, Pylance and cpptools entries
-  for `/proc`, `/sys`, `/dev` and `~/.vscode-server` — **before** the window
-  opens, because the walk starts the moment it does. A single folder makes
-  that file the *workspace* settings, so none of the keys is dropped there,
-  and this is the one copy that survives *Kill/Uninstall VS Code Server on
-  Host*. Inside a home, `**/.vscode-server/**` is the entry that earns its
-  place first, and `C_Cpp.files.exclude` the only one that stops cpptools'
-  tag parser walking on its own account;
+* merges into the seat's `~/.vscode-server/data/Machine/settings.json` —
+  every exclude `podbench agent` writes at start-up, plus
+  `python.defaultInterpreterPath` where the interpreter the target runs is
+  inside the folder being opened — **before** the window opens, because the
+  walk starts the moment it does. Over ssh and not `kubectl exec`, so `~` is
+  the home the passwd record names, which is the one vscode-server unpacks
+  into. Nothing is written into `<home>/.vscode/settings.json` any more: that
+  file is often committed, and an exclude list is not worth a permanent line
+  in somebody's diff. The cost is that *Kill/Uninstall VS Code Server on Host*
+  now takes podbench's excludes with it, which a re-run of this verb repairs;
+* writes `python.defaultInterpreterPath` only where the folder holds the
+  interpreter — on a hotfixed pod, the claim, which resolves to the same file
+  in the seat and in the application. On any other pod the target's
+  interpreter is in another mount namespace and the seat's file at that path
+  is a different one, so no key is written and the extension's own picker
+  decides. It is `machine-overridable`, so a value you set wins;
 * runs `podbench debug-config --print-config` in the seat and merges the result
   into `<home>/.vscode/launch.json`, matching on configuration name, so a
   second run updates its own entries rather than appending copies;
@@ -736,9 +743,9 @@ In order it:
   `code --remote ssh-remote+<alias> --install-extension` — which is the
   "Install in SSH: `<alias>`" button as a flag. A locally installed extension
   runs the debug adapter on your laptop, where no `/proc/<pid>/root` path
-  means anything, and the failure looks like a bad `launch.json`. They are
-  also recommended in `<home>/.vscode/extensions.json` as a fallback. An
-  install only unpacks into the seat's `~/.vscode-server`, so a window that
+  means anything, and the failure looks like a bad `launch.json`. No
+  `extensions.json` is written — recommendations are a fallback for an install
+  this verb performs and then verifies in the seat. An install only unpacks into the seat's `~/.vscode-server`, so a window that
   was **already** connected keeps the extension host it started and never
   loads it — the adapter stays unregistered and its `launch.json` entry
   cannot run. A first run is unaffected, since the install finishes
