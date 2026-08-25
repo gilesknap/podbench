@@ -54,7 +54,7 @@ five ordinary passthroughs of the target's own chart:
 
 ```text
 volumes            the claim, plus podbench-home for the seat
-volumeMounts       the claim at /podbench/app — beside, never over
+volumeMounts       the claim at /podbench — beside, never over
 command / args     the supervisor, wrapping the entrypoint the pod runs today
 livenessProbe      the target's own exec probe, wrapped to honour the hold
 podSecurityContext fsGroup, without which the claim is present and unwritable
@@ -137,7 +137,7 @@ $ podbench hotfix check bl47p-ea-fastcs-01-0 -n p47-beamline
   [ok]    target         bl47p-ea-fastcs-01-0, container
                          bl47p-ea-fastcs-01, 1 replica
   [ok]    claim          bl47p-ea-fastcs-01-0 mounts podbench-app at
-                         /podbench/app
+                         /podbench
   [ok]    supervisor     container bl47p-ea-fastcs-01 is running the
                          podbench supervisor
   [warn]  seat           no podbench container is running in
@@ -229,7 +229,7 @@ names what denied it; see [Attach to a pod](attach-to-a-pod.md).
 $ podbench hotfix init bl47p-ea-fastcs-01-0 -n p47-beamline \
       --repo https://github.com/DiamondLightSource/fastcs-example
 seeded /podbench/app from /proc/1/root/app
-copied the interpreter to /podbench/app/.python
+copied the interpreter to /podbench/python
 claim seeded, venv interpreter 3.12.7
 cloned https://github.com/DiamondLightSource/fastcs-example to /podbench/app
 the image's labels name https://github.com/DiamondLightSource/ubuntu-devcontainer,
@@ -237,8 +237,8 @@ not https://github.com/DiamondLightSource/fastcs-example: inherited from its
 base image, so its revision is not this repository's
 base commit 8f21c04 ASSUMED (the image names 603392d, but nothing outside the
 image confirms its labels are this repository's); pass --base-commit SHA
-rebuilt the venv at /podbench/app/.venv
-wrote /podbench/app/.podbench-hotfix.json
+rebuilt the venv at /podbench/venv
+wrote /podbench/.podbench-hotfix.json
 ```
 
 That is the `check` warning above, arriving where it costs something. `--repo`
@@ -270,9 +270,10 @@ the whole seed.
 ## 4. Edit, restart, commit
 
 The edit happens **in the seat**, in the checkout on the claim. Get a seat the
-usual way and work in `/podbench/app`, which is the claim's mount point and the
-checkout both — the project sits at the root of the volume exactly as it sits in
-the image:
+usual way and work in `/podbench/app`, which is the checkout and nothing else —
+the claim is mounted at `/podbench`, and podbench's own working files (the venv,
+the uv cache, the interpreter, the manifest) sit beside the checkout rather than
+in it, so `git status` sees only what you changed:
 
 ```
 $ podbench attach bl47p-ea-fastcs-01-0 -n p47-beamline
@@ -433,7 +434,7 @@ $ podbench hotfix retire bl47p-ea-fastcs-01-0 -n p47-beamline
                          the one the hotfix was made against
   [ ]     wiring         bl47p-ea-fastcs-01-0 still carries the
                          podbench-app volume, a volumeMount at
-                         /podbench/app and the supervisor loop in
+                         /podbench and the supervisor loop in
                          command and args. Those are fields in the
                          application's own pod template, not in the
                          claim's chart, so turning the claim off does

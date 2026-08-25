@@ -193,11 +193,14 @@ def claim_destination(mount_path: str) -> str:
 
     ``mount_path`` is read off the seat's own ``volumeMounts`` by
     ``launcher.provision_destination`` and never assumed to be
-    :data:`~podbench.model.HOTFIX_APP_PATH`: the application chose the
+    :data:`~podbench.model.HOTFIX_CLAIM_PATH`: the application chose the
     mountPath and podbench only matched it.
 
-    >>> claim_destination("/podbench/app")
-    '/podbench/app/.podbench-debugpy'
+    The claim's root, so what podbench installs for its own use is a sibling of
+    the checkout rather than a directory inside somebody's working tree.
+
+    >>> claim_destination("/podbench")
+    '/podbench/.podbench-debugpy'
     """
     return f"{mount_path.rstrip('/')}/{CLAIM_DEST_NAME}"
 

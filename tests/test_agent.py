@@ -1594,7 +1594,10 @@ def test_the_seat_authorises_the_claim_it_was_told_it_mounts(
 
     assert report.failures == ()
     written = seat_gitconfig_include.read_text()
-    assert f'directory = "{mounted}"' in written
+    # The checkout, not the claim root the env var carries: a safe.directory
+    # naming the root does not cover the repository one level down, and git
+    # refuses mid-edit exactly as it did before this existed.
+    assert f'directory = "{mounted}/app"' in written
     assert HOTFIX_APP_PATH not in written
     assert f"wrote {seat_gitconfig_include}" in report.changes
     # And it is an *ensure*: a second attach into a serving seat changes nothing.

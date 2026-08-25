@@ -40,6 +40,7 @@ from podbench.editor import (
     UNREACHABLE_CAUSES,
     EditorError,
     forwarded_agent,
+    interpreter_for_folder,
     is_step,
     open_seat,
     resolve_editor,
@@ -56,8 +57,9 @@ and a constant imported from the module under test could not say that."""
 SEAT = ContainerRef(PodRef("demo", "api-7f9"), "podbench-1")
 ALIAS = "podbench-demo-api-7f9"
 HOME = "/root"
-CLAIM = "/podbench/app"
-CLAIM_INTERPRETER = f"{CLAIM}/.venv/bin/python3"
+MOUNT = "/podbench"
+CLAIM = f"{MOUNT}/app"
+CLAIM_INTERPRETER = f"{MOUNT}/venv/bin/python3"
 """The live p47 target's own, measured 2026-08-24: on a hotfixed pod this
 resolves to the same file in the seat and in the application, which is the
 property that makes it worth writing anywhere."""
@@ -278,6 +280,7 @@ def run_open(
     seat: FakeSeat,
     *,
     folder: str = HOME,
+    mounted: str | None = None,
     provision_dest: str | None = None,
     naps: list[float] | None = None,
     agent_socket: str | None = None,
@@ -291,6 +294,7 @@ def run_open(
         SEAT,
         alias=ALIAS,
         folder=folder,
+        mounted=mounted,
         report=notes.append,
         editor="code",
         provision_dest=provision_dest,
@@ -405,7 +409,7 @@ def test_the_interpreter_the_seat_measured_answers_the_python_popup() -> None:
     seat = FakeSeat(
         debug_config_stderr=f"debug-config: {INTERPRETER_NOTE}{CLAIM_INTERPRETER}"
     )
-    notes = run_open(seat, folder=CLAIM)
+    notes = run_open(seat, folder=CLAIM, mounted=MOUNT)
 
     settings = json.loads(seat.files[MACHINE])
     assert settings[PYTHON_INTERPRETER_KEY] == CLAIM_INTERPRETER
@@ -505,7 +509,7 @@ def test_the_folder_that_opens_is_left_exactly_as_it_was() -> None:
     folder there is a committed checkout on an NFS PVC, so anything written is a
     permanent line in somebody's diff."""
     seat = FakeSeat()
-    run_open(seat, folder=CLAIM)
+    run_open(seat, folder=CLAIM, mounted=MOUNT)
 
     assert [name for name in seat.files if name.startswith(f"{CLAIM}/")] == []
     assert set(seat.files) == {MACHINE}
@@ -655,7 +659,7 @@ def test_an_interpreter_survives_an_assessment_that_otherwise_failed() -> None:
             f"debug-config: {INTERPRETER_NOTE}{CLAIM_INTERPRETER}\n{_REFUSAL}"
         ),
     )
-    notes = run_open(seat, folder=CLAIM)
+    notes = run_open(seat, folder=CLAIM, mounted=MOUNT)
 
     assert json.loads(seat.files[MACHINE])[PYTHON_INTERPRETER_KEY] == CLAIM_INTERPRETER
     assert not any("no interpreter set" in note for note in notes)
@@ -760,7 +764,7 @@ def test_installing_an_extension_writes_nothing_into_the_folder() -> None:
     folder. D1b moved ``settings.json`` and ``extensions.json`` out; #230 took
     ``launch.json``, which was the last of them."""
     seat = FakeSeat()
-    run_open(seat, folder=CLAIM)
+    run_open(seat, folder=CLAIM, mounted=MOUNT)
 
     assert seat.installed == ["ms-python.python", "ms-python.debugpy"]
     assert [name for name in seat.files if name.startswith(f"{CLAIM}/")] == []
@@ -1264,3 +1268,21 @@ def test_a_socket_its_agent_died_under_is_not_an_agent(tmp_path: Path) -> None:
     with pytest.raises(EditorError, match="not a listening socket"):
         with forwarded_agent(str(stale)):
             pass
+
+
+def test_the_interpreter_beside_the_checkout_still_answers_the_popup() -> None:
+    """The regression the claim layout would otherwise have introduced silently.
+
+    The venv moved out of the checkout and onto the claim beside it, so a
+    containment test against the *folder* answers None and the key is quietly
+    never written - an editor whose Python popup is empty on exactly the pod
+    this feature exists for. The seat mounts the claim, so the claim is what the
+    question is about.
+    """
+    assert interpreter_for_folder(CLAIM, CLAIM_INTERPRETER, mounted=MOUNT) == (
+        CLAIM_INTERPRETER
+    )
+    # And without the claim it is the folder, unchanged: an attach seat opens
+    # its own home and the target's interpreter is never under it.
+    assert interpreter_for_folder(CLAIM, CLAIM_INTERPRETER) is None
+    assert interpreter_for_folder(HOME, CLAIM_INTERPRETER, mounted=HOME) is None

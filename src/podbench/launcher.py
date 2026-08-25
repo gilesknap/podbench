@@ -74,6 +74,7 @@ from .model import (
     HOST_NETWORK_ENV,
     HOTFIX_APP_PATH,
     HOTFIX_CHILD_PID_PATH,
+    HOTFIX_CLAIM_PATH,
     HOTFIX_CLAIM_VOLUME,
     HOTFIX_HOLD_PATH,
     IMAGE_ENV,
@@ -100,6 +101,7 @@ from .model import (
     as_dict,
     describe_credentials,
     describe_pause,
+    hotfix_checkout,
     measured_rung,
 )
 from .proc import Credentials
@@ -927,7 +929,7 @@ def hotfix_claim_mounts(
     been deployed correctly.
 
     The path is the **application's own**, copied by :func:`resolve_mounts`,
-    falling back to :data:`~podbench.model.HOTFIX_APP_PATH` only where the
+    falling back to :data:`~podbench.model.HOTFIX_CLAIM_PATH` only where the
     target container does not mount the claim at all. Hotfix mode's premise is
     that the two resolve identically - the venv's ``bin/python`` and the
     checkout's editable install are absolute paths recorded on the claim - so
@@ -946,7 +948,7 @@ def hotfix_claim_mounts(
     request = (
         HOTFIX_CLAIM_VOLUME
         if path is not None
-        else f"{HOTFIX_CLAIM_VOLUME}:{HOTFIX_APP_PATH}"
+        else f"{HOTFIX_CLAIM_VOLUME}:{HOTFIX_CLAIM_PATH}"
     )
     try:
         mounts, warnings = resolve_mounts(pod_json, workload, [request])
@@ -1140,10 +1142,16 @@ def editor_folder(
     to be discovered.
 
     The path is read off the mount rather than taken from
-    :data:`~podbench.model.HOTFIX_APP_PATH`, for the same reason
+    :data:`~podbench.model.HOTFIX_CLAIM_PATH`, for the same reason
     :func:`hotfix_claim_mounts` copies it: the application chose it, podbench
     only matched it, and a seat pointed at a container that mounts it somewhere
     else would otherwise be sent to a path that is not there.
+
+    What opens is the **checkout** and not the claim root that mount names. They
+    were the same directory until the claim gained a layout; opening the root
+    now would put the venv, the uv cache and - after the home moves onto the
+    claim - every seat's home in the explorer and in the search index of a
+    window whose one job is the project.
 
     The second element is ``None`` for the ordinary case. ``open_seat`` already
     reports the folder it opened, and a home that nothing competed for needs no
@@ -1155,7 +1163,8 @@ def editor_folder(
         return home, None
     if not folder:
         return home, EDITOR_FOLDER_HOME_NOTE.format(home=home, path=HOTFIX_APP_PATH)
-    return folder, EDITOR_FOLDER_CLAIM_NOTE.format(folder=folder, home=home)
+    checkout = hotfix_checkout(folder)
+    return checkout, EDITOR_FOLDER_CLAIM_NOTE.format(folder=checkout, home=home)
 
 
 def seat_claim_path(
@@ -7023,6 +7032,9 @@ def _open_editor(
         report=_editor_step,
         editor=editor,
         provision_dest=provision_destination(session, seat_spec),
+        # The claim, not the folder: the folder is the checkout inside it, and
+        # the venv the interpreter lives in is the claim's.
+        mounted=seat_claim_path(session, seat_spec) or None,
         runner=runner,
         agent_socket=agent_socket,
     )

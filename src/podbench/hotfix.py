@@ -7,7 +7,7 @@ chart tried against it already has, and which
 :func:`values_snippet` emits ready to paste.
 
 The claim mounts **beside** the application's project, at
-:data:`~podbench.model.HOTFIX_APP_PATH`, never over it. Every awkward thing about
+:data:`~podbench.model.HOTFIX_CLAIM_PATH`, never over it. Every awkward thing about
 the earlier design followed from mounting over the venv: the image's own copy sat
 behind the mount, so seeding needed an initContainer at a staging path that
 ``ioc-instance`` cannot express; and a seat that is itself a
@@ -94,15 +94,18 @@ from .launcher import (
     runs_hotfix_supervisor,
 )
 from .model import (
-    HOTFIX_APP_PATH,
     HOTFIX_CHILD_PID_PATH,
+    HOTFIX_CLAIM_PATH,
     HOTFIX_CLAIM_VOLUME,
     HOTFIX_HOLD_PATH,
     HOTFIX_INTERPRETER_PATH,
+    HOTFIX_UV_CACHE_DIR,
+    HOTFIX_VENV_DIR,
     SEAT_HOME_VOLUME,
     PodRef,
     and_list,
     as_dict,
+    hotfix_checkout,
 )
 from .oci import REVISION_LABEL, SOURCE_LABEL, parse_reference
 from .oci import image_labels as read_image_labels
@@ -330,14 +333,15 @@ point is that *no* number is the one wrong answer — and a clone that has not
 finished by then has failed at something the user needs told about.
 """
 
-CLAIM_VENV_DIR = ".venv"
-"""The venv's directory name on the claim, relative to the checkout.
+CLAIM_VENV_DIR = HOTFIX_VENV_DIR
+"""The venv's directory name on the claim, relative to the **claim root**.
 
-``uv`` creates ``.venv`` and the runtime switch looks for it, so the two have to
-agree - which is why this is one constant threaded to both ends rather than a
-literal at each. :func:`install_argv` sets ``UV_PROJECT_ENVIRONMENT`` when it is
-anything else, because otherwise uv would build ``.venv`` beside the venv the
-supervisor is looking for and the pod would quietly run the image's code.
+Relative to the claim and no longer to the checkout, which is what keeps
+``uv sync`` from writing into somebody's source tree. The runtime switch looks
+for whatever this says, so it is one constant threaded to both ends rather than
+a literal at each; :func:`install_argv` now sets ``UV_PROJECT_ENVIRONMENT``
+unconditionally, because the venv is never at uv's own ``.venv`` any more and
+the two left to disagree is how the pod comes to quietly run the image's code.
 
 Up here beside the other vocabulary, and not beside :data:`IMAGE_PROJECT_PATH`
 where it reads more naturally, because :class:`HotfixManifest` defaults a field
@@ -557,7 +561,7 @@ class HotfixManifest:
         >>> HotfixManifest.from_mapping({"version": 2, "ahead": 2}).base_commit
         ''
         >>> HotfixManifest.from_mapping({"version": 1}).claim_venv
-        '.venv'
+        'venv'
         """
         version = _as_int(payload.get("version")) or 0
         if version > MANIFEST_VERSION:
@@ -605,33 +609,37 @@ class HotfixManifest:
         return self.schema_version < PROVENANCE_COMPLETE_FROM
 
 
-def manifest_path(venv: str) -> str:
-    """Where the manifest lives for a claim mounted at ``venv``.
+def manifest_path(claim: str) -> str:
+    """Where the manifest lives for a claim mounted at *claim*.
 
-    >>> manifest_path("/opt/venv")
-    '/opt/venv/.podbench-hotfix.json'
+    The claim root, as it always was - but the claim root is no longer the
+    checkout, so podbench's own provenance file has stopped living inside
+    somebody's git working tree.
+
+    >>> manifest_path("/podbench")
+    '/podbench/.podbench-hotfix.json'
     """
-    return f"{venv.rstrip('/')}/{MANIFEST_FILENAME}"
+    return f"{claim.rstrip('/')}/{MANIFEST_FILENAME}"
 
 
-def checkout_path(project: str = HOTFIX_APP_PATH) -> str:
-    """Where the source checkout lives on the claim.
+def checkout_path(claim: str = HOTFIX_CLAIM_PATH) -> str:
+    """Where the source checkout lives on a claim mounted at *claim*.
 
-    The claim *is* the checkout now. It mounts beside the application, so the
-    project sits at the root of the volume exactly as it sits in the image, and
-    a rebuilt venv underneath it resolves the same relative paths it would have
-    resolved there.
+    The claim is podbench's territory and the checkout is one directory inside
+    it, beside the venv and the uv cache. It used to be the claim root itself,
+    which is how ``.venv`` and ``.uv-cache`` came to be written into somebody's
+    source tree, and it used to be ``<venv>/src`` before that.
 
-    It used to be ``<venv>/src``, which looked odd and was: the claim was
-    mounted *over* the venv path, so the venv directory was the only directory
-    on the volume and the checkout had to be buried inside it.
+    Two jobs used to be one constant: the mount path, which ``hotfix status``
+    keys on, and this, which git, the seed and the supervisor mean. They are
+    now derived from each other rather than spelled twice.
 
     >>> checkout_path()
     '/podbench/app'
-    >>> checkout_path("/podbench/app/")
+    >>> checkout_path("/podbench/")
     '/podbench/app'
     """
-    return project.rstrip("/")
+    return hotfix_checkout(claim)
 
 
 IMAGE_PROJECT_PATH = "/app"
@@ -1016,7 +1024,7 @@ def metadata_changed(paths: Sequence[str]) -> bool:
 
 
 def install_argv(
-    interpreter: str, checkout: str, *, venv: str = CLAIM_VENV_DIR
+    interpreter: str, claim: str, *, venv: str = CLAIM_VENV_DIR
 ) -> list[str]:
     """The venv rebuild, run in the *application* container.
 
@@ -1045,29 +1053,33 @@ def install_argv(
     does not - so it cannot be left to chance. On the claim, it also survives to
     make the next rebuild cheap.
 
-    ``UV_PROJECT_ENVIRONMENT`` is set only when *venv* is not uv's own default.
-    uv builds ``.venv`` and the runtime switch the supervisor carries looks for
-    whatever :data:`CLAIM_VENV_DIR` says; left to disagree, the rebuild would
-    land beside the venv the pod is looking for and the pod would quietly go on
-    running the image's code - the failure mode this whole mode exists to avoid.
+    ``UV_PROJECT_ENVIRONMENT`` is now set unconditionally. It used to be set
+    only when *venv* was not uv's own ``.venv``, because the venv lived inside
+    the checkout and uv would otherwise have built exactly the right thing; with
+    the venv beside the checkout there is no case left in which uv's default is
+    the path the supervisor looks for. Left to disagree, the rebuild lands
+    somewhere the pod is not looking and the pod quietly goes on running the
+    image's code - the failure mode this whole mode exists to avoid.
 
-    >>> install_argv("/x/bin/python3", "/podbench/app")[:4]
-    ['env', 'UV_CACHE_DIR=/podbench/app/.uv-cache', 'uv', 'sync']
-    >>> install_argv("/x/bin/python3", "/podbench/app", venv="env")[2]
-    'UV_PROJECT_ENVIRONMENT=/podbench/app/env'
+    Both it and ``UV_CACHE_DIR`` name the *claim*, not the checkout, which is
+    what stops ``uv sync`` writing into somebody's source tree.
+
+    >>> install_argv("/x/bin/python3", "/podbench")[:3]
+    ['env', 'UV_CACHE_DIR=/podbench/uv-cache', 'UV_PROJECT_ENVIRONMENT=/podbench/venv']
+    >>> install_argv("/x/bin/python3", "/podbench", venv="env")[2]
+    'UV_PROJECT_ENVIRONMENT=/podbench/env'
+    >>> install_argv("/x/bin/python3", "/podbench")[5:7]
+    ['--project', '/podbench/app']
     """
-    root = checkout.rstrip("/")
-    environment = (
-        [] if venv == CLAIM_VENV_DIR else [f"UV_PROJECT_ENVIRONMENT={root}/{venv}"]
-    )
+    root = claim.rstrip("/")
     return [
         "env",
-        f"UV_CACHE_DIR={root}/.uv-cache",
-        *environment,
+        f"UV_CACHE_DIR={root}/{HOTFIX_UV_CACHE_DIR}",
+        f"UV_PROJECT_ENVIRONMENT={root}/{venv}",
         "uv",
         "sync",
         "--project",
-        checkout,
+        checkout_path(root),
         "--python",
         interpreter,
         "--frozen",
@@ -1118,9 +1130,9 @@ def claim_mount_path(pod_json: Mapping[str, Any], container: str) -> str:
     the claim is.
 
     >>> pod = {"spec": {"containers": [{"name": "app", "volumeMounts": [
-    ...     {"name": "podbench-app", "mountPath": "/podbench/app"}]}]}}
+    ...     {"name": "podbench-app", "mountPath": "/podbench"}]}]}}
     >>> claim_mount_path(pod, "app")
-    '/podbench/app'
+    '/podbench'
     >>> claim_mount_path(pod, "sidecar")
     ''
     """
@@ -1154,7 +1166,7 @@ happen is that it goes unsaid.
 
 The second sentence is not a hedge. ``init`` seeds :func:`checkout_path`,
 copies the interpreter to :data:`~podbench.model.HOTFIX_INTERPRETER_PATH` and
-emits a supervisor switch naming :data:`~podbench.model.HOTFIX_APP_PATH`, none
+emits a supervisor switch naming :data:`~podbench.model.HOTFIX_CLAIM_PATH`, none
 of which move with the mount — so it refuses with "the claim is not mounted".
 Saying "the fix itself is unaffected" would have been a warning contradicted by
 the refusal one line later, which is worse than either message alone.
@@ -1164,8 +1176,8 @@ the refusal one line later, which is worse than either message alone.
 def _venv_note(venv: str) -> str | None:
     return (
         None
-        if venv == HOTFIX_APP_PATH
-        else VENV_INVISIBLE_TO_STATUS.format(venv=venv, default=HOTFIX_APP_PATH)
+        if venv == HOTFIX_CLAIM_PATH
+        else VENV_INVISIBLE_TO_STATUS.format(venv=venv, default=HOTFIX_CLAIM_PATH)
     )
 
 
@@ -1174,7 +1186,7 @@ def resolve_venv(target: HotfixTarget, requested: str | None) -> tuple[str, str 
 
     ``--venv`` was required by ``init``, ``apply`` and ``consolidate`` and used
     by none of the measurement (#205 item 1): ``status`` reads the manifest at
-    :data:`~podbench.model.HOTFIX_APP_PATH` and finds the mounting container by
+    :data:`~podbench.model.HOTFIX_CLAIM_PATH` and finds the mounting container by
     scanning for exactly that mountPath. So any other value wrote a manifest
     ``status`` could not see, and a hotfixed pod invisible to ``status`` is the
     precise failure the mode exists to prevent. Nothing warned.
@@ -1185,18 +1197,18 @@ def resolve_venv(target: HotfixTarget, requested: str | None) -> tuple[str, str 
     loud.
 
     >>> here = HotfixTarget(PodRef("d", "p"), "app", "", "",
-    ...                     claim_mount="/podbench/app")
+    ...                     claim_mount="/podbench")
     >>> resolve_venv(here, None)
-    ('/podbench/app', None)
+    ('/podbench', None)
     >>> resolve_venv(HotfixTarget(PodRef("d", "p"), "app", "", ""), None)
-    ('/podbench/app', None)
+    ('/podbench', None)
     >>> resolve_venv(here, "/opt/venv")  # doctest: +ELLIPSIS
     Traceback (most recent call last):
     podbench.hotfix.HotfixError: --venv /opt/venv disagrees with the pod: ...
     """
     mounted = target.claim_mount
     if requested is None:
-        venv = mounted or HOTFIX_APP_PATH
+        venv = mounted or HOTFIX_CLAIM_PATH
         return venv, _venv_note(venv)
     venv = requested.rstrip("/") or requested
     if mounted and venv != mounted:
@@ -1734,7 +1746,7 @@ def claim_container(pod_json: Mapping[str, Any]) -> str | None:
     what an annotation on the pod template was not.
 
     >>> claim_container({"spec": {"containers": [
-    ...     {"name": "app", "volumeMounts": [{"mountPath": "/podbench/app"}]}]}})
+    ...     {"name": "app", "volumeMounts": [{"mountPath": "/podbench"}]}]}})
     'app'
     >>> claim_container({"spec": {"containers": [{"name": "app"}]}}) is None
     True
@@ -1743,7 +1755,7 @@ def claim_container(pod_json: Mapping[str, Any]) -> str | None:
     for entry in _as_list(spec.get("containers")):
         container = as_dict(entry)
         for mount in _as_list(container.get("volumeMounts")):
-            if _as_str(as_dict(mount).get("mountPath")) == HOTFIX_APP_PATH:
+            if _as_str(as_dict(mount).get("mountPath")) == HOTFIX_CLAIM_PATH:
                 return _as_str(container.get("name"))
     return None
 
@@ -1759,7 +1771,7 @@ def read_pod_state(
     so a missing one is an empty section and not an error.
     """
     script = (
-        f"cat {manifest_path(HOTFIX_APP_PATH)} 2>/dev/null; "
+        f"cat {manifest_path(HOTFIX_CLAIM_PATH)} 2>/dev/null; "
         f'echo "{STATE_SEPARATOR}"; '
         f"cat {HOTFIX_HOLD_PATH} 2>/dev/null; "
         f'echo "{STATE_SEPARATOR}"; date -u +%s'
@@ -2580,14 +2592,16 @@ def require_supervisor(kube: Kubectl, target: HotfixTarget) -> None:
 
 
 def _seeded_interpreter(
-    store: HotfixStore, checkout: str, *, venv: str = CLAIM_VENV_DIR
+    store: HotfixStore, claim: str, *, venv: str = CLAIM_VENV_DIR
 ) -> str:
     """The interpreter version the seeded venv reports, or ``""``.
 
     Read from the claim rather than from the image, because after the rebuild
-    the claim's is the one the console scripts name.
+    the claim's is the one the console scripts name. The venv sits beside the
+    checkout on the claim, so this is composed from the *mount* and not from
+    :func:`checkout_path`.
     """
-    config = store.read_text(f"{checkout}/{venv}/pyvenv.cfg")
+    config = store.read_text(f"{claim}/{venv}/pyvenv.cfg")
     if config is None:
         return ""
     settings = parse_pyvenv_cfg(config)
@@ -2899,7 +2913,18 @@ def init(
     project, interpreter_src = seed_source(
         container_root, project=image_project, interpreter=image_interpreter
     )
-    checkout = checkout_path()
+    # Refused here explicitly, and not left to the probe below. Everything the
+    # seed writes is derived from the mount, but the supervisor's runtime switch
+    # is not: `values_snippet` emits the default path into the application's own
+    # pod template, so a claim mounted elsewhere gets seeded correctly and then
+    # runs the image's code anyway. It used to be refused by accident - the
+    # existence probe named the default and so failed - which reported a claim
+    # that is mounted as one that is not.
+    if venv != HOTFIX_CLAIM_PATH:
+        raise HotfixError(
+            VENV_INVISIBLE_TO_STATUS.format(venv=venv, default=HOTFIX_CLAIM_PATH)
+        )
+    checkout = checkout_path(venv)
 
     if not store.exists(checkout):
         raise HotfixError(CLAIM_NOT_MOUNTED.format(checkout=checkout))
@@ -2939,7 +2964,7 @@ def init(
         store.run(["cp", "-a", interpreter_src, HOTFIX_INTERPRETER_PATH])
         actions.append(f"copied the interpreter to {HOTFIX_INTERPRETER_PATH}")
 
-    interpreter = _seeded_interpreter(store, checkout, venv=claim_venv)
+    interpreter = _seeded_interpreter(store, venv, venv=claim_venv)
     actions.append(f"claim seeded, venv interpreter {interpreter or 'unknown'}")
 
     if store.exists(f"{checkout}/.git"):
@@ -2971,7 +2996,7 @@ def init(
 
     if install:
         actions.append(
-            _install(kube, target, seeded_python(store), checkout, venv=claim_venv)
+            _install(kube, target, seeded_python(store), venv, venv=claim_venv)
         )
 
     manifest = HotfixManifest(
@@ -2995,7 +3020,7 @@ def _install(
     kube: Kubectl,
     target: HotfixTarget,
     interpreter: str,
-    checkout: str,
+    claim: str,
     *,
     venv: str = CLAIM_VENV_DIR,
 ) -> str:
@@ -3011,7 +3036,7 @@ def _install(
     the scripts must name lives, and where the application's own index
     configuration is.
     """
-    argv = install_argv(interpreter, checkout, venv=venv)
+    argv = install_argv(interpreter, claim, venv=venv)
     # A resolve and a build against the cluster's index, so the pod-work bound.
     result = kube.exec_(
         target.pod.name,
@@ -3028,7 +3053,7 @@ def _install(
             "different image's. If the pod has no egress to an index, pre-build "
             "the venv on the claim and re-run with --no-install."
         )
-    return f"rebuilt the venv at {checkout}/{venv}"
+    return f"rebuilt the venv at {claim}/{venv}"
 
 
 HOLD_SECONDS = 120.0
@@ -3336,7 +3361,7 @@ def _claim_state(store: HotfixStore, checkout: str, porcelain: Sequence[str]) ->
     )
 
 
-def _refresh_debug_config(store: HotfixStore, checkout: str) -> list[str]:
+def _refresh_debug_config(store: HotfixStore, claim: str) -> list[str]:
     """Re-provision, but only for a debugger the user already asked for.
 
     Every configuration podbench can author is pid-keyed and the restart has just
@@ -3350,14 +3375,17 @@ def _refresh_debug_config(store: HotfixStore, checkout: str) -> list[str]:
     entirely that the user ran the debug step and has not retracted it. A pod
     with no ``launch.json`` never made that ask, so nothing here runs at all.
     """
-    path = f"{checkout}/{LAUNCH_JSON_PATH}"
+    # The document is the user's and lives in the checkout; debugpy's files are
+    # podbench's and live at the claim root, beside the checkout rather than in
+    # it. They were the same directory until the claim gained a layout.
+    path = f"{checkout_path(claim)}/{LAUNCH_JSON_PATH}"
     if not store.exists(path):
         return []
     result = store.run(
         [
             *DEBUG_REFRESH_ARGV,
             PROVISION_DEST_FLAG,
-            claim_destination(checkout),
+            claim_destination(claim),
             "--output",
             path,
         ],
@@ -3459,7 +3487,8 @@ def restart_app(
             "no hotfix manifest on the claim: run `hotfix init` first, so there "
             "is a checkout for the relaunched application to load"
         )
-    checkout = manifest.checkout or checkout_path(manifest.venv)
+    claim = manifest.venv or venv
+    checkout = manifest.checkout or checkout_path(claim)
     claim_venv = manifest.claim_venv or CLAIM_VENV_DIR
     require_supervisor(kube, target)
     actions: list[str] = []
@@ -3468,7 +3497,7 @@ def restart_app(
         # relaunch onto a half-built venv is the state this mode exists to
         # avoid. The venv the *manifest* records, never the default (#209).
         actions.append(
-            _install(kube, target, seeded_python(store), checkout, venv=claim_venv)
+            _install(kube, target, seeded_python(store), claim, venv=claim_venv)
         )
     before = _recorded_child(kube, target)
     _relaunch(kube, target)
@@ -3493,10 +3522,10 @@ def restart_app(
     if packaging and not reinstall:
         actions.append(
             STALE_INSTALL_NOTE.format(
-                what=and_list(packaging), venv=f"{checkout}/{claim_venv}"
+                what=and_list(packaging), venv=f"{claim}/{claim_venv}"
             )
         )
-    actions += _refresh_debug_config(store, checkout)
+    actions += _refresh_debug_config(store, claim)
     return actions
 
 
@@ -3574,8 +3603,8 @@ def hold_loop_args(entrypoint: str, *, venv: str = CLAIM_VENV_DIR) -> str:
         [
             "while :; do",
             "  (",
-            f"    if [ -x {HOTFIX_APP_PATH}/{venv}/bin/python ]; then",
-            f'      export PATH="{HOTFIX_APP_PATH}/{venv}/bin:$PATH"',
+            f"    if [ -x {HOTFIX_CLAIM_PATH}/{venv}/bin/python ]; then",
+            f'      export PATH="{HOTFIX_CLAIM_PATH}/{venv}/bin:$PATH"',
             '      echo "podbench: running the hotfixed project"',
             "    fi",
             f"    exec {entrypoint}",
@@ -3884,7 +3913,7 @@ def values_snippet(
         "  # image ships is hidden, so the seed is a plain copy and the seat",
         "  # keeps its own venv.",
         f"  - name: {HOTFIX_CLAIM_VOLUME}",
-        f"    mountPath: {HOTFIX_APP_PATH}",
+        f"    mountPath: {HOTFIX_CLAIM_PATH}",
         f"{command_key}:",
         "  - bash",
         "  - -c",
@@ -3929,7 +3958,7 @@ def values_snippet(
         f"{security_key}:",
         "  # Not optional. The claim and the seat's home are created root:root,",
         "  # and neither the application nor the seat runs as root. Without",
-        f"  # fsGroup {HOTFIX_APP_PATH} is present and unwritable, which is worse",
+        f"  # fsGroup {HOTFIX_CLAIM_PATH} is present and unwritable, which is worse",
         "  # than absent - everything starts, then fails.",
         f"  fsGroup: {gid}",
     ]
@@ -4634,13 +4663,15 @@ def _target_check(target: HotfixTarget) -> PreflightCheck:
 
 
 def _claim_check(target: HotfixTarget, seeded: bool) -> PreflightCheck:
-    if target.claim_mount == HOTFIX_APP_PATH:
-        mounts = f"{target.container} mounts {HOTFIX_CLAIM_VOLUME} at {HOTFIX_APP_PATH}"
+    if target.claim_mount == HOTFIX_CLAIM_PATH:
+        mounts = (
+            f"{target.container} mounts {HOTFIX_CLAIM_VOLUME} at {HOTFIX_CLAIM_PATH}"
+        )
         if seeded:
             mounts = CLAIM_ALREADY_SEEDED.format(
                 container=target.container,
                 volume=HOTFIX_CLAIM_VOLUME,
-                checkout=HOTFIX_APP_PATH,
+                checkout=checkout_path(),
             )
         return PreflightCheck("claim", CheckStatus.OK, mounts)
     if not target.claim_mount:
@@ -4656,7 +4687,7 @@ def _claim_check(target: HotfixTarget, seeded: bool) -> PreflightCheck:
         "claim",
         CheckStatus.FAIL,
         VENV_INVISIBLE_TO_STATUS.format(
-            venv=target.claim_mount, default=HOTFIX_APP_PATH
+            venv=target.claim_mount, default=HOTFIX_CLAIM_PATH
         ),
     )
 
@@ -4672,7 +4703,7 @@ def _claim_seeded(kube: Kubectl, target: HotfixTarget) -> bool:
     A claim mounted anywhere else is already a blocker, and its rows are read
     against the default path, so it is not asked there.
     """
-    if target.claim_mount != HOTFIX_APP_PATH:
+    if target.claim_mount != HOTFIX_CLAIM_PATH:
         return False
     probe = kube.exec_(
         target.pod.name,
@@ -5355,7 +5386,7 @@ def hotfix_wiring(pod_json: Mapping[str, Any]) -> tuple[str, ...]:
     if HOTFIX_CLAIM_VOLUME in declared:
         carried.append(f"the {HOTFIX_CLAIM_VOLUME} volume")
     if claim_container(pod_json) is not None:
-        carried.append(f"a volumeMount at {HOTFIX_APP_PATH}")
+        carried.append(f"a volumeMount at {HOTFIX_CLAIM_PATH}")
     for entry in _as_list(spec.get("containers")):
         container = as_dict(entry)
         if not runs_hotfix_supervisor(container):
@@ -5525,7 +5556,7 @@ def _wiring_check(
             step,
             True,
             f"{pod} carries none of the hotfix wiring: no {HOTFIX_CLAIM_VOLUME} "
-            f"volume, no mount at {HOTFIX_APP_PATH}, no supervisor loop." + aside,
+            f"volume, no mount at {HOTFIX_CLAIM_PATH}, no supervisor loop." + aside,
         )
     if claim.present is False and claim.name is not None and not claim.deleted:
         # No aside: this arm is the loud one, and a pod whose claim has gone
@@ -5855,7 +5886,7 @@ _Venv = Annotated[
         metavar="PATH",
         help="the mountPath the claim is mounted at, beside the application's "
         "own project and never over it (default: read off the pod, and "
-        f"{HOTFIX_APP_PATH} where it mounts no claim yet). A value that "
+        f"{HOTFIX_CLAIM_PATH} where it mounts no claim yet). A value that "
         "disagrees with the pod is refused",
     ),
 ]

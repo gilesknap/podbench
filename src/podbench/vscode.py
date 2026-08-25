@@ -506,9 +506,9 @@ def merge_machine_settings(
     True
     >>> json.loads(mine)["search.exclude"]["**/proc/**"]
     True
-    >>> pinned = merge_machine_settings(None, interpreter="/podbench/app/.venv/bin/py")
+    >>> pinned = merge_machine_settings(None, interpreter="/podbench/venv/bin/py")
     >>> json.loads(pinned)["python.defaultInterpreterPath"]
-    '/podbench/app/.venv/bin/py'
+    '/podbench/venv/bin/py'
     >>> "python.defaultInterpreterPath" in json.loads(shipped)
     False
     """

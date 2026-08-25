@@ -460,7 +460,7 @@ Notes:
 * **The hotfix claim is mounted by convention too.** On a pod carrying the hotfix
   layout — it declares `podbench-app` *and* a container runs podbench's supervisor
   loop — `attach` mounts that claim into the seat at the application's own
-  mountPath, falling back to `/podbench/app` where the target container does not
+  mountPath, falling back to `/podbench` where the target container does not
   mount it at all.
   * A convention for the same reason the home is: the layout cannot be on the pod
     by accident, so its presence *is* the request. Since an ephemeral container's
@@ -770,9 +770,12 @@ it from a terminal on the machine your VS Code itself runs on, or run `podbench
 attach` and use **Remote-SSH: Connect to Host**.
 
 The folder is the seat's `<home>` for every pod without the hotfix layout, and
-the **claim** for a seat that carries it — read back off the seat's own
-`volumeMounts`, so a chart that mounts the claim somewhere other than
-`/podbench/app` is followed rather than guessed at. Whichever wins is named in
+the claim's **checkout** for a seat that carries it — the mountPath is read back
+off the seat's own `volumeMounts`, so a chart that mounts the claim somewhere
+other than `/podbench` is followed rather than guessed at, and the checkout is
+`app/` under it. The claim root is not what opens: it also holds the venv, the uv
+cache and the copied interpreter, none of which belong in the explorer or the
+search index of a window whose one job is the project. Whichever wins is named in
 the output with the reason, because it is a folder the command line did not ask
 for. A pod that carries the layout while this seat does not carry the mount gets
 the home and a `[warn]` saying so. `<home>` below means that folder.
@@ -788,12 +791,14 @@ In order it:
   file is often committed, and an exclude list is not worth a permanent line
   in somebody's diff. The cost is that *Kill/Uninstall VS Code Server on Host*
   now takes podbench's excludes with it, which a re-run of this verb repairs;
-* writes `python.defaultInterpreterPath` only where the folder holds the
-  interpreter — on a hotfixed pod, the claim, which resolves to the same file
-  in the seat and in the application. On any other pod the target's
-  interpreter is in another mount namespace and the seat's file at that path
-  is a different one, so no key is written and the extension's own picker
-  decides. It is `machine-overridable`, so a value you set wins;
+* writes `python.defaultInterpreterPath` only where the seat has the tree the
+  interpreter is in — on a hotfixed pod, the claim, which resolves to the same
+  file in the seat and in the application. The test is the claim and not the
+  folder that opens, because the folder is the checkout and the venv sits
+  beside it. On any other pod the target's interpreter is in another mount
+  namespace and the seat's file at that path is a different one, so no key is
+  written and the extension's own picker decides. It is `machine-overridable`,
+  so a value you set wins;
 * runs `podbench debug-config --print-config` in the seat and **writes nothing
   with the answer**. `--print-config` neither writes a file nor probes the
   target, so this is a measurement and not a mutation; what it is for is the
@@ -1199,9 +1204,11 @@ Notes:
 * **`--claim-venv` must match on both ends.** It names the venv directory on the
   claim, which the supervisor's runtime switch looks for and which `uv sync`
   builds, so `hotfix init --claim-venv` and `hotfix values --claim-venv`
-  have to agree. `init` sets `UV_PROJECT_ENVIRONMENT` whenever it is not uv's own
-  `.venv`, because otherwise the rebuild lands beside the venv the supervisor is
-  looking for and the pod goes on quietly running the image's code. `init`
+  have to agree. `init` sets `UV_PROJECT_ENVIRONMENT` unconditionally: the venv
+  sits beside the checkout rather than inside it, so it is never at uv's own
+  default and there is no case left in which leaving uv to itself lands the
+  rebuild where the supervisor is looking. A rebuild that landed beside that venv
+  would leave the pod quietly running the image's code. `init`
   records it in the manifest and `restart --reinstall` reads it from there; that
   flag has no `--claim-venv` of its own, because a rebuild that has to be told
   twice is one that gets told once
@@ -1209,12 +1216,12 @@ Notes:
 * **`--venv` is read off the pod, and a value that disagrees is refused.** The
   claim is podbench's own `podbench-app` volume, so its `mountPath` in the
   application container *is* the answer. `status` finds a hotfixed pod by
-  scanning for a `mountPath` of `/podbench/app`, so any other value wrote a
+  scanning for a `mountPath` of `/podbench`, so any other value wrote a
   manifest `status` could not see — a hotfixed pod nobody can list, which is the
   failure the mode exists to prevent. A claim genuinely mounted elsewhere is
   still accepted by the flag, with a warning saying both that `status` will not
   list it and that `init` will refuse it — the seed, the copied interpreter and
-  the supervisor's runtime switch all name `/podbench/app`.
+  the supervisor's runtime switch all name `/podbench`.
 * **`--base-commit` and `--repo` default to what the image says about itself.**
   podbench reads `org.opencontainers.image.revision` and
   `org.opencontainers.image.source` off the target image over the registry API,
@@ -1393,9 +1400,9 @@ Notes:
 │                                         dependency                                               │
 │    --claim-venv              NAME       the venv's directory name on the claim, which the        │
 │                                         runtime switch looks for and `uv sync` builds (default:  │
-│                                         .venv). `values` and `init` have to be given the same    │
+│                                         venv). `values` and `init` have to be given the same     │
 │                                         name                                                     │
-│                                         [default: .venv]                                         │
+│                                         [default: venv]                                          │
 │    --container               NAME       the application container (default: first)               │
 │    --namespace       -n      NAMESPACE  namespace (default: the kubeconfig context's own)        │
 │    --context                 NAME       kubeconfig context                                       │
@@ -1411,7 +1418,7 @@ $ podbench hotfix values --app myapp --from-pod myapp-0
 emits both halves of the chart wiring: `hotfixProject` values for the podbench
 release, and five ordinary passthroughs for the application's own chart — the
 claim and the seat's home under `volumes`, the claim mounted *beside* the
-project at `/podbench/app` under `volumeMounts`, the supervisor as
+project at `/podbench` under `volumeMounts`, the supervisor as
 `command`/`args`, `fsGroup` under `podSecurityContext`, and — where the target
 declares an exec one — its `livenessProbe` wrapped to honour the hold.
 

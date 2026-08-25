@@ -48,6 +48,7 @@ from .model import (
     ContainerRef,
     PodRef,
     SeatReport,
+    hotfix_checkout,
 )
 from .probe import discover_target
 from .proc import DEFAULT_PROC, read_gid, read_uid, self_capabilities
@@ -870,7 +871,7 @@ def hotfix_interpreter_store(
     right. The fix reverts at the next relaunch and nothing says so.
 
     >>> hotfix_interpreter_store(exists=lambda path: True)
-    '/podbench/app/.python'
+    '/podbench/python'
     >>> hotfix_interpreter_store(exists=lambda path: False) is None
     True
     """
@@ -1306,6 +1307,13 @@ def ensure_seat_gitconfig(*, env: Mapping[str, str] | None = None) -> bool:
     podbench's own invocations in *any* seat, a hotfix spanning several of them,
     and this is for the human in *this* one, who types no flags.
 
+    What is authorised is the **checkout**, and not the claim root the env var
+    carries. They were the same directory until the claim gained a layout; a
+    ``safe.directory`` naming the claim root does not cover the repository one
+    level down, so git refuses exactly as it did before the fix - and it refuses
+    mid-edit, after the user has changed something, which is the shape of the
+    failure #217 measured.
+
     Nothing is written for a seat with no claim. Absence of
     :data:`podbench.model.CLAIM_PATH_ENV` is how an ordinary ``attach`` seat -
     and every seat an older launcher landed - says so, and inventing a path for
@@ -1319,7 +1327,7 @@ def ensure_seat_gitconfig(*, env: Mapping[str, str] | None = None) -> bool:
         return False
     return _write_if_changed(
         Path(SEAT_GITCONFIG_INCLUDE),
-        f"[safe]\n\tdirectory = {_git_config_value(claim)}\n",
+        f"[safe]\n\tdirectory = {_git_config_value(hotfix_checkout(claim))}\n",
         0o644,
     )
 

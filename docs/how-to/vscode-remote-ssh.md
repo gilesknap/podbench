@@ -377,7 +377,7 @@ installed into the seat either. Only the laptop can see that, so `podbench
 vscode` spells the right destination into the step it offers you:
 
 ```
-to debug, in the seat:  podbench debug-config --provision --provision-dest /podbench/app/.podbench-debugpy
+to debug, in the seat:  podbench debug-config --provision --provision-dest /podbench/.podbench-debugpy
 ```
 
 Paste it as printed. That path is writable by the seat, is the same directory in
@@ -634,8 +634,9 @@ arguments. It kills the server after exactly five minutes idle.
   the pod declares a `podbench-home` volume — and reach the workload's
   filesystem through `/proc/<pid>/root` from there. `podbench pids` tells you
   which pid.
-* In Hotfix mode open the **claim**, at whatever path the application mounts it
-  — `/podbench/app` by convention. `podbench vscode` does this for you and says
+* In Hotfix mode open the claim's **checkout** — `app/` under whatever path the
+  application mounts the claim at, so `/podbench/app` by convention. `podbench
+  vscode` does this for you and says
   so, because it is the only tree in the pod where an edit reaches the running
   process: the home is empty, and the image's copy under `/proc/1/root` is read
   through a mount the supervisor never resolves, so nothing written there ever

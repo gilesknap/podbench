@@ -33,7 +33,7 @@ import yaml
 
 from podbench.hotfix import hotfix_claim, merged_values, values_snippet
 from podbench.model import (
-    HOTFIX_APP_PATH,
+    HOTFIX_CLAIM_PATH,
     HOTFIX_CLAIM_VOLUME,
     HOTFIX_HOLD_PATH,
     SEAT_HOME_VOLUME,
@@ -151,7 +151,7 @@ def test_the_claim_mounts_beside_the_projects_own_paths(
         str(m["name"]): str(m["mountPath"])
         for m in cast(list[Any], container(statefulset)["volumeMounts"])
     }
-    assert mounts[HOTFIX_CLAIM_VOLUME] == HOTFIX_APP_PATH
+    assert mounts[HOTFIX_CLAIM_VOLUME] == HOTFIX_CLAIM_PATH
     # the chart's own, still there
     assert "/epics/runtime" in mounts.values()
     assert "/data" in mounts.values()
@@ -300,7 +300,7 @@ def test_the_emitted_file_still_carries_everything_podbench_needs(
     assert HOTFIX_HOLD_PATH in "\n".join(cast(list[str], main["args"]))
     assert {
         m["mountPath"] for m in main["volumeMounts"] if m["name"] == HOTFIX_CLAIM_VOLUME
-    } == {HOTFIX_APP_PATH}
+    } == {HOTFIX_CLAIM_PATH}
     assert pod_spec(merged_statefulset)["securityContext"]["fsGroup"] == GID
 
 

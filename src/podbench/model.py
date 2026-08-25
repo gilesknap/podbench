@@ -44,11 +44,16 @@ __all__ = [
     "TARGET_CID_ENV",
     "TARGET_NAME_ENV",
     "DEVPOD_LABEL",
+    "HOTFIX_APP_DIR",
     "HOTFIX_APP_PATH",
+    "HOTFIX_CLAIM_PATH",
     "HOTFIX_CLAIM_VOLUME",
     "HOTFIX_CHILD_PID_PATH",
     "HOTFIX_HOLD_PATH",
     "HOTFIX_INTERPRETER_PATH",
+    "HOTFIX_UV_CACHE_DIR",
+    "HOTFIX_VENV_DIR",
+    "hotfix_checkout",
     "Blocker",
     "CapabilityReport",
     "ContainerRef",
@@ -784,15 +789,70 @@ staging path that `ioc-instance` cannot express, and a seat that is itself a
 python-copier-template image lost its own `/app/.venv`.
 """
 
-HOTFIX_APP_PATH = "/podbench/app"
-"""Where :data:`HOTFIX_CLAIM_VOLUME` is mounted.
+HOTFIX_CLAIM_PATH = "/podbench"
+"""Where :data:`HOTFIX_CLAIM_VOLUME` is mounted, and the key it is found by.
 
 Beside the application's project, never over it. Nothing the image ships is
 hidden by this mount, which is what lets the seed be a plain copy from the
 running container rather than an initContainer racing the application.
+
+This is also the **discovery key**: ``hotfix status`` finds hotfixed pods by
+scanning for a mountPath of exactly this, so it is the one path in the mode that
+is a protocol between two podbench runs rather than an implementation detail.
+
+The claim used to be mounted *at* the checkout, which made the checkout root and
+the claim root the same directory and put podbench's own artefacts - the venv,
+the uv cache, the copied interpreter, the manifest - inside somebody's source
+tree. Everything else here is derived from this so the two cannot drift apart
+again.
 """
 
-HOTFIX_INTERPRETER_PATH = "/podbench/app/.python"
+HOTFIX_APP_DIR = "app"
+"""The checkout's directory name on the claim, relative to its root."""
+
+HOTFIX_APP_PATH = f"{HOTFIX_CLAIM_PATH}/{HOTFIX_APP_DIR}"
+"""The source checkout, and the only thing on the claim that is the user's.
+
+Derived rather than spelled, because the discovery key and the checkout are two
+jobs one constant used to do at once: ``hotfix status`` keys on the *mount*,
+while git, the seed and the supervisor's runtime switch all mean the *checkout*.
+:func:`hotfix_checkout` is the same derivation for a claim mounted elsewhere.
+"""
+
+
+def hotfix_checkout(claim: str) -> str:
+    """The checkout on a claim mounted at *claim*.
+
+    Here rather than in ``hotfix.py`` because :mod:`podbench.agent` needs it too
+    and imports nothing of hotfix mode: the seat authorises the checkout as a
+    git ``safe.directory``, and authorising the claim root instead is a
+    ``fatal: detected dubious ownership`` that lands mid-edit, after the change
+    has been made. Measured on the beamline, 2026-08-22.
+
+    >>> hotfix_checkout("/podbench")
+    '/podbench/app'
+    >>> hotfix_checkout("/srv/claim/")
+    '/srv/claim/app'
+    """
+    return f"{claim.rstrip('/')}/{HOTFIX_APP_DIR}"
+
+
+HOTFIX_VENV_DIR = "venv"
+"""The venv's directory name on the claim, relative to its root.
+
+Beside the checkout rather than inside it, so that ``uv sync`` writes nothing
+into the user's source tree. It is also why ``UV_PROJECT_ENVIRONMENT`` is now
+set unconditionally: the venv is never at uv's own default any more.
+"""
+
+HOTFIX_UV_CACHE_DIR = "uv-cache"
+"""The uv cache's directory name on the claim, relative to its root.
+
+On the claim so that the second rebuild is cheap, and outside the checkout for
+the same reason the venv is: it is podbench's, not the user's.
+"""
+
+HOTFIX_INTERPRETER_PATH = f"{HOTFIX_CLAIM_PATH}/python"
 """The interpreter, on the claim.
 
 A rebuilt venv's console scripts carry an absolute shebang, so the interpreter

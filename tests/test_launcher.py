@@ -100,6 +100,7 @@ from podbench.launcher import (
 from podbench.model import (
     DEVPOD_LABEL,
     HOTFIX_APP_PATH,
+    HOTFIX_CLAIM_PATH,
     HOTFIX_CLAIM_VOLUME,
     PTRACE_READ_PATHS,
     SEAT_HOME_PATH,
@@ -1809,7 +1810,9 @@ def layout_pod(**overrides: Any) -> dict[str, Any]:
     settings: dict[str, Any] = {
         "uid": 1000,
         "volumes": [HOME_VOLUME, HOTFIX_CLAIM],
-        "volume_mounts": [{"name": HOTFIX_CLAIM_VOLUME, "mountPath": HOTFIX_APP_PATH}],
+        "volume_mounts": [
+            {"name": HOTFIX_CLAIM_VOLUME, "mountPath": HOTFIX_CLAIM_PATH}
+        ],
         "args": [hold_loop_args("myapp serve")],
     }
     settings.update(overrides)
@@ -1886,12 +1889,12 @@ def test_a_seat_on_a_hotfixed_pod_gets_the_claim_without_being_asked() -> None:
     session = attach(talking_to(cluster), "target", probe=False)
 
     mounts = cluster.added[0]["volumeMounts"]
-    assert {"name": HOTFIX_CLAIM_VOLUME, "mountPath": HOTFIX_APP_PATH} in mounts
+    assert {"name": HOTFIX_CLAIM_VOLUME, "mountPath": HOTFIX_CLAIM_PATH} in mounts
     # And it did not cost the home volume its place.
     assert {"name": SEAT_HOME_VOLUME, "mountPath": SEAT_HOME_PATH} in mounts
     # A mount nobody typed is only acceptable if the output names it.
     assert any(HOTFIX_CLAIM_VOLUME in warning for warning in session.warnings)
-    assert any("/podbench/app" in warning for warning in session.warnings)
+    assert any(HOTFIX_CLAIM_PATH in warning for warning in session.warnings)
 
 
 def test_the_seat_that_gets_the_claim_reads_back_as_a_hotfix_seat() -> None:
@@ -1955,7 +1958,7 @@ def test_an_explicit_mount_still_wins_over_the_claim_convention() -> None:
     attach(
         talking_to(cluster),
         "target",
-        mounts=[f"{HOTFIX_CLAIM_VOLUME}:{HOTFIX_APP_PATH}"],
+        mounts=[f"{HOTFIX_CLAIM_VOLUME}:{HOTFIX_CLAIM_PATH}"],
         probe=False,
     )
 
@@ -1964,7 +1967,7 @@ def test_an_explicit_mount_still_wins_over_the_claim_convention() -> None:
         for mount in cluster.added[0]["volumeMounts"]
         if mount["name"] == HOTFIX_CLAIM_VOLUME
     ]
-    assert claims == [{"name": HOTFIX_CLAIM_VOLUME, "mountPath": HOTFIX_APP_PATH}]
+    assert claims == [{"name": HOTFIX_CLAIM_VOLUME, "mountPath": HOTFIX_CLAIM_PATH}]
 
 
 def test_a_claim_the_seat_cannot_carry_is_a_note_and_not_a_dead_attach() -> None:
@@ -4278,7 +4281,9 @@ def test_the_debug_step_offered_on_a_hotfix_pod_names_the_claim(
     )
     assert code == 0
 
-    dest = f"{HOTFIX_APP_PATH}/.podbench-debugpy"
+    # The claim root, beside the checkout rather than inside it: what podbench
+    # installs for its own use is not part of anybody's source tree.
+    dest = f"{HOTFIX_CLAIM_PATH}/.podbench-debugpy"
     runs = [call for call in cluster.calls if "debug-config" in call]
     assert runs
     for call in runs:
@@ -4294,11 +4299,12 @@ def test_the_debug_step_offered_on_a_hotfix_pod_names_the_claim(
 def test_open_follows_the_claim_to_wherever_the_application_mounts_it(
     tmp_path: Path,
 ) -> None:
-    """The path is the application's, not :data:`HOTFIX_APP_PATH`.
+    """The path is the application's, not :data:`HOTFIX_CLAIM_PATH`.
 
     ``hotfix_claim_mounts`` copies the application's own mountPath into the
     seat rather than asserting the constant, so the folder has to be read back
-    off the seat's mount or a chart that mounts it elsewhere opens nothing.
+    off the seat's mount or a chart that mounts it elsewhere opens nothing. The
+    checkout is derived from that mount, so it follows it too.
     """
     cluster = FakeCluster(
         layout_pod(
@@ -4313,7 +4319,7 @@ def test_open_follows_the_claim_to_wherever_the_application_mounts_it(
     assert code == 0
 
     editor = [call for call in cluster.calls if call[0] == "/usr/bin/code"]
-    assert editor[-1][-1] == "/srv/podbench"
+    assert editor[-1][-1] == "/srv/podbench/app"
 
 
 def test_open_keeps_the_home_when_the_seat_could_not_carry_the_claim(

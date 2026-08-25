@@ -32,7 +32,8 @@ from podbench.launcher import Session
 from podbench.model import ContainerRef, PodRef, Rung
 
 VENV = "/opt/venv"
-CHECKOUT = "/podbench/app"
+CLAIM_MOUNT = "/podbench"
+CHECKOUT = f"{CLAIM_MOUNT}/app"
 PROJECT_SRC = "/proc/1/root/app"
 BASE_SHA = "1111111111111111111111111111111111111111"
 HEAD_SHA = "2222222222222222222222222222222222222222"
@@ -41,7 +42,7 @@ NEW_DIGEST = "ghcr.io/acme/api@sha256:bbbb"
 
 GIT = f"git -c safe.directory={CHECKOUT} -C {CHECKOUT}"
 
-SEEDED_PYTHON = "/podbench/app/.python/cpython-3.11.13-linux-x86_64-gnu/bin/python3"
+SEEDED_PYTHON = "/podbench/python/cpython-3.11.13-linux-x86_64-gnu/bin/python3"
 
 PYVENV_CFG = (
     "home = /usr/local/bin\ninclude-system-site-packages = false\nversion = 3.12.7\n"
@@ -69,7 +70,7 @@ def pod_json(
         # The listing's whole filter: a volume, which a GitOps controller
         # reconciles towards rather than strips.
         container["volumeMounts"] = [
-            {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH}
+            {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_CLAIM_PATH}
         ]
     spec: dict[str, Any] = {"containers": [container]}
     status: dict[str, Any] = {
@@ -219,7 +220,7 @@ def seeded_store(**extra: str) -> FakeStore:
     files = {
         CHECKOUT: "",
         f"{CHECKOUT}/pyproject.toml": "",
-        f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
+        f"{CLAIM_MOUNT}/venv/pyvenv.cfg": PYVENV_CFG,
         f"{CHECKOUT}/.git": "",
     }
     files.update(extra)
@@ -234,7 +235,7 @@ def seeded_store(**extra: str) -> FakeStore:
 
 def a_manifest(**overrides: Any) -> hotfix.HotfixManifest:
     defaults: dict[str, Any] = {
-        "venv": VENV,
+        "venv": CLAIM_MOUNT,
         "checkout": CHECKOUT,
         "repo": "https://example.invalid/acme/api.git",
         "base_image": "ghcr.io/acme/api:1.4.0",
@@ -272,7 +273,7 @@ def test_manifest_round_trips_through_json() -> None:
 def test_a_v1_manifest_loads_with_the_new_fields_defaulted() -> None:
     """The falsification for #205 item 2: an existing claim carrying a recorded
     non-default venv must keep loading, and keep being honoured."""
-    payload = json.loads(a_manifest().to_json())
+    payload = json.loads(a_manifest(venv=VENV).to_json())
     payload["version"] = 1
     del payload["claimVenv"]
     del payload["baseCommitAssumed"]
@@ -397,8 +398,12 @@ def test_the_checkout_is_the_claim_itself() -> None:
 def test_install_pins_the_interpreter_on_the_claim() -> None:
     """Left to itself uv finds the image's, and the venv names a path that goes
     away on the next restart - the fix reverting rather than an error."""
-    argv = hotfix.install_argv(SEEDED_PYTHON, CHECKOUT)
-    assert argv[:4] == ["env", f"UV_CACHE_DIR={CHECKOUT}/.uv-cache", "uv", "sync"]
+    argv = hotfix.install_argv(SEEDED_PYTHON, CLAIM_MOUNT)
+    assert argv[:3] == [
+        "env",
+        f"UV_CACHE_DIR={CLAIM_MOUNT}/uv-cache",
+        f"UV_PROJECT_ENVIRONMENT={CLAIM_MOUNT}/venv",
+    ]
     assert CHECKOUT in argv
     assert SEEDED_PYTHON in argv
 
@@ -600,9 +605,9 @@ def test_a_pod_read_keeps_the_bound_the_clone_is_exempt_from() -> None:
     runner = FakeRunner()
     store = hotfix.PodStore(kube(runner), "api-7f9-abc", "podbench")
 
-    store.read_text(hotfix.manifest_path(VENV))
+    store.read_text(hotfix.manifest_path(CLAIM_MOUNT))
     store.exists(CHECKOUT)
-    store.write_text(hotfix.manifest_path(VENV), "{}")
+    store.write_text(hotfix.manifest_path(CLAIM_MOUNT), "{}")
     store.run(["git", "clone", "https://example.invalid/acme/api.git", CHECKOUT])
 
     assert runner.timeouts == [
@@ -642,8 +647,8 @@ def test_the_claim_mount_is_resolved_by_volume_name_not_by_path() -> None:
 
 
 def test_venv_defaults_to_the_mount_the_pod_declares() -> None:
-    assert hotfix.resolve_venv(a_target(model.HOTFIX_APP_PATH), None) == (
-        model.HOTFIX_APP_PATH,
+    assert hotfix.resolve_venv(a_target(model.HOTFIX_CLAIM_PATH), None) == (
+        model.HOTFIX_CLAIM_PATH,
         None,
     )
 
@@ -652,7 +657,7 @@ def test_venv_defaults_to_the_convention_before_the_claim_exists() -> None:
     """`init` is run against a pod that has just been given the claim, but the
     same verbs are run against one that has not - and a default that guessed
     nothing would make the flag required again for the case it exists to drop."""
-    assert hotfix.resolve_venv(a_target(), None) == (model.HOTFIX_APP_PATH, None)
+    assert hotfix.resolve_venv(a_target(), None) == (model.HOTFIX_CLAIM_PATH, None)
 
 
 def test_a_venv_that_disagrees_with_the_pod_is_refused() -> None:
@@ -660,10 +665,10 @@ def test_a_venv_that_disagrees_with_the_pod_is_refused() -> None:
     writes a manifest at a path `status` never scans, and a hotfixed pod
     invisible to `status` is the precise thing this mode exists to prevent."""
     with pytest.raises(hotfix.HotfixError) as refusal:
-        hotfix.resolve_venv(a_target(model.HOTFIX_APP_PATH), "/opt/venv")
+        hotfix.resolve_venv(a_target(model.HOTFIX_CLAIM_PATH), "/opt/venv")
 
     assert "/opt/venv" in str(refusal.value)
-    assert model.HOTFIX_APP_PATH in str(refusal.value)
+    assert model.HOTFIX_CLAIM_PATH in str(refusal.value)
 
 
 def test_a_claim_mounted_elsewhere_is_honoured_and_said_out_loud() -> None:
@@ -757,7 +762,7 @@ def test_init_refuses_when_the_claim_is_not_mounted() -> None:
             kube(FakeRunner()),
             store,
             deployment_target(),
-            venv=VENV,
+            venv=CLAIM_MOUNT,
             repo="https://example.invalid/acme/api.git",
         )
     assert not store.ran("cp -a")
@@ -780,7 +785,7 @@ def test_init_refuses_an_unreachable_target_root_naming_the_ptrace_rung() -> Non
             kube(FakeRunner()),
             store,
             deployment_target(),
-            venv=VENV,
+            venv=CLAIM_MOUNT,
             repo="https://example.invalid/acme/api.git",
         )
 
@@ -802,7 +807,7 @@ def test_a_missing_project_is_not_reported_as_a_ptrace_denial() -> None:
             kube(FakeRunner()),
             store,
             deployment_target(),
-            venv=VENV,
+            venv=CLAIM_MOUNT,
             repo="https://example.invalid/acme/api.git",
         )
 
@@ -829,7 +834,7 @@ def test_the_root_is_listed_rather_than_tested_for_existence() -> None:
             kube(FakeRunner()),
             store,
             deployment_target(),
-            venv=VENV,
+            venv=CLAIM_MOUNT,
             repo="https://example.invalid/acme/api.git",
         )
 
@@ -849,7 +854,7 @@ def test_an_image_with_a_different_layout_is_expressible_without_a_code_change()
             kube(FakeRunner()),
             store,
             deployment_target(),
-            venv=VENV,
+            venv=CLAIM_MOUNT,
             repo="https://example.invalid/acme/api.git",
             image_project="/app",
         )
@@ -862,7 +867,7 @@ def test_an_image_with_a_different_layout_is_expressible_without_a_code_change()
         kube(FakeRunner()),
         store,
         deployment_target(),
-        venv=VENV,
+        venv=CLAIM_MOUNT,
         repo="https://example.invalid/acme/api.git",
         image_project="/venv",
         image_interpreter="/python",
@@ -888,7 +893,7 @@ def test_init_seeds_the_project_and_the_interpreter() -> None:
         kube(FakeRunner()),
         store,
         deployment_target(),
-        venv=VENV,
+        venv=CLAIM_MOUNT,
         repo="https://example.invalid/acme/api.git",
         install=False,
     )
@@ -904,7 +909,7 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
             CHECKOUT: "",
             PROJECT_SRC: "",
             "/proc/1/root/python": "",
-            f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
+            f"{CLAIM_MOUNT}/venv/pyvenv.cfg": PYVENV_CFG,
         },
         outputs={f"{GIT} rev-parse HEAD": BASE_SHA},
     )
@@ -912,7 +917,7 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
         kube(runner),
         store,
         deployment_target(),
-        venv=VENV,
+        venv=CLAIM_MOUNT,
         repo="https://example.invalid/acme/api.git",
         ref="v1.4.0",
     )
@@ -923,7 +928,7 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
     assert manifest.base_commit == BASE_SHA
     assert manifest.interpreter == "3.12.7"
     assert manifest.base_image_digest == BASE_DIGEST
-    assert store.read_text(hotfix.manifest_path(VENV)) is not None
+    assert store.read_text(hotfix.manifest_path(CLAIM_MOUNT)) is not None
     # The rebuild runs in the application container, not in the seat.
     assert runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
     # No annotation: provenance lives on the claim, where Argo self-heal cannot
@@ -944,7 +949,7 @@ def test_init_takes_the_repo_and_the_base_from_the_image() -> None:
         kube(runner),
         store,
         deployment_target(),
-        venv=model.HOTFIX_APP_PATH,
+        venv=model.HOTFIX_CLAIM_PATH,
         image_labels={
             oci.SOURCE_LABEL: "https://github.com/acme/api",
             oci.REVISION_LABEL: BASE_SHA,
@@ -976,7 +981,7 @@ def test_an_inherited_label_never_becomes_a_measured_base() -> None:
         kube(runner),
         store,
         deployment_target(),
-        venv=model.HOTFIX_APP_PATH,
+        venv=model.HOTFIX_CLAIM_PATH,
         image_labels={
             oci.SOURCE_LABEL: (
                 "https://github.com/DiamondLightSource/ubuntu-devcontainer"
@@ -1008,7 +1013,7 @@ def test_a_clone_made_from_the_label_corroborates_nothing() -> None:
             CHECKOUT: "",
             PROJECT_SRC: "",
             "/proc/1/root/python": "",
-            f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
+            f"{CLAIM_MOUNT}/venv/pyvenv.cfg": PYVENV_CFG,
         },
         outputs={f"{GIT} rev-parse HEAD": HEAD_SHA},
     )
@@ -1017,7 +1022,7 @@ def test_a_clone_made_from_the_label_corroborates_nothing() -> None:
         kube(runner),
         store,
         deployment_target(),
-        venv=model.HOTFIX_APP_PATH,
+        venv=model.HOTFIX_CLAIM_PATH,
         image_labels={
             oci.SOURCE_LABEL: "https://github.com/acme/api",
             oci.REVISION_LABEL: BASE_SHA,
@@ -1042,7 +1047,7 @@ def test_init_refuses_a_missing_repo_before_it_copies_anything() -> None:
             kube(FakeRunner()),
             store,
             deployment_target(),
-            venv=model.HOTFIX_APP_PATH,
+            venv=model.HOTFIX_CLAIM_PATH,
             install=False,
         )
 
@@ -1058,7 +1063,7 @@ def test_init_refuses_when_neither_the_flag_nor_the_label_names_a_repo() -> None
             kube(FakeRunner()),
             store,
             deployment_target(),
-            venv=model.HOTFIX_APP_PATH,
+            venv=model.HOTFIX_CLAIM_PATH,
             install=False,
         )
 
@@ -1072,7 +1077,7 @@ def test_init_records_the_claim_venv_so_that_apply_need_not_be_told() -> None:
         kube(FakeRunner()),
         store,
         deployment_target(),
-        venv=model.HOTFIX_APP_PATH,
+        venv=model.HOTFIX_CLAIM_PATH,
         repo="https://example.invalid/acme/api.git",
         claim_venv="env",
         install=False,
@@ -1088,7 +1093,7 @@ def test_init_is_idempotent_about_an_existing_checkout() -> None:
         kube(runner),
         store,
         deployment_target(),
-        venv=VENV,
+        venv=CLAIM_MOUNT,
         repo="https://example.invalid/acme/api.git",
         install=False,
     )
@@ -1108,7 +1113,7 @@ def test_init_explains_a_failed_install() -> None:
             CHECKOUT: "",
             PROJECT_SRC: "",
             "/proc/1/root/python": "",
-            f"{CHECKOUT}/.venv/pyvenv.cfg": PYVENV_CFG,
+            f"{CLAIM_MOUNT}/venv/pyvenv.cfg": PYVENV_CFG,
         },
         outputs={f"{GIT} rev-parse HEAD": BASE_SHA},
     )
@@ -1117,7 +1122,7 @@ def test_init_explains_a_failed_install() -> None:
             kube(runner),
             store,
             deployment_target(),
-            venv=VENV,
+            venv=CLAIM_MOUNT,
             repo="https://example.invalid/acme/api.git",
         )
 
@@ -1128,7 +1133,7 @@ def test_init_explains_a_failed_install() -> None:
 def hotfixed_store(dirty: bool = True) -> FakeStore:
     """A seeded claim carrying a manifest, and a git that answers about it."""
     store = seeded_store()
-    store.files[hotfix.manifest_path(VENV)] = a_manifest().to_json()
+    store.files[hotfix.manifest_path(CLAIM_MOUNT)] = a_manifest().to_json()
     store.outputs[f"{GIT} status --porcelain"] = " M src/api/beam.py\n" if dirty else ""
     return store
 
@@ -1159,7 +1164,7 @@ def restarted(
         kube(runner or restarting_runner()),
         store,
         deployment_target(),
-        venv=VENV,
+        venv=CLAIM_MOUNT,
         reinstall=reinstall,
     )
 
@@ -1176,9 +1181,9 @@ def test_restart_relaunches_and_writes_no_commit() -> None:
 
     assert not store.ran(f"{GIT} add")
     assert not any("commit" in " ".join(argv) for argv in store.calls)
-    assert hotfix.HotfixManifest.from_json(store.files[hotfix.manifest_path(VENV)]) == (
-        a_manifest()
-    )
+    assert hotfix.HotfixManifest.from_json(
+        store.files[hotfix.manifest_path(CLAIM_MOUNT)]
+    ) == (a_manifest())
     assert runner.matching(RELAUNCH)
 
 
@@ -1287,7 +1292,7 @@ def test_restart_refreshes_a_debug_configuration_that_already_exists() -> None:
         "debug-config",
         "--provision",
         "--provision-dest",
-        f"{CHECKOUT}/.podbench-debugpy",
+        f"{CLAIM_MOUNT}/.podbench-debugpy",
         "--output",
         LAUNCH_JSON,
     )
@@ -1433,13 +1438,15 @@ def test_restart_rebuilds_the_venv_only_when_asked() -> None:
 def test_restart_rebuilds_into_the_venv_the_manifest_records() -> None:
     """#209, unchanged by #232: the flag `init` was given, not uv's default."""
     store = hotfixed_store()
-    store.files[hotfix.manifest_path(VENV)] = a_manifest(claim_venv="env").to_json()
+    store.files[hotfix.manifest_path(CLAIM_MOUNT)] = a_manifest(
+        claim_venv="env"
+    ).to_json()
     runner = restarting_runner()
 
     restarted(store, runner, reinstall=True)
 
     (rebuild,) = runner.matching("exec -c app api-7f9-abc -- env UV_CACHE_DIR")
-    assert f"UV_PROJECT_ENVIRONMENT={CHECKOUT}/env" in " ".join(rebuild)
+    assert f"UV_PROJECT_ENVIRONMENT={CLAIM_MOUNT}/env" in " ".join(rebuild)
 
 
 def test_a_dirty_pyproject_says_the_install_is_stale_rather_than_rebuilding() -> None:
@@ -1972,7 +1979,7 @@ def wired_pod(
     spec: dict[str, Any] = {"containers": [container], "volumes": []}
     if wired:
         container["volumeMounts"] = [
-            {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH}
+            {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_CLAIM_PATH}
         ]
         container["command"] = ["bash", "-c"]
         container["args"] = [hotfix.hold_loop_args("python -m app")]
@@ -2079,7 +2086,7 @@ def test_a_pod_wired_to_a_claim_its_chart_no_longer_declares_is_reported() -> No
     wiring = rows[hotfix.RetirementStep.WIRING].detail
     # Every half named, since retirement is somebody editing a values file.
     assert model.HOTFIX_CLAIM_VOLUME in wiring
-    assert model.HOTFIX_APP_PATH in wiring
+    assert model.HOTFIX_CLAIM_PATH in wiring
     assert "args" in wiring
     # And the reason the boolean did not do it.
     assert "application's own pod template" in wiring
@@ -2111,7 +2118,7 @@ def test_the_wiring_row_names_every_value_that_has_to_come_out() -> None:
     for named in (
         model.HOTFIX_CLAIM_VOLUME,
         model.SEAT_HOME_VOLUME,
-        model.HOTFIX_APP_PATH,
+        model.HOTFIX_CLAIM_PATH,
         "command and args",
         "podSecurityContext.fsGroup is 37887",
     ):
@@ -2542,8 +2549,10 @@ def test_values_snippet_mounts_the_claim_beside_the_project_not_over_it() -> Non
         str(m["name"]): str(m["mountPath"])
         for m in cast(list[Any], values["volumeMounts"])
     }
-    assert mounts[model.HOTFIX_CLAIM_VOLUME] == model.HOTFIX_APP_PATH
-    assert model.HOTFIX_APP_PATH.startswith("/podbench/")
+    # The claim's own root, and the checkout one level inside it: mounting at
+    # the checkout is what put podbench's venv and cache in the user's tree.
+    assert mounts[model.HOTFIX_CLAIM_VOLUME] == model.HOTFIX_CLAIM_PATH
+    assert model.HOTFIX_APP_PATH == f"{model.HOTFIX_CLAIM_PATH}/app"
 
 
 def test_values_snippet_emits_no_init_container_and_no_identity() -> None:
@@ -2607,7 +2616,7 @@ def test_the_supervisor_is_fail_fast_without_a_hold_file() -> None:
 
 def test_the_runtime_switch_prefers_the_claim_only_when_it_is_seeded() -> None:
     args = "\n".join(cast(list[Any], parsed_snippet()["args"]))
-    assert f"if [ -x {model.HOTFIX_APP_PATH}/.venv/bin/python ]; then" in args
+    assert f"if [ -x {model.HOTFIX_CLAIM_PATH}/venv/bin/python ]; then" in args
 
 
 def test_the_liveness_probe_is_wrapped_to_honour_the_hold() -> None:
@@ -2878,7 +2887,7 @@ def test_volumes_the_target_already_has_are_named_as_a_merge(
     pod = target_pod(command=["python", "-m", "app"])
     pod["spec"]["containers"][0]["volumeMounts"] = [
         {"name": "dev-shm", "mountPath": "/dev/shm"},
-        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH},
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_CLAIM_PATH},
     ]
     runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(pod)})
 
@@ -2924,7 +2933,7 @@ def test_values_answers_the_question_the_mount_warning_asks(
     pod = target_pod(command=["python", "-m", "app"])
     pod["spec"]["containers"][0]["volumeMounts"] = [
         {"name": "dev-shm", "mountPath": "/dev/shm"},
-        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH},
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_CLAIM_PATH},
     ]
     child = tmp_path / "values.yaml"
     child.write_text(CHILD)
@@ -2960,7 +2969,7 @@ def test_a_target_carrying_only_podbenchs_volumes_is_not_warned_about_them(
 ) -> None:
     pod = target_pod(command=["python", "-m", "app"])
     pod["spec"]["containers"][0]["volumeMounts"] = [
-        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_APP_PATH}
+        {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": model.HOTFIX_CLAIM_PATH}
     ]
     runner = FakeRunner({"get pod api-7f9-abc -o json": json.dumps(pod)})
 
@@ -3449,7 +3458,7 @@ def test_a_report_wraps_its_prose_and_leaves_a_relayed_line_alone(
             "get deployment api -o json": json.dumps(workload_json()),
             "get pods -l app=api -o json": json.dumps({"items": [pod_json()]}),
             "get pod api-7f9-abc -o json": json.dumps(pod_json()),
-            f"{seat} cat /opt/venv/.podbench-hotfix.json": a_manifest().to_json(),
+            f"{seat} cat /podbench/.podbench-hotfix.json": a_manifest().to_json(),
             f"{seat} bash -c ls -d": f"{SEEDED_PYTHON}\n",
         }
     )
@@ -3463,7 +3472,7 @@ def test_a_report_wraps_its_prose_and_leaves_a_relayed_line_alone(
             "deployment/api",
             "--reinstall",
             "--venv",
-            VENV,
+            CLAIM_MOUNT,
             "-n",
             "demo",
         ],
@@ -4080,13 +4089,13 @@ def test_init_needs_neither_venv_nor_repo_when_the_pod_and_the_image_answer() ->
     written = [
         argv
         for argv in runner.calls
-        if f"cat > {model.HOTFIX_APP_PATH}/.podbench-hotfix.json" in " ".join(argv)
+        if f"cat > {model.HOTFIX_CLAIM_PATH}/.podbench-hotfix.json" in " ".join(argv)
     ]
     assert written, "the manifest goes where `status` scans, with no --venv typed"
     manifest = hotfix.HotfixManifest.from_json(
         runner.stdins[runner.calls.index(written[0])] or ""
     )
-    assert manifest.venv == model.HOTFIX_APP_PATH
+    assert manifest.venv == model.HOTFIX_CLAIM_PATH
     assert manifest.repo == "https://github.com/acme/api"
     assert manifest.base_commit == BASE_SHA
     assert not manifest.base_commit_assumed
@@ -4235,7 +4244,7 @@ def test_cli_reports_a_refusal_on_stderr(capsys: pytest.CaptureFixture[str]) -> 
         {"get deployment api -o json": json.dumps(workload_json(replicas=3))}
     )
     code = hotfix.main(
-        ["hotfix", "restart", "deployment/api", "--venv", VENV, "-n", "demo"],
+        ["hotfix", "restart", "deployment/api", "--venv", CLAIM_MOUNT, "-n", "demo"],
         runner=runner,
     )
     assert code == 2
@@ -4251,13 +4260,13 @@ def test_cli_restart_runs_git_through_the_seat() -> None:
             "get deployment api -o json": json.dumps(workload_json()),
             "get pods -l app=api -o json": json.dumps({"items": [pod_json()]}),
             "get pod api-7f9-abc -o json": json.dumps(pod_json()),
-            f"{seat} cat /opt/venv/.podbench-hotfix.json": a_manifest().to_json(),
+            f"{seat} cat /podbench/.podbench-hotfix.json": a_manifest().to_json(),
             f"{seat} {GIT} rev-parse": HEAD_SHA,
             f"{seat} {GIT} status": " M a.py\n",
         }
     )
     code = hotfix.main(
-        ["hotfix", "restart", "deployment/api", "--venv", VENV, "-n", "demo"],
+        ["hotfix", "restart", "deployment/api", "--venv", CLAIM_MOUNT, "-n", "demo"],
         runner=runner,
     )
     assert code == 0
@@ -4273,13 +4282,13 @@ def test_cli_restart_has_no_message_option_and_commits_nothing() -> None:
             "get deployment api -o json": json.dumps(workload_json()),
             "get pods -l app=api -o json": json.dumps({"items": [pod_json()]}),
             "get pod api-7f9-abc -o json": json.dumps(pod_json()),
-            f"{seat} cat /opt/venv/.podbench-hotfix.json": a_manifest().to_json(),
+            f"{seat} cat /podbench/.podbench-hotfix.json": a_manifest().to_json(),
             f"{seat} {GIT} rev-parse": HEAD_SHA,
             f"{seat} {GIT} status": " M a.py\n",
         }
     )
     runner.sequences[CHILD_PID_READ] = ["7\n", "2446\n"]
-    argv = ["hotfix", "restart", "deployment/api", "--venv", VENV, "-n", "demo"]
+    argv = ["hotfix", "restart", "deployment/api", "--venv", CLAIM_MOUNT, "-n", "demo"]
 
     assert hotfix.main(argv, runner=runner) == 0
     assert runner.matching(RELAUNCH)
@@ -4638,17 +4647,20 @@ def test_an_exec_probe_and_no_probe_at_all_are_both_fine(
 
 
 def test_a_claim_mounted_somewhere_else_blocks_rather_than_warns() -> None:
-    """`init` seeds /podbench/app, copies the interpreter there and emits a
-    supervisor switch naming it, none of which move with the mount - so a claim
-    mounted elsewhere is a refusal and reporting it as a note would be a warning
-    contradicted by the next command."""
+    """`init` seeds the checkout on the claim, copies the interpreter beside it
+    and emits a supervisor switch naming both, none of which move with the mount
+    - so a claim mounted elsewhere is a refusal and reporting it as a note would
+    be a warning contradicted by the next command."""
     pod = pod_json(owner=None, claim=True)
     pod["spec"]["containers"][0]["volumeMounts"] = [
         {"name": model.HOTFIX_CLAIM_VOLUME, "mountPath": "/opt/venv"}
     ]
     runner = hotfixable(pod)
-    runner.failures[f"{SEAT_EXEC} test -e /podbench/app"] = ""
+    runner.failures[f"{SEAT_EXEC} test -e {model.HOTFIX_CLAIM_PATH}"] = ""
 
+    # `check` blocks and `init` refuses. The refusal is stated rather than
+    # inherited from a probe that happens to fail: everything the seed writes
+    # follows the mount, but the supervisor switch in the pod template does not.
     assert check_and_init(runner) == (1, 2)
 
 

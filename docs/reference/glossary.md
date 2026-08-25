@@ -195,7 +195,7 @@ Argo CD
 
 claim
   A PersistentVolumeClaim: a request for storage that a pod mounts as a volume. Hotfix
-  mode's claim is mounted *beside* the application's own project, at `/podbench/app`
+  mode's claim is mounted *beside* the application's own project, at `/podbench`
   and never over it, which is what makes a fix survive a restart while leaving
   everything the image ships visible. Pod volumes are immutable after creation, so a
   claim can never be added to a running pod — hence the deploy-time cooperation that

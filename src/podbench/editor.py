@@ -577,6 +577,7 @@ def open_seat(
     folder: str,
     report: Callable[[str], None],
     editor: str = DEFAULT_EDITOR,
+    mounted: str | None = None,
     provision_dest: str | None = None,
     ssh: str = DEFAULT_SSH,
     runner: Runner | None = None,
@@ -592,9 +593,11 @@ def open_seat(
     ``folder`` is the caller's choice, and it is genuinely a choice: ``attach``
     passes the seat's own home, which is where the workload is read from through
     ``/proc/<pid>/root``, and ``vscode`` on a seat carrying the hotfix claim
-    passes the claim's own mountPath instead, because that is the only tree
-    there where an edit reaches the running process (issue #189). It is checked
-    here rather than assumed, because it is the one argument whose wrong value
+    passes the checkout on that claim instead, because that is the only tree
+    there where an edit reaches the running process (issue #189). ``mounted`` is
+    the tree the seat has, which on a hotfixed pod is the claim the checkout sits
+    in - see :func:`interpreter_for_folder`, the only thing that reads it. It is
+    checked here rather than assumed, because it is the one argument whose wrong value
     is unrecoverable and it is not a constant: the home follows a
     ``podbench-home`` mount, and ``--mount podbench-home:/`` is a spelling of
     that a user can reach.
@@ -657,7 +660,9 @@ def open_seat(
         # Host having deleted the seat's ~/.vscode-server since the last one.
         _machine_settings(
             alias,
-            interpreter=interpreter_for_folder(folder, authored.interpreter),
+            interpreter=interpreter_for_folder(
+                folder, authored.interpreter, mounted=mounted
+            ),
             ssh=ssh,
             runner=run,
             report=report,
@@ -1169,17 +1174,23 @@ def _narrated_interpreter(stderr: str) -> str | None:
     return found
 
 
-def interpreter_for_folder(folder: str, interpreter: str | None) -> str | None:
-    """The target's interpreter, if the folder being opened is the tree it is in.
+def interpreter_for_folder(
+    folder: str, interpreter: str | None, *, mounted: str | None = None
+) -> str | None:
+    """The target's interpreter, if the seat has the tree it is in.
 
     The gate on :data:`podbench.vscode.PYTHON_INTERPRETER_KEY`, and it is a
     question about *mounts* rather than about Python. ``interpreter`` is the
     target's own spelling of a path in the target's mount namespace; it names the
-    same file for the seat only where the seat has that tree mounted too. The
-    folder ``vscode`` opens is exactly that tree on a hotfixed pod
-    (``launcher.editor_folder`` opens the claim, which the launcher mounts into
-    the seat at the application's own path) and is the seat's *own* home on every
-    other pod — where the target's interpreter is never under it.
+    same file for the seat only where the seat has that tree mounted too.
+
+    ``mounted`` is that tree, and it is not always ``folder``. On a hotfixed pod
+    the seat carries the whole **claim**, while the folder ``vscode`` opens is
+    the checkout inside it — and the venv is the claim's, beside the checkout
+    rather than in it, so testing against the folder would answer ``None`` for
+    the one layout this key exists to serve. It defaults to ``folder``, which is
+    right for every other pod: the folder is then the seat's *own* home, and the
+    target's interpreter is never under it.
 
     So the containment test answers the layout question without this side of the
     wire re-deriving the layout, and it is right for the three shapes
@@ -1187,8 +1198,9 @@ def interpreter_for_folder(folder: str, interpreter: str | None) -> str | None:
     not get (the folder is the home, so nothing matches), and a claim mounted
     wherever the application put it.
 
-    >>> interpreter_for_folder("/podbench/app", "/podbench/app/.venv/bin/python3")
-    '/podbench/app/.venv/bin/python3'
+    >>> interpreter_for_folder("/podbench/app", "/podbench/venv/bin/python3",
+    ...                        mounted="/podbench")
+    '/podbench/venv/bin/python3'
     >>> interpreter_for_folder("/root", "/app/.venv/bin/python3") is None
     True
     >>> interpreter_for_folder("/podbench/app", None) is None
@@ -1202,7 +1214,7 @@ def interpreter_for_folder(folder: str, interpreter: str | None) -> str | None:
     """
     if interpreter is None:
         return None
-    inside = f"{folder.rstrip('/')}/"
+    inside = f"{(mounted or folder).rstrip('/')}/"
     return interpreter if interpreter.startswith(inside) else None
 
 

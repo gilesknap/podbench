@@ -47,10 +47,10 @@ The claim mounts **beside** the application's project, never over it.
   │  │              (never  │         │  the seed copies from        │ │
   │  │              hidden) │         │                              │ │
   │  │                      │         │  /podbench/app               │ │
-  │  │  /podbench/app       │         │    the SAME mountPath, so    │ │
-  │  │    src/    ← checkout│         │    the checkout resolves     │ │
-  │  │    .venv   ← rebuilt │         │    identically on both sides │ │
-  │  │    .python ← the     │         │                              │ │
+  │  │  /podbench           │         │    the SAME mountPath, so    │ │
+  │  │    app/    ← checkout│         │    the checkout resolves     │ │
+  │  │    venv/   ← rebuilt │         │    identically on both sides │ │
+  │  │    python/ ← the     │         │                              │ │
   │  │              interpreter       │                              │ │
   │  │    .podbench-hotfix. │         │                              │ │
   │  │      json  ← manifest│         │                              │ │
@@ -73,7 +73,7 @@ every one is a passthrough an application's chart already has:
 
 ```text
   volumes            the claim, plus podbench-home for the seat
-  volumeMounts       the claim at /podbench/app — beside, never over
+  volumeMounts       the claim at /podbench — beside, never over
   command / args     the supervisor, wrapping the entrypoint the pod runs today
   livenessProbe      the target's own exec probe, wrapped to honour the hold and
                      carrying its own timings (nothing is emitted where the
@@ -211,8 +211,8 @@ thing this mode cannot get wrong from a desk is checked from one.
 ```text
   while :; do
     (
-      if [ -x /podbench/app/.venv/bin/python ]; then
-        export PATH="/podbench/app/.venv/bin:$PATH"      ← the runtime switch
+      if [ -x /podbench/venv/bin/python ]; then
+        export PATH="/podbench/venv/bin:$PATH"          ← the runtime switch
       fi
       exec <your entrypoint>
     ) &
@@ -229,7 +229,7 @@ Three things about it, each of which failed silently before it was measured:
 * **The runtime switch is inside the loop.** Evaluated once at container start it can
   never see a claim seeded afterwards, so the first `restart` after an `init` would
   relaunch the *image's* code and report success — new pids, `restartCount` 0, and the
-  old binary still serving. The `.venv` it looks for is `--claim-venv`'s default, and
+  old binary still serving. The `venv` it looks for is `--claim-venv`'s default, and
   the same value has to reach `init`: a switch looking for one directory and a rebuild
   landing in another is the same silent failure by another route.
 * **With no hold file it is fail-fast.** It exits with the child's status and the
@@ -267,7 +267,7 @@ one read-only pass and gives the answer an exit code.
 
 ```text
   [ok]    target         bl47p-ea-fastcs-01-0, container bl47p-ea-fastcs-01
-  [ok]    claim          … mounts podbench-app at /podbench/app
+  [ok]    claim          … mounts podbench-app at /podbench
   [FAIL]  supervisor     container … is not running the podbench supervisor: …
   [warn]  seat           no podbench container is running in … Not a blocker …
   [warn]  target root    not measured: listing /proc/1/root is a property of …
@@ -388,7 +388,7 @@ podbench hotfix init TARGET [--repo URL] [--ref REF] [--base-commit SHA]
 │   already seeded (pyproject.toml present) → left alone           │
 │   otherwise:                                                     │
 │     cp -a /proc/1/root/app/*    /podbench/app/                   │
-│     cp -a /proc/1/root/python   /podbench/app/.python            │
+│     cp -a /proc/1/root/python   /podbench/python                 │
 │                                                                  │
 │   Through PID 1's root, and NOT from the seat's own /app: the    │
 │   seat is a different image and its venv is podbench's, not the  │
@@ -421,7 +421,7 @@ podbench hotfix init TARGET [--repo URL] [--ref REF] [--base-commit SHA]
                                   ├─ no project / no claim ──────▶ exit 2
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ PUT THE SOURCE ON THE CLAIM      the claim *is* the checkout     │
+│ PUT THE SOURCE ON THE CLAIM      the checkout is /podbench/app   │
 │   .git present (the image usually ships one) → left alone        │
 │   absent → git clone [--branch REF] URL /podbench/app            │
 │           URL is --repo, or the image's …image.source label      │
@@ -440,9 +440,10 @@ podbench hotfix init TARGET [--repo URL] [--ref REF] [--base-commit SHA]
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ REBUILD THE VENV — in the APPLICATION container, not the seat    │
-│   exec -c APP -- env UV_CACHE_DIR=/podbench/app/.uv-cache \      │
+│   exec -c APP -- env UV_CACHE_DIR=/podbench/uv-cache \           │
+│                     UV_PROJECT_ENVIRONMENT=/podbench/venv \      │
 │        uv sync --project /podbench/app \                         │
-│                --python /podbench/app/.python/cpython-…/bin/python3 \
+│                --python /podbench/python/cpython-…/bin/python3 \ │
 │                --frozen                                          │
 │                                                                  │
 │   A rebuild and not a copy. A venv records absolute paths, so a  │
@@ -456,18 +457,25 @@ podbench hotfix init TARGET [--repo URL] [--ref REF] [--base-commit SHA]
 │   <root>/bin/python3 does not exist.                             │
 │   UV_CACHE_DIR is explicit because uv otherwise wants $HOME and  │
 │   falls back to /.cache/uv, which is a permission error in a pod │
-│   whose HOME is unset.                                           │
+│   whose HOME is unset. UV_PROJECT_ENVIRONMENT is unconditional   │
+│   now that the venv is never at uv's own default. Both name the  │
+│   claim and not the checkout, which is what keeps uv from        │
+│   writing into the source tree.                                  │
 └─────────────────────────────────┬────────────────────────────────┘
                                   ├─ rebuild fails ──────────────▶ exit 2
                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ RECORD THE PROVENANCE — on the claim, and only there             │
-│   write /podbench/app/.podbench-hotfix.json                      │
+│   write /podbench/.podbench-hotfix.json                          │
 │     checkout, repo, base image + digest, interpreter, container, │
 │     base_commit (+ whether it was assumed), claim venv           │
 │                                                                  │
+│   At the claim's root and not in the checkout, so podbench's     │
+│   own provenance file is not an untracked file in somebody's     │
+│   working tree.                                                  │
+│                                                                  │
 │   Only what git cannot answer. No commit, no count, no author,   │
-│   no timestamp: the claim is a clone with a real origin, and     │
+│   no timestamp: the checkout is a clone with a real origin, and  │
 │   `status` asks it (#232).                                       │
 │                                                                  │
 │   Not on the workload's pod template. A GitOps controller        │
@@ -508,10 +516,12 @@ stays on [#34](https://github.com/gilesknap/podbench/issues/34).
 `--claim-venv` is the third of the set and belongs to the *claim* rather than the
 image: it is the venv directory the runtime switch in the supervisor above looks
 for and the one `uv sync` builds, so both ends have to agree. `init` sets
-`UV_PROJECT_ENVIRONMENT` whenever it is not uv's own `.venv`, because a rebuild that
-landed beside the venv the supervisor is looking for would leave the pod quietly
-running the image's code — the one failure this whole mode exists to avoid. Passing it
-to `init` means passing the same value to `hotfix values`.
+`UV_PROJECT_ENVIRONMENT` unconditionally — the venv sits beside the checkout rather
+than inside it, so it is never at uv's own default and there is no case left in which
+leaving uv to itself lands the rebuild where the supervisor is looking. A rebuild that
+landed beside that venv would leave the pod quietly running the image's code — the one
+failure this whole mode exists to avoid. Passing it to `init` means passing the same
+value to `hotfix values`.
 
 `init` records it in the manifest, and `restart --reinstall` reads it from there
 rather than taking a flag of its own
@@ -530,12 +540,12 @@ and 2).
 podbench's own `podbench-app`, so its `mountPath` in the application container is
 the answer, and it is read rather than asked for. A value that disagrees with the
 pod is **refused** — `hotfix status` finds a hotfixed pod by scanning for a
-`mountPath` of `/podbench/app`, so any other value used to write a manifest
+`mountPath` of `/podbench`, so any other value used to write a manifest
 `status` could never see, and a hotfixed pod invisible to `status` is the precise
 failure this mode exists to prevent. A claim genuinely mounted elsewhere is still
 honoured by the flag; the warning says out loud both that `status` will not list
 it and that `init` will refuse it, because the seed, the copied interpreter and
-the supervisor's runtime switch all name `/podbench/app`.
+the supervisor's runtime switch all name `/podbench`.
 
 `--base-commit` is the number every drift figure is a difference against, and its
 old default was `git rev-parse HEAD` of the fresh clone — without `--ref`, the
@@ -578,7 +588,7 @@ podbench hotfix restart TARGET [--reinstall]
    resolve the target and the seat (exactly as init does)
     │
     ▼
-   cat /podbench/app/.podbench-hotfix.json
+   cat /podbench/.podbench-hotfix.json
     │
     ├─ absent ──────────────────────────────────▶ exit 2  ("run init first")
     ▼
@@ -691,7 +701,7 @@ podbench hotfix status [-n NS] [-A] [--no-probe]
                                           in that pod's own namespace)
     │
     ▼
-   for each pod with a container mounting /podbench/app
+   for each pod with a container mounting /podbench
     │                    ↑
     │                    the filter is the CLAIM. It used to be a
     │                    podbench.dev/hotfixed annotation on the pod
@@ -711,7 +721,7 @@ podbench hotfix status [-n NS] [-A] [--no-probe]
     │                    (#177).
     │
     ├─ ONE exec per candidate pod, returning three things at once:
-    │      cat /podbench/app/.podbench-hotfix.json   ← the manifest
+    │      cat /podbench/.podbench-hotfix.json       ← the manifest
     │      cat /tmp/podbench-hold                    ← the hold, if any
     │      date -u +%s                               ← the pod's clock
     │
@@ -894,7 +904,7 @@ cluster where a retirement has actually got to, and performs the one step podben
                          the fix is *not* measured — podbench compares digests,
                          not contents.
   [ ]     wiring         bl47p-ea-fastcs-01-0 still carries the podbench-app
-                         volume, a volumeMount at /podbench/app and the
+                         volume, a volumeMount at /podbench and the
                          supervisor loop in command and args. Those are fields
                          in the application's own pod template, not in the
                          claim's chart, so turning the claim off does not
