@@ -343,8 +343,16 @@ completely fresh rootfs and nothing may live only in the writable layer:
 ```text
   podbench agent (PID 1)
         │
-        ├─ ensure $HOME                (/root, or the mounted home volume,
-        │                               or /tmp/podbench-home for a non-root seat)
+        ├─ ensure /root points at the claim   (root seats on a hotfixed pod
+        │      only, and first: everything below writes under $HOME, so a
+        │      redirect made afterwards would leave the host key and the
+        │      authorized keys on the container layer, dying with the pod.
+        │      A symlink and not a passwd record, because libnss-extrausers
+        │      cannot serve uid 0 — see the hotfix flow)
+        ├─ ensure $HOME                (<claim>/home/<user> where the seat
+        │                               mounts a hotfix claim, else /root, the
+        │                               mounted home volume, or
+        │                               /tmp/podbench-home for a non-root seat)
         ├─ ensure /run/sshd            (root layout only — sshd's privsep dir)
         ├─ ensure the NSS database's mode  (root layout only — takes group
         │                                   and other write off it)

@@ -493,8 +493,14 @@ exists to state.
 
 It names ``--max-rung degraded`` rather than the volume, because the volume is
 already correct. That is a real trade and not a fix: the degraded rung has no
-``SYS_PTRACE``, so it buys the storage with the live attach. #42 is where the
-right answer - a passwd record for root that names the mount - is tracked.
+``SYS_PTRACE``, so it buys the storage with the live attach.
+
+**A pod carrying the hotfix claim never sees this**, because there the answer is
+neither of those: the agent redirects ``/root`` onto the claim, so a root seat's
+home is a PVC and the budget is not involved. That is #42, and a passwd record -
+what the issue proposed and what this text used to point at - could never have
+been it: ``libnss-extrausers`` ignores every uid below 500, so uid 0 can never
+have one.
 
 That sshd takes ``$HOME`` from the passwd record rather than from the
 environment, and that the degraded rung gets a written record, are both in
@@ -6887,7 +6893,11 @@ def _land(
     return replace(session, warnings=(*session.warnings, *warnings))
 
 
-def _storage_note(pod_json: Mapping[str, Any], session: Session) -> str | None:
+def _storage_note(
+    pod_json: Mapping[str, Any],
+    session: Session,
+    seat_spec: Mapping[str, Any] | None = None,
+) -> str | None:
     """Where vscode-server's 1.1-1.3 GB is about to land, when that is a hazard.
 
     Two ways it lands on the workload's ephemeral-storage budget, and they read
@@ -6896,11 +6906,21 @@ def _storage_note(pod_json: Mapping[str, Any], session: Session) -> str | None:
     Silent otherwise - a seat writing into the volume is the case the volume was
     deployed for, and saying so would be a warning about something working.
 
+    A seat carrying the **claim** is silent for both, root included, and that is
+    the whole of what moving the home onto the claim bought: the agent redirects
+    ``/root`` there, so uid 0's writes land on the PVC and not on the container
+    layer. The orphan warning is asked *after* the claim, because otherwise this
+    is a warning about the thing that fixed it - which is worse than no warning
+    at all, since it sends the reader to `--max-rung degraded` to buy something
+    they already have, at the cost of the live attach.
+
     Asked of ``session`` rather than of the spec because the rung is measured:
     :attr:`Session.root_seat` reads the seat's own ``/proc/self/status`` where it
     could, which is the same reason :func:`seat_layout` does not trust the rung
     label a mutating webhook may have rewritten.
     """
+    if seat_claim_path(session, seat_spec):
+        return None
     if SEAT_HOME_VOLUME not in declared_volumes(pod_json):
         return EDITOR_STORAGE_WARNING.format(volume=SEAT_HOME_VOLUME)
     if session.root_seat:
@@ -7246,7 +7266,9 @@ def _build_app(
         refusal = editor_key_refusal(session, landed_pod)
         if refusal is not None:
             raise LauncherError(refusal)
-        storage = _storage_note(landed_pod, session)
+        storage = _storage_note(
+            landed_pod, session, ephemeral_container(landed_pod, session.seat.container)
+        )
         if storage is not None:
             session = replace(session, warnings=(*session.warnings, storage))
         emit(format_session(session))

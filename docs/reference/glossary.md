@@ -197,7 +197,10 @@ claim
   A PersistentVolumeClaim: a request for storage that a pod mounts as a volume. Hotfix
   mode's claim is mounted *beside* the application's own project, at `/podbench`
   and never over it, which is what makes a fix survive a restart while leaving
-  everything the image ships visible. Pod volumes are immutable after creation, so a
+  everything the image ships visible. It carries the checkout at `app/`, the venv, the
+  uv cache, the copied interpreter, the {term}`hotfix manifest` — and one `home/<user>`
+  per seat user, since a seat's home outliving the pod is worth more than the
+  `podbench-home` `emptyDir` that dies with it. Pod volumes are immutable after creation, so a
   claim can never be added to a running pod — hence the deploy-time cooperation that
   mode asks for.
 
@@ -642,7 +645,9 @@ vscode
 
 vscode-server
   The server half of {term}`Remote-SSH`, unpacked into the seat's home on first
-  connect. Measured at **1215 MiB** in a seat carrying a real Remote-SSH session
+  connect — so on a hotfixed pod, where that home is on the {term}`claim`, it survives
+  the pod and the next attach finds it already there.
+  Measured at **1215 MiB** in a seat carrying a real Remote-SSH session
   (2026-08-16) — the figure `resize.EDITOR_HEADROOM` checks this pod's headroom
   against, and the one memory cost that still earns a warning. On disk a working
   session with extensions and a language-server index reaches **1.1–1.3 GB**,

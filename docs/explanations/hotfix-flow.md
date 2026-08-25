@@ -52,6 +52,8 @@ The claim mounts **beside** the application's project, never over it.
   │  │    venv/   ← rebuilt │         │    identically on both sides │ │
   │  │    python/ ← the     │         │                              │ │
   │  │              interpreter       │                              │ │
+  │  │    uv-cache/         │         │                              │ │
+  │  │    home/   ← $HOME   │         │                              │ │
   │  │    .podbench-hotfix. │         │                              │ │
   │  │      json  ← manifest│         │                              │ │
   │  └───────────┬──────────┘         └──────────────┬───────────────┘ │
@@ -67,6 +69,33 @@ The claim mounts **beside** the application's project, never over it.
 podbench assumes and not a requirement — see *The layout is the image's, not
 podbench's* under `hotfix init` below, and the `--image-project` flag it describes.
 What the mode genuinely requires is the claim, mounted beside.
+
+`home/` is the **seat's**, and it is on the claim for the reason nothing else here is
+in the checkout: `podbench-home` is an `emptyDir`, so it dies with the pod, and
+everything in it — `~/.vscode-server` at 1.1–1.3 GB — counts against the pod's
+ephemeral-storage budget, whose overrun evicts the *pod*, application included. On the
+claim, a seat re-attached after a pod replacement finds the server already unpacked
+rather than downloading it again. One directory per seat *user* — `home/root`,
+`home/podbench` — and never one shared home: two seats at different uids would share
+the directory and not its ownership, which is what `podbench-home` already did.
+
+Which mechanism puts it there depends on whether the seat is root, and that split is
+the part worth getting right. A non-root seat is simply **told**: the passwd record
+podbench writes for its uid names the claim. A root seat cannot be told — sshd takes a
+session's `$HOME` from the passwd record, root's record says `/root`, and
+`libnss-extrausers` ignores every uid and gid below 500, so no record for uid 0 can be
+written at all. So `/root` is made a **symlink** onto the claim at seat start-up,
+idempotently, with the image's own dotfiles copied across on the first run and anything
+already on the claim winning ([#42](https://github.com/gilesknap/podbench/issues/42)).
+Both ends go on naming `/root`, which is the point: moving the launcher's half alone
+would leave a ProxyCommand naming sshd's config in a home that is not there. Either
+mechanism checks the claim is really *mounted* first, because a seat can carry the
+mountPath in its environment and not the mount — a `subPath` refusal is degraded to a
+note — and a home created anyway would land on the container layer under a path saying
+it was on the claim, which is the one thing the move was for.
+
+`podbench-home` stays: it is what an `attach` seat on a pod with no claim uses, and the
+claim wins where both exist without displacing the volume.
 
 `podbench hotfix values --app NAME --from-pod POD` emits five keys, and
 every one is a passthrough an application's chart already has:

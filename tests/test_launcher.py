@@ -6761,6 +6761,33 @@ def test_a_root_seat_orphans_the_home_volume_and_is_told_so(
     assert "'/root'" in out
 
 
+def test_a_root_seat_on_the_claim_is_not_told_its_home_is_orphaned(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The warning above is about #42, and on a hotfixed pod #42 is fixed.
+
+    The agent redirects /root onto the claim, so uid 0's writes land on the PVC
+    and the ephemeral-storage budget is not involved. Left firing, this would be
+    a warning about the thing that fixed it - and it would send the reader to
+    `--max-rung degraded` to buy storage they already have, paying for it with
+    the live attach.
+    """
+    cluster = FakeCluster(layout_pod())
+    assert (
+        main(
+            vscode_argv(tmp_path, "--max-rung", "full"),
+            runner=cluster,
+            which=lambda name: f"/usr/bin/{name}",
+        )
+        == 0
+    )
+    out = " ".join(capsys.readouterr().out.split())
+    assert "a root seat cannot use it" not in out
+    # Nor the other half of the same question, which is the one a pod with no
+    # home volume at all would get: the claim answers both.
+    assert "unpacks onto the workload's ephemeral-storage budget" not in out
+
+
 def test_an_unbounded_pod_has_no_ceiling_to_raise(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -457,6 +457,17 @@ Notes:
     by name at start-up.
   * An explicit `--mount` for the same mountPath **wins** over the convention.
     `--no-seat-identity` turns the convention off.
+  * **On a pod carrying the hotfix claim the claim wins**, and the home becomes
+    `<claim>/home/<user>` — one directory per seat user. The volume is not
+    displaced; it is simply not the better answer, because an `emptyDir` dies
+    with the pod while the claim outlives it, so `~/.vscode-server` is still
+    unpacked when a seat re-attaches after a pod replacement. A non-root seat is
+    told by the passwd record podbench writes for its uid; a **root** seat cannot
+    be told — sshd reads uid 0's home from the record the image ships and
+    `libnss-extrausers` will not serve uid 0 at all — so the agent makes `/root`
+    a symlink onto the claim instead, carrying the image's dotfiles across on the
+    first run. Both ends go on naming `/root`; see
+    [What `hotfix` does](../explanations/hotfix-flow.md).
 * **The hotfix claim is mounted by convention too.** On a pod carrying the hotfix
   layout — it declares `podbench-app` *and* a container runs podbench's supervisor
   loop — `attach` mounts that claim into the seat at the application's own

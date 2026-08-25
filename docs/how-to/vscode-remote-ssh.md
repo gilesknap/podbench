@@ -98,7 +98,9 @@ spec:
 No `volumeMount` on the application container: only the seat mounts it. One
 caveat (#42): a **root** seat takes `$HOME` from its passwd record and ignores
 the volume, so the storage is bought with `--max-rung degraded` — which is also
-what gives up the live attach.
+what gives up the live attach. A pod carrying the hotfix claim needs neither
+trade: the seat's home goes on the claim there, and a root seat reaches it by a
+symlink from `/root` rather than by a passwd record it can never be given.
 
 ## Client setup
 
@@ -686,8 +688,11 @@ its own leaves git exactly as broken:
   hosts those remotes name. Mounts rather than one chosen folder, because a
   checkout can be on a hotfix claim, on a PVC the application declared, or in
   the home, and `git -C` on a directory that is not a repository prints nothing.
-  On p47 `podbench-home` is an `emptyDir`, so a host accepted interactively dies
-  with the pod; this is why it is done programmatically rather than left to you.
+  A host accepted interactively lives only as long as the home it was written
+  in, which on a pod with nothing but a `podbench-home` `emptyDir` means until
+  the pod is replaced; this is why it is done programmatically rather than left
+  to you. On a hotfixed pod the home is on the claim and it does survive, which
+  is a reason to prefer that seeding and not a reason to skip it.
 
 The flag is on `attach`, `vscode`, `ssh-config` and `dev`.
 
@@ -829,7 +834,8 @@ Two more mitigations, both entirely yours to apply:
 part of the same idempotent start-up that writes the host key and the authorized
 keys, at `~/.vscode-server/data/Machine/settings.json` — where `~` is the home
 the *passwd record* names, so on a `podbench-home` volume they persist across
-re-attaches. Machine scope is the only scope that applies to every folder you
+re-attaches, and on a hotfix claim across the pod itself. Machine scope is the
+only scope that applies to every folder you
 open without you having configured anything, which matters because the folder
 that kills a seat is the first one.
 

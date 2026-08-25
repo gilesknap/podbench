@@ -579,7 +579,8 @@ seat does not — it sizes the pod's memory for vscode-server, writes the
 folder-walk excludes into the seat, installs the extensions **in the remote
 window** and opens the seat's home: `/root`, or `/home/podbench` on a
 `podbench-home` volume. Never `/`, which is the one folder that can end the seat.
-On a hotfixed pod it opens the claim instead.
+On a hotfixed pod the home is on the claim, and what opens is the checkout beside
+it — `/podbench/app` by convention — rather than either.
 
 It writes nothing into that folder and installs nothing into your application.
 Debugging is a second command, run in the seat, and the report offers it:
