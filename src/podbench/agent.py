@@ -175,6 +175,21 @@ class CheckResult:
         return f"[{'ok  ' if self.ok else 'FAIL'}] {self.name}: {self.detail}"
 
 
+def _restrict_to_owner(path: Path) -> bool:
+    """Take group and other permissions off *path*, keeping everything else.
+
+    Not a ``chmod(0o700)``: that would clear the setgid bit a claim's own
+    directories carry, which is what keeps the next seat's files in the
+    application's group. Only the bits sshd objects to are removed.
+    """
+    mode = path.stat().st_mode & 0o7777
+    wanted = mode & ~0o077
+    if mode == wanted:
+        return False
+    path.chmod(wanted)
+    return True
+
+
 def _write_if_changed(path: Path, content: str, mode: int) -> bool:
     """Write ``content`` only when it differs; return whether anything changed.
 
@@ -370,6 +385,19 @@ def ensure_home_dir(layout: SshdLayout) -> bool:
             )
         for directory in _home_directories(layout):
             if directory.is_dir():
+                # Re-asserted, not left alone, and this is the one thing on a
+                # claim that start-up must undo rather than create. The
+                # kubelet's `fsGroup` pass walks the whole volume on **every**
+                # pod start and ORs group permissions back in: a directory this
+                # step created 0700 comes back 2770 after the pod is replaced.
+                # sshd's StrictModes then refuses the login for a group-writable
+                # ~/.ssh, and a root seat has StrictModes on. Measured on the
+                # bench, 2026-08-25, before any seat had run on the new pod.
+                #
+                # Group and other write are cleared and nothing else is: the
+                # setgid bit is the claim's own, and it is what keeps a file the
+                # next seat writes in the application's group.
+                created |= _restrict_to_owner(directory)
                 continue
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             created = True
@@ -1224,7 +1252,13 @@ def ensure_host_key(
         return changed
 
     if path.is_file():
-        return False
+        # The mode, every time, for :func:`ensure_home_dir`'s reason: the
+        # kubelet re-opens group permissions across the whole claim on every pod
+        # start, and sshd refuses to load a host key it can see is group
+        # readable - "Permissions 0660 ... are too open", then "no hostkeys
+        # available -- exiting". The seat stays up and the ssh half of it is
+        # gone, which is the failure a re-attach onto a replaced pod hits.
+        return _restrict_to_owner(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     result = run(
         [

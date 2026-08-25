@@ -1862,3 +1862,50 @@ def test_the_session_home_and_the_record_agree_about_the_claim(
 
     assert f"{claim}/home/podbench" in unseeded.nss_path.read_text()
     assert agent.session_home(layout) == f"{claim}/home/podbench"
+
+
+def test_the_host_key_mode_is_re_asserted_because_the_kubelet_reopens_it(
+    tmp_path: Path,
+) -> None:
+    """The defect a cluster found and no unit test could have.
+
+    The kubelet's `fsGroup` pass walks the whole volume on **every** pod start
+    and ORs group permissions back in, so a key this step minted 0600 comes back
+    0660 after the pod is replaced. sshd then refuses it - "Permissions 0660 ...
+    are too open", then "no hostkeys available -- exiting" - and the seat lands
+    with its ssh half missing, on exactly the re-attach the claim exists to make
+    fast. Measured on the bench, 2026-08-25.
+    """
+    layout = make_layout(tmp_path, root=False)
+    key = Path(layout.host_key_path)
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_text("PRIVATE KEY\n")
+    key.chmod(0o660)
+
+    assert agent.ensure_host_key(layout, env={}, runner=FakeRunner())
+
+    assert key.stat().st_mode & 0o777 == 0o600
+    # And it is an ensure: a second start-up on an untouched key changes nothing.
+    assert not agent.ensure_host_key(layout, env={}, runner=FakeRunner())
+
+
+def test_a_group_writable_ssh_directory_is_closed_but_keeps_its_setgid(
+    tmp_path: Path,
+) -> None:
+    """Same pass, same reason, and the setgid bit must survive it.
+
+    sshd's StrictModes refuses a login for a group-writable ~/.ssh, and a root
+    seat has StrictModes on. But the setgid bit is the claim's own: it is what
+    keeps a file the next seat writes in the application's group, so clearing it
+    with a blunt chmod(0o700) would trade one silent failure for another.
+    """
+    layout = make_layout(tmp_path, root=False)
+    ssh = Path(layout.authorized_keys_path).parent
+    ssh.mkdir(parents=True, exist_ok=True)
+    ssh.chmod(0o2770)
+
+    assert agent.ensure_home_dir(layout)
+
+    mode = ssh.stat().st_mode & 0o7777
+    assert mode & 0o077 == 0, oct(mode)
+    assert mode & 0o2000, "the claim's setgid bit was cleared"
