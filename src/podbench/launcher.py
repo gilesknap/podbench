@@ -102,6 +102,7 @@ from .model import (
     describe_credentials,
     describe_pause,
     hotfix_checkout,
+    hotfix_seat_home,
     measured_rung,
 )
 from .proc import Credentials
@@ -3425,13 +3426,33 @@ def _refusal_detail(error: KubectlError, *, dry_run: bool = False) -> str:
 def _seat_home(volume_mounts: Sequence[Mapping[str, Any]], rung: Rung) -> str | None:
     """``$HOME`` for the seat, or ``None`` to leave the image's own alone.
 
-    A mounted home volume wins for every rung, including root's. Everything the
-    seat writes otherwise lands in the pod's ephemeral-storage budget, which it
-    shares with the workload and cannot reserve (report 3.9) — a vscode-server
-    plus extensions is enough to get the whole pod evicted. Where there is no
-    volume, a non-root seat still needs *some* writable home the launcher can
-    name, because the ProxyCommand spells sshd's config path out in full.
+    The **claim** wins where the seat carries one, because it is the only home
+    here that survives the pod. ``podbench-home`` is an ``emptyDir``: it is gone
+    with the pod, and everything in it counts against the pod's
+    ephemeral-storage budget, which the seat shares with the workload and cannot
+    reserve (report 3.9) — a vscode-server plus extensions is enough to get the
+    whole pod evicted. Otherwise a mounted home volume wins for every rung,
+    including root's, for the second half of that same reason.
+
+    A **root** seat is left alone in both cases and that is not an oversight:
+    sshd takes a session's ``$HOME`` from the passwd record, which for uid 0 says
+    ``/root`` and which ``libnss-extrausers`` can never be made to serve. The
+    agent redirects the path instead
+    (:func:`podbench.agent.ensure_root_home_on_claim`), so both ends go on
+    naming ``/root`` and the storage lands on the claim. Answering with the
+    claim path here would move only the launcher's half, and a ProxyCommand
+    naming sshd's config in the wrong home is a transport that fails at the
+    first connection with nothing to say why.
+
+    Where there is neither, a non-root seat still needs *some* writable home the
+    launcher can name, because the ProxyCommand spells sshd's config path out in
+    full.
     """
+    if rung is not Rung.FULL:
+        for mount in volume_mounts:
+            if mount.get("name") == HOTFIX_CLAIM_VOLUME:
+                claim = _as_str(mount.get("mountPath")) or HOTFIX_CLAIM_PATH
+                return hotfix_seat_home(claim, SEAT_USER)
     for mount in volume_mounts:
         if mount.get("name") == SEAT_HOME_VOLUME:
             return _as_str(mount.get("mountPath")) or SEAT_HOME_PATH

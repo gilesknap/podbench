@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import pwd
+import shutil
 import signal
 import socket
 import subprocess
@@ -49,10 +50,12 @@ from .model import (
     PodRef,
     SeatReport,
     hotfix_checkout,
+    hotfix_seat_home,
 )
 from .probe import discover_target
 from .proc import DEFAULT_PROC, read_gid, read_uid, self_capabilities
 from .sshcfg import (
+    ROOT_USER,
     SEAT_USER,
     SshdLayout,
     proxy_command,
@@ -222,6 +225,120 @@ def _home_directories(layout: SshdLayout) -> list[Path]:
         Path(layout.host_key_path).parent,
     )
     return [path for path in dict.fromkeys(wanted) if home in path.parents]
+
+
+def seat_home_on_claim(uid: int, *, env: Mapping[str, str] | None = None) -> str | None:
+    """This seat's home on the hotfix claim, or ``None`` where there is no claim.
+
+    The claim wins over :data:`podbench.model.SEAT_HOME_VOLUME` wherever both
+    exist, and that is the whole point of the step: ``podbench-home`` is an
+    ``emptyDir``, so it is gone with the pod and everything in it counts against
+    the pod's *ephemeral-storage* budget - the budget whose overrun evicts the
+    pod, application included. A seat re-attached after a pod replacement finds
+    ``~/.vscode-server`` already unpacked instead of downloading it again.
+
+    Keyed on the seat *user* and not the uid, which is
+    :data:`~podbench.model.HOTFIX_HOME_DIR`'s decision and is recorded there.
+
+    Absence of :data:`podbench.model.CLAIM_PATH_ENV` is how an ordinary
+    ``attach`` seat says it has no claim, exactly as it does for the gitconfig:
+
+    >>> seat_home_on_claim(0, env={}) is None
+    True
+    >>> seat_home_on_claim(0, env={"PODBENCH_CLAIM_PATH": "/podbench"})
+    '/podbench/home/root'
+    >>> seat_home_on_claim(37887, env={"PODBENCH_CLAIM_PATH": "/podbench"})
+    '/podbench/home/podbench'
+    """
+    claim = (os.environ if env is None else env).get(CLAIM_PATH_ENV)
+    if not claim:
+        return None
+    return hotfix_seat_home(claim, ROOT_USER if uid == 0 else SEAT_USER)
+
+
+def _mounted_seat_home(
+    uid: int,
+    *,
+    env: Mapping[str, str] | None = None,
+    is_dir: Callable[[str], bool] = lambda path: Path(path).is_dir(),
+) -> str | None:
+    """:func:`seat_home_on_claim`, but only where the claim is actually there.
+
+    The variable is written by the launcher from the *pod's* mounts, and a seat
+    can carry the variable without carrying the mount: ``hotfix_claim_mounts``
+    degrades a ``subPath`` refusal to a note rather than a dead attach. Creating
+    the home anyway would put it on the container layer under a path that says
+    it is on the claim - ephemeral storage, silently, which is the one thing
+    moving the home was meant to stop.
+    """
+    home = seat_home_on_claim(uid, env=env)
+    claim = (os.environ if env is None else env).get(CLAIM_PATH_ENV, "")
+    return home if home is not None and is_dir(claim) else None
+
+
+def seat_layout(
+    uid: int | None = None, *, env: Mapping[str, str] | None = None
+) -> SshdLayout:
+    """The layout this seat should use, claim included.
+
+    :meth:`SshdLayout.for_uid` on its own answers from ``$HOME`` and the passwd
+    record, neither of which knows about a claim. A **root** seat is deliberately
+    left at :data:`~podbench.sshcfg.ROOT_HOME`: sshd takes a session's ``$HOME``
+    from the passwd record, root's record says ``/root``, and
+    ``libnss-extrausers`` cannot serve uid 0 at all because it floors at 500 - so
+    the only way to move root's home is to move the *path*, which
+    :func:`ensure_root_home_on_claim` does. Telling the layout otherwise would
+    make the launcher and the agent disagree about where ``authorized_keys`` is,
+    and that is a transport that fails at the first connection with nothing to
+    say why.
+    """
+    own_uid = os.geteuid() if uid is None else uid
+    if own_uid == 0:
+        return SshdLayout.for_uid(own_uid)
+    return SshdLayout.for_uid(own_uid, home=_mounted_seat_home(own_uid, env=env))
+
+
+def ensure_root_home_on_claim(
+    layout: SshdLayout, *, env: Mapping[str, str] | None = None
+) -> bool:
+    """Point a root seat's ``/root`` at the claim, keeping the image's dotfiles.
+
+    Issue #42, and it is not a passwd-record problem however much it looks like
+    one: ``libnss-extrausers`` ignores every uid and gid below 500, so the #102
+    mechanism can never give uid 0 a record of its own. sshd resolves ``$HOME``
+    through the record the image ships, which says ``/root``. Redirecting the
+    *path* is the only route left, and it is why this is a symlink and not a
+    layout decision.
+
+    The image's own ``/root`` is copied across on first run rather than
+    discarded: it carries the shell and gdb dotfiles the seat is worth using
+    for. Anything already on the claim wins - a second attach must find the
+    home it left, not the image's copy of it laid back over the top.
+
+    Idempotent, and the check is what the path *is* rather than what a previous
+    run recorded: a seat is a fresh container every time and the claim is the
+    only thing that persists between them.
+    """
+    if not layout.run_as_root:
+        return False
+    home = _mounted_seat_home(0, env=env)
+    if home is None:
+        return False
+    source = Path(layout.home)
+    if source.is_symlink():
+        # Already redirected, by this seat's own earlier run or by an earlier
+        # seat in this container. Not re-pointed: a symlink somebody else made
+        # is a deliberate act, and following it is how a second attach keeps
+        # landing where the first one did.
+        return False
+    destination = Path(home)
+    destination.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if source.is_dir() and not any(destination.iterdir()):
+        shutil.copytree(source, destination, symlinks=True, dirs_exist_ok=True)
+    if source.is_dir():
+        shutil.rmtree(source)
+    source.symlink_to(destination, target_is_directory=True)
+    return True
 
 
 def ensure_home_dir(layout: SshdLayout) -> bool:
@@ -1387,8 +1504,17 @@ def ensure_all(
                 )
             )
 
-    # First: every other step writes under it, and a home that arrived as an
-    # empty volume has none of the directories they expect.
+    # Before `home-dir`, and that order is the step: everything below writes
+    # under `layout.home`, and a redirect made afterwards would leave the host
+    # key and the authorized keys on the container layer, where they die with
+    # the pod - which is the state #42 describes.
+    step(
+        "root-home",
+        f"pointed {layout.home} at {seat_home_on_claim(0, env=env)}",
+        lambda: ensure_root_home_on_claim(layout, env=env),
+    )
+    # First of the rest: every other step writes under it, and a home that
+    # arrived as an empty volume has none of the directories they expect.
     step(
         "home-dir",
         f"prepared {layout.home}",
@@ -1851,7 +1977,7 @@ def _run(
     no_self_check: bool,
     idle_interval: float,
 ) -> int:
-    layout = SshdLayout.for_uid(os.geteuid())
+    layout = seat_layout()
 
     if print_login_user:
         # A pure read, answered before anything is ensured: the launcher asks

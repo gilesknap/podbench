@@ -78,6 +78,14 @@ to run as, and the client stanza puts the same name in ``User``. sshd resolves
 what the client offered through NSS, so a disagreement here is a login refused
 before any key is looked at."""
 
+ROOT_USER = "root"
+"""The login name of a full-rung seat.
+
+Spelled out beside :data:`SEAT_USER` because the two are used the same way and
+one of them being a literal is how a directory named for a user comes to be
+named for something else.
+"""
+
 ROOT_HOME = "/root"
 ROOT_CONFIG = "/etc/podbench/sshd_config"
 ROOT_HOST_KEY = "/etc/ssh/ssh_host_ed25519_key"

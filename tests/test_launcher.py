@@ -7744,3 +7744,53 @@ def test_without_the_flag_the_master_is_not_asked_about_at_all(
 
     assert "ssh -O exit" not in capsys.readouterr().out
     assert not [call for call in cluster.calls if "-O" in call]
+
+
+def test_the_claim_wins_over_the_home_volume_for_a_degraded_seat() -> None:
+    """Both are mounted on a hotfixed pod, and only one of them survives it.
+
+    `podbench-home` is an emptyDir: it dies with the pod, and everything in it
+    counts against the pod's ephemeral-storage budget, whose overrun evicts the
+    pod with the application in it. The claim is the same PVC the fix is on, so
+    a seat re-attached after a pod replacement finds ~/.vscode-server unpacked.
+    """
+    cluster = FakeCluster(layout_pod())
+    session = attach(talking_to(cluster), "target", probe=False)
+
+    assert landed_rung(session) is Rung.DEGRADED
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    assert env["HOME"] == f"{HOTFIX_CLAIM_PATH}/home/podbench"
+    # And the home volume is still mounted: the claim wins, it does not evict.
+    assert {"name": SEAT_HOME_VOLUME, "mountPath": SEAT_HOME_PATH} in cluster.added[0][
+        "volumeMounts"
+    ]
+
+
+def test_the_claim_follows_the_application_when_it_mounts_it_elsewhere() -> None:
+    """The mountPath is the application's, so the home derived from it is too."""
+    cluster = FakeCluster(
+        layout_pod(
+            volume_mounts=[{"name": HOTFIX_CLAIM_VOLUME, "mountPath": "/srv/podbench"}]
+        )
+    )
+    attach(talking_to(cluster), "target", probe=False)
+
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    assert env["HOME"] == "/srv/podbench/home/podbench"
+
+
+def test_a_root_seat_is_left_naming_root_because_only_the_agent_can_move_it() -> None:
+    """sshd takes a session's $HOME from the passwd record, uid 0's says /root,
+    and libnss-extrausers floors at 500 so no record for it can ever be written.
+    The agent redirects the path; answering with the claim here would move the
+    launcher's half alone, and a ProxyCommand naming sshd's config in the wrong
+    home is a transport that fails at the first connection saying nothing."""
+    cluster = FakeCluster(layout_pod())
+    session = attach(talking_to(cluster), "target", probe=False, max_rung=Rung.FULL)
+
+    assert landed_rung(session) is Rung.FULL
+    env = {entry["name"]: entry["value"] for entry in cluster.added[0]["env"]}
+    # Unchanged from before the claim had a home on it, which is the assertion:
+    # the seat still lands on the home volume and the redirect is the agent's.
+    assert env["HOME"] == SEAT_HOME_PATH
+    assert env["HOME"] != f"{HOTFIX_CLAIM_PATH}/home/root"

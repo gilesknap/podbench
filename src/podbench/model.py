@@ -50,10 +50,12 @@ __all__ = [
     "HOTFIX_CLAIM_VOLUME",
     "HOTFIX_CHILD_PID_PATH",
     "HOTFIX_HOLD_PATH",
+    "HOTFIX_HOME_DIR",
     "HOTFIX_INTERPRETER_PATH",
     "HOTFIX_UV_CACHE_DIR",
     "HOTFIX_VENV_DIR",
     "hotfix_checkout",
+    "hotfix_seat_home",
     "Blocker",
     "CapabilityReport",
     "ContainerRef",
@@ -844,6 +846,32 @@ Beside the checkout rather than inside it, so that ``uv sync`` writes nothing
 into the user's source tree. It is also why ``UV_PROJECT_ENVIRONMENT`` is now
 set unconditionally: the venv is never at uv's own default any more.
 """
+
+HOTFIX_HOME_DIR = "home"
+"""Where the seats' home directories live on the claim, relative to its root.
+
+One directory per seat *user* beneath it, never one shared home: three seats to
+a pod was measured at Diamond (2026-08-19), and a root seat and a degraded one
+on the same pod are two different users with two different dot-file trees.
+
+Two seats on one pod at the *same* uid do share, which is deliberate - they are
+the same user reconnecting, and that is what makes ``~/.vscode-server`` still
+unpacked on the second attach. Two at *different* non-zero uids would share the
+directory and not the ownership; that is exactly what ``podbench-home``, an
+``emptyDir`` mounted at one path for every seat, already did.
+"""
+
+
+def hotfix_seat_home(claim: str, user: str) -> str:
+    """Where *user*'s seat keeps its home on a claim mounted at *claim*.
+
+    >>> hotfix_seat_home("/podbench", "root")
+    '/podbench/home/root'
+    >>> hotfix_seat_home("/podbench/", "podbench")
+    '/podbench/home/podbench'
+    """
+    return f"{claim.rstrip('/')}/{HOTFIX_HOME_DIR}/{user}"
+
 
 HOTFIX_UV_CACHE_DIR = "uv-cache"
 """The uv cache's directory name on the claim, relative to its root.

@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -1733,3 +1734,131 @@ def test_a_seat_that_cannot_identify_its_target_reports_no_rung(
     assert report.uid == 1000
     assert report.target_uid is None
     assert report.rung is None
+
+
+# -- the seat's home on the claim (#42) --------------------------------------
+
+
+def a_claim(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    """A mounted claim, and the environment a seat carrying it is landed with."""
+    claim = tmp_path / "podbench"
+    claim.mkdir()
+    return claim, {CLAIM_PATH_ENV: str(claim)}
+
+
+def test_a_root_seat_writes_its_home_to_the_claim_and_not_the_container_layer(
+    tmp_path: Path,
+) -> None:
+    """#42, and the payoff the whole phase is for.
+
+    A full-rung seat runs as root, sshd takes `$HOME` from the passwd record,
+    root's says `/root`, and `libnss-extrausers` floors at uid 500 so no record
+    can ever be written for uid 0. Redirecting the path is the only route left.
+    """
+    claim, env = a_claim(tmp_path)
+    root_home = tmp_path / "root"
+    root_home.mkdir()
+    (root_home / ".bashrc").write_text("# shipped by the image\n")
+    layout = make_layout(tmp_path, root=True)
+    layout = replace(layout, home=str(root_home))
+
+    assert agent.ensure_root_home_on_claim(layout, env=env)
+
+    assert root_home.is_symlink()
+    assert root_home.resolve() == (claim / "home" / "root").resolve()
+    # The image's dotfiles came across: they are the shell and gdb configuration
+    # a seat is worth using for, and a seat that lost them on first attach would
+    # be worse than the one that kept its home on the container layer.
+    assert (
+        claim / "home" / "root" / ".bashrc"
+    ).read_text() == "# shipped by the image\n"
+
+
+def test_a_second_attach_keeps_the_home_the_first_one_left(tmp_path: Path) -> None:
+    """Idempotent, and the check is what the path *is* rather than a record: a
+    seat is a fresh container every time and only the claim persists."""
+    claim, env = a_claim(tmp_path)
+    root_home = tmp_path / "root"
+    root_home.mkdir()
+    layout = replace(make_layout(tmp_path, root=True), home=str(root_home))
+    assert agent.ensure_root_home_on_claim(layout, env=env)
+    (claim / "home" / "root" / ".vscode-server").mkdir()
+
+    assert not agent.ensure_root_home_on_claim(layout, env=env)
+    assert (claim / "home" / "root" / ".vscode-server").is_dir()
+
+
+def test_a_non_root_seat_records_the_claim_as_its_home(tmp_path: Path) -> None:
+    """No symlink for this one: `ensure_passwd_entry` writes the record, so the
+    home can simply be named."""
+    claim, env = a_claim(tmp_path)
+
+    layout = agent.seat_layout(37887, env=env)
+
+    assert layout.home == f"{claim}/home/podbench"
+    assert layout.authorized_keys_path == f"{claim}/home/podbench/.ssh/authorized_keys"
+
+
+def test_the_two_kinds_of_seat_do_not_share_one_home(tmp_path: Path) -> None:
+    """Three seats to a pod was measured at Diamond, and a root seat and a
+    degraded one are two different users with two different dot-file trees."""
+    _, env = a_claim(tmp_path)
+
+    assert agent.seat_home_on_claim(0, env=env) != agent.seat_home_on_claim(
+        37887, env=env
+    )
+
+
+def test_a_seat_with_no_claim_is_left_on_the_home_volume(tmp_path: Path) -> None:
+    """`podbench-home` stays for every ordinary `attach` seat. Absence of the
+    variable is how one says it has no claim."""
+    layout = agent.seat_layout(37887, env={})
+
+    assert agent.seat_home_on_claim(37887, env={}) is None
+    assert not agent.ensure_root_home_on_claim(make_layout(tmp_path, root=True), env={})
+    # `default_home` answered, which is the pre-claim behaviour unchanged.
+    assert layout.home and not layout.home.endswith("/home/podbench")
+
+
+def test_a_claim_the_seat_never_got_does_not_become_a_home_on_the_container(
+    tmp_path: Path,
+) -> None:
+    """The variable is written from the pod's mounts and the seat can carry it
+    without carrying the mount - `hotfix_claim_mounts` degrades a subPath
+    refusal to a note. Creating the home anyway would put it on ephemeral
+    storage under a path claiming otherwise, which is the one thing this phase
+    exists to stop."""
+    absent = {CLAIM_PATH_ENV: str(tmp_path / "never-mounted")}
+    root_home = tmp_path / "root"
+    root_home.mkdir()
+    layout = replace(make_layout(tmp_path, root=True), home=str(root_home))
+
+    assert (
+        agent.seat_layout(37887, env=absent).home
+        != f"{tmp_path}/never-mounted/home/podbench"
+    )
+    assert not agent.ensure_root_home_on_claim(layout, env=absent)
+    assert not (tmp_path / "never-mounted").exists()
+    assert not root_home.is_symlink()
+
+
+def test_the_session_home_and_the_record_agree_about_the_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The falsification: sshd sets a session's `$HOME` from the passwd record,
+    so `session_home` disagreeing with what `ensure_passwd_entry` wrote is a
+    seat whose `~/.vscode-server` is unpacked somewhere nothing looks.
+
+    Unseeded, because a uid NSS already resolves is the one case
+    `ensure_passwd_entry` returns without writing - and this is a test about
+    what it writes.
+    """
+    claim, env = a_claim(tmp_path)
+    unseeded = FakePasswd(tmp_path / "nss", seeded=False)
+    unseeded.install(monkeypatch)
+    layout = agent.seat_layout(os.geteuid(), env=env)
+
+    assert agent.ensure_passwd_entry(layout)
+
+    assert f"{claim}/home/podbench" in unseeded.nss_path.read_text()
+    assert agent.session_home(layout) == f"{claim}/home/podbench"
