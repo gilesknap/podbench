@@ -218,6 +218,7 @@ def kube(runner: FakeRunner) -> Kubectl:
 
 def seeded_store(**extra: str) -> FakeStore:
     files = {
+        CLAIM_MOUNT: "",
         CHECKOUT: "",
         f"{CHECKOUT}/pyproject.toml": "",
         f"{CLAIM_MOUNT}/venv/pyvenv.cfg": PYVENV_CFG,
@@ -775,7 +776,7 @@ def test_init_refuses_an_unreachable_target_root_naming_the_ptrace_rung() -> Non
     dependencies and none of the application's - a claim that looks seeded and
     runs the wrong code.
     """
-    store = FakeStore(files={CHECKOUT: ""})
+    store = FakeStore(files={CLAIM_MOUNT: ""})
     # The rung is measured, not inferred: `ls` on the root is what fails when
     # the seat has no CAP_SYS_PTRACE.
     store.failures["ls /proc/1/root/"] = "ls: cannot open directory: Permission denied"
@@ -800,7 +801,7 @@ def test_a_missing_project_is_not_reported_as_a_ptrace_denial() -> None:
     `/proc/1/root` listed cleanly and `/app` did not exist. The old message
     blamed ptrace and sent the user to `doctor`, which then reported the rung
     healthy - a contradiction with no next step."""
-    store = FakeStore(files={CHECKOUT: ""})
+    store = FakeStore(files={CLAIM_MOUNT: ""})
 
     with pytest.raises(hotfix.HotfixError) as caught:
         hotfix.init(
@@ -827,7 +828,7 @@ def test_the_root_is_listed_rather_than_tested_for_existence() -> None:
     """`test -e` follows the /proc/1/root symlink and answers for its target, so
     it says yes on a seat that cannot traverse it - the exact case this has to
     catch. Listing is what measures the rung."""
-    store = FakeStore(files={CHECKOUT: ""})
+    store = FakeStore(files={CLAIM_MOUNT: ""})
 
     with pytest.raises(hotfix.HotfixError):
         hotfix.init(
@@ -847,7 +848,7 @@ def test_an_image_with_a_different_layout_is_expressible_without_a_code_change()
     """An epics-containers image has no /app: its venv is at /venv with a
     separate /python. That is a layout difference, and #178 is what happened
     when podbench could only express one layout."""
-    store = FakeStore(files={CHECKOUT: "", "/proc/1/root/venv": ""})
+    store = FakeStore(files={CLAIM_MOUNT: "", "/proc/1/root/venv": ""})
 
     with pytest.raises(hotfix.HotfixError) as caught:
         hotfix.init(
@@ -862,7 +863,7 @@ def test_an_image_with_a_different_layout_is_expressible_without_a_code_change()
 
     # The same claim, pointed at the layout the image actually has, gets past
     # the guard and copies from /proc/1/root/venv.
-    store = FakeStore(files={CHECKOUT: "", "/proc/1/root/venv": ""})
+    store = FakeStore(files={CLAIM_MOUNT: "", "/proc/1/root/venv": ""})
     hotfix.init(
         kube(FakeRunner()),
         store,
@@ -886,7 +887,7 @@ def test_init_seeds_the_project_and_the_interpreter() -> None:
     as the fix reverting.
     """
     store = FakeStore(
-        files={CHECKOUT: "", PROJECT_SRC: "", "/proc/1/root/python": ""},
+        files={CLAIM_MOUNT: "", PROJECT_SRC: "", "/proc/1/root/python": ""},
         outputs={f"{GIT} rev-parse HEAD": BASE_SHA},
     )
     _, actions = hotfix.init(
@@ -897,7 +898,14 @@ def test_init_seeds_the_project_and_the_interpreter() -> None:
         repo="https://example.invalid/acme/api.git",
         install=False,
     )
-    assert store.ran(f"bash -c shopt -s dotglob; cp -a {PROJECT_SRC}/* {CHECKOUT}/")
+    # The image's own `.venv` is excluded: uv rebuilds beside the checkout now,
+    # so a copy here is dead weight nothing overwrites - and an activate away
+    # from silently running the image's interpreter and the image's packages.
+    assert store.ran(
+        f"find {PROJECT_SRC} -mindepth 1 -maxdepth 1 "
+        f"-name {hotfix.CLAIM_SEED_EXCLUDE} -prune "
+        f"-o -exec cp -a -t {CHECKOUT}/ {{}} +"
+    )
     assert store.ran(f"cp -a /proc/1/root/python {model.HOTFIX_INTERPRETER_PATH}")
     assert any("seeded" in action for action in actions)
 
@@ -906,6 +914,7 @@ def test_init_clones_installs_and_records_the_base_commit() -> None:
     runner = FakeRunner()
     store = FakeStore(
         files={
+            CLAIM_MOUNT: "",
             CHECKOUT: "",
             PROJECT_SRC: "",
             "/proc/1/root/python": "",
@@ -1010,6 +1019,7 @@ def test_a_clone_made_from_the_label_corroborates_nothing() -> None:
     runner = FakeRunner()
     store = FakeStore(
         files={
+            CLAIM_MOUNT: "",
             CHECKOUT: "",
             PROJECT_SRC: "",
             "/proc/1/root/python": "",
@@ -1040,7 +1050,9 @@ def test_init_refuses_a_missing_repo_before_it_copies_anything() -> None:
     """`main`'s except clause prints the error alone, so a refusal on the far
     side of a ~50s `cp -a` costs the wait and then discards the only record
     that the claim was written to at all."""
-    store = FakeStore(files={CHECKOUT: "", PROJECT_SRC: "", "/proc/1/root/python": ""})
+    store = FakeStore(
+        files={CLAIM_MOUNT: "", PROJECT_SRC: "", "/proc/1/root/python": ""}
+    )
 
     with pytest.raises(hotfix.HotfixError, match="--repo"):
         hotfix.init(
@@ -1051,12 +1063,12 @@ def test_init_refuses_a_missing_repo_before_it_copies_anything() -> None:
             install=False,
         )
 
-    assert not store.ran("bash -c shopt -s dotglob"), "the seed must not have run"
+    assert not store.ran("find /proc/1/root"), "the seed must not have run"
     assert not store.ran("cp -a /proc/1/root/python")
 
 
 def test_init_refuses_when_neither_the_flag_nor_the_label_names_a_repo() -> None:
-    store = FakeStore(files={CHECKOUT: "", f"{CHECKOUT}/pyproject.toml": ""})
+    store = FakeStore(files={CLAIM_MOUNT: "", f"{CHECKOUT}/pyproject.toml": ""})
 
     with pytest.raises(hotfix.HotfixError, match="--repo"):
         hotfix.init(
@@ -1110,6 +1122,7 @@ def test_init_explains_a_failed_install() -> None:
     )
     store = FakeStore(
         files={
+            CLAIM_MOUNT: "",
             CHECKOUT: "",
             PROJECT_SRC: "",
             "/proc/1/root/python": "",
@@ -4487,7 +4500,7 @@ def test_check_passes_a_target_init_then_accepts() -> None:
         # The claim, read two different ways on purpose: `check` reads the pod
         # spec, so it answers with no seat, and `init` finds out by asking the
         # seat for the mountPath.
-        ("claim", False, [f"{SEAT_EXEC} test -e /podbench/app"]),
+        ("claim", False, [f"{SEAT_EXEC} test -e {model.HOTFIX_CLAIM_PATH}"]),
         ("supervisor", True, [f"{APP_EXEC} test -e /tmp/podbench-child.pid"]),
         (
             "project",

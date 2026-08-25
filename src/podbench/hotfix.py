@@ -333,6 +333,16 @@ point is that *no* number is the one wrong answer — and a clone that has not
 finished by then has failed at something the user needs told about.
 """
 
+CLAIM_SEED_EXCLUDE = ".venv"
+"""What the seed does not copy out of the image's project.
+
+The image's own venv, and only it. It is rebuilt rather than copied - a venv
+records absolute paths, so one copied anywhere names an interpreter and a
+site-packages that are no longer where it says - and since the claim gained a
+layout the rebuild lands *beside* the checkout, which leaves a copy here with
+nothing to overwrite it.
+"""
+
 CLAIM_VENV_DIR = HOTFIX_VENV_DIR
 """The venv's directory name on the claim, relative to the **claim root**.
 
@@ -2926,8 +2936,14 @@ def init(
         )
     checkout = checkout_path(venv)
 
-    if not store.exists(checkout):
-        raise HotfixError(CLAIM_NOT_MOUNTED.format(checkout=checkout))
+    # The **mount**, not the checkout. They were the same directory until the
+    # claim gained a layout, and asking about the checkout now conflates "the
+    # claim is not mounted" with "this claim has not been seeded yet" - which is
+    # every first `init` on a fresh claim, refused with a message telling the
+    # user to deploy values they had already deployed. Measured on the bench,
+    # 2026-08-25.
+    if not store.exists(venv):
+        raise HotfixError(CLAIM_NOT_MOUNTED.format(checkout=venv))
 
     labelled = ((image_labels or {}).get(SOURCE_LABEL) or "").strip()
     # Resolved before the seed, not after it. The seed is a ~50s `cp -a` plus an
@@ -2953,13 +2969,56 @@ def init(
                     root=container_root, image_project=f"/{image_project.strip('/')}"
                 )
             )
+        # The checkout is podbench's to create now that it is a directory
+        # *inside* the claim rather than the claim itself. `-p` because a second
+        # `init` after a failed one finds it already there.
+        store.run(["mkdir", "-p", checkout])
         # The *entries*, never the mount root. `cp -a` onto the claim's own
         # directory fails with "preserving times for '.': Operation not
         # permitted": the mount root is 0777 with an owner the NFS id map does
         # not resolve, so utimes on it is refused however writable it is. The
         # contents copy fine; only the final stat on the destination fails, so
         # this reads as an inexplicable failure at the very end of a 50s copy.
-        store.run(["bash", "-c", f"shopt -s dotglob; cp -a {project}/* {checkout}/"])
+        #
+        # `.venv` is excluded, and that is new with the claim's layout. The
+        # image's own venv used to be copied and then rebuilt in place, because
+        # the checkout was the claim root and `CLAIM_VENV_DIR` named the same
+        # directory. uv now builds beside the checkout, so a copied `.venv` is
+        # several hundred MB of dead weight on the claim that nothing ever runs
+        # - and worse than dead, since `cd /podbench/app && . .venv/bin/activate`
+        # would silently get the image's interpreter and the image's packages.
+        # Measured on the bench, 2026-08-25: the copy was there and stale.
+        #
+        # `find` and not a shell glob, which is what the first attempt at the
+        # exclusion used: bash parses the whole `-c` string before running any
+        # of it, so `shopt -s extglob` in the same line does not apply to the
+        # pattern beside it and the copy dies on `syntax error near unexpected
+        # token ('`. Measured on the bench, 2026-08-25. This runs no shell at
+        # all, so there is no ordering to get wrong and nothing to quote.
+        #
+        # `cp -a -t <dir> {} +` rather than `cp -a {} <dir>/ +`: GNU find will
+        # only put `{}` last before a `+`.
+        store.run(
+            [
+                "find",
+                project,
+                "-mindepth",
+                "1",
+                "-maxdepth",
+                "1",
+                "-name",
+                CLAIM_SEED_EXCLUDE,
+                "-prune",
+                "-o",
+                "-exec",
+                "cp",
+                "-a",
+                "-t",
+                f"{checkout}/",
+                "{}",
+                "+",
+            ]
+        )
         actions.append(f"seeded {checkout} from {project}")
         store.run(["cp", "-a", interpreter_src, HOTFIX_INTERPRETER_PATH])
         actions.append(f"copied the interpreter to {HOTFIX_INTERPRETER_PATH}")
@@ -4678,7 +4737,10 @@ def _claim_check(target: HotfixTarget, seeded: bool) -> PreflightCheck:
         return PreflightCheck(
             "claim",
             CheckStatus.FAIL,
-            CLAIM_NOT_MOUNTED.format(checkout=checkout_path()),
+            # The mount, for `init`'s reason: `check` exists to say `init`'s
+            # refusals earlier, and naming the checkout would name a directory
+            # that is absent on every claim `init` has not run against yet.
+            CLAIM_NOT_MOUNTED.format(checkout=HOTFIX_CLAIM_PATH),
         )
     # A claim mounted elsewhere is a refusal and not a note, because everything
     # the seed writes names the default path - see VENV_INVISIBLE_TO_STATUS,
