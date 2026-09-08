@@ -3,7 +3,7 @@
 # Provision a namespace-confined ServiceAccount for Claude, and prove it is
 # confined.
 #
-#   ./k8s/make-claude-sa.sh <namespace> [--podbench[=TIERS]] [--duration 24h]
+#   ./k8s/make-claude-sa.sh <namespace> [--all | --podbench[=TIERS]] [--duration 24h]
 #
 # Creates `claude-$USER` in <namespace>, a Role and RoleBinding beside it, then
 # writes a self-contained kubeconfig to k8s/<namespace>-claude-<user>.kubeconfig
@@ -19,7 +19,14 @@
 # creates and deletes its own namespaces and binds cluster-scoped admission
 # policies, neither of which a namespace-confined account can do.
 #
-# Run it with YOUR OWN admin credential: it reads your current context for the
+# --all snapshots your current resource permissions in <namespace>, including
+# secrets if you can access them. Resource-name restrictions are preserved.
+# Requires jq and a complete SelfSubjectRulesReview from the API server.
+# Re-run to refresh permissions; later parent permission changes are not synced.
+# It still creates only a Role/RoleBinding: no cluster-scoped access is copied.
+# --all cannot be combined with the podbench tier flags.
+#
+# Run it with YOUR OWN credential: it reads your current context for the
 # API server address and CA, and needs create rights on serviceaccounts, roles
 # and rolebindings in <namespace>.
 #
@@ -31,13 +38,14 @@ set -euo pipefail
 NS=""
 DURATION=24h
 PODBENCH=0
+ALL=0
 TIER_OBSERVE=0
 TIER_ITERATE=0
 TIER_RESIZE=0
 TIER_HOTFIX=0
 
 usage() {
-  sed -n '3,20p' "$0" | sed 's/^#\s\?//'
+  sed -n '3,/^set -euo pipefail/{ /^set -euo pipefail/d; p; }' "$0" | sed 's/^#\s\?//'
   exit "${1:-1}"
 }
 
@@ -64,6 +72,7 @@ add_tiers() { # add_tiers <comma-separated tier list>
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help)     usage 0 ;;
+    --all)        ALL=1; shift ;;
     --podbench)    add_tiers observe; shift ;;
     --podbench=*)  add_tiers "${1#*=}"; shift ;;
     --podbench-all) add_tiers all; shift ;;
@@ -75,6 +84,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$NS" ] || usage
+if [ "$ALL" = 1 ] && [ "$PODBENCH" = 1 ]; then
+  echo "--all cannot be combined with podbench tier flags" >&2
+  exit 1
+fi
+if [ "$ALL" = 1 ]; then
+  command -v jq >/dev/null || { echo "--all requires jq" >&2; exit 1; }
+fi
 
 command -v kubectl >/dev/null || { echo "kubectl not on PATH" >&2; exit 1; }
 
@@ -104,14 +120,18 @@ for pair in "observe:$TIER_OBSERVE" "iterate:$TIER_ITERATE" \
 done
 
 echo "==> provisioning $SA in $NS"
-echo "    podbench tiers: ${TIERS:-none (read-only)}"
+if [ "$ALL" = 1 ]; then
+  echo "    permissions: snapshot of parent resource permissions in ${NS}"
+else
+  echo "    podbench tiers: ${TIERS:-none (read-only)}"
+fi
 
 # --- the RBAC --------------------------------------------------------------
 # Role and RoleBinding, never ClusterRole/ClusterRoleBinding: a namespaced
 # binding is the entire confinement mechanism. Nothing granted here exists in
 # any other namespace.
 #
-# `secrets` is deliberately absent. With it, the SA could read every other
+# In the tier modes, `secrets` is deliberately absent. With it, the SA could read every other
 # ServiceAccount's token in this namespace and become them, which would undo the
 # binding above from inside.
 RULES='
@@ -194,6 +214,30 @@ if [ "$TIER_HOTFIX" = 1 ]; then
     verbs: ["patch", "delete"]'
 fi
 
+# Ask for structured rules, not the human-readable `auth can-i --list` table:
+# its columns cannot faithfully round-trip resourceNames or API groups.
+# The API server still authorizes the Role/RoleBinding writes, including RBAC
+# escalation/bind checks; this review does not authorize those operations.
+if [ "$ALL" = 1 ]; then
+  REVIEW=$(jq -n --arg namespace "$NS" '{
+    apiVersion: "authorization.k8s.io/v1", kind: "SelfSubjectRulesReview",
+    spec: {namespace: $namespace}
+  }' | kubectl create -f - -o json)
+  if ! RULES=$(printf '%s' "$REVIEW" | jq -ce '
+    if .status.incomplete != false or
+       ((.status.evaluationError // "") != "") or
+       (.status.resourceRules | type) != "array"
+    then error("cannot copy permissions: incomplete or invalid rules review")
+    else .status.resourceRules | map(
+      {apiGroups, resources, verbs} +
+      (if (.resourceNames | length) > 0
+       then {resourceNames} else {} end)
+    ) end'); then
+    echo "--all could not obtain a complete permission snapshot; nothing applied" >&2
+    exit 1
+  fi
+fi
+
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ServiceAccount
@@ -208,7 +252,7 @@ metadata:
   name: ${SA}
   namespace: ${NS}
   labels: {app.kubernetes.io/managed-by: podbench-k8s-script}
-rules:${RULES}
+rules: ${RULES}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -309,6 +353,16 @@ can_i() { $K auth can-i "$@" 2>/dev/null || true; }
 FAILED=0
 expect() { # expect <yes|no> <label> <can-i args...>
   local want=$1 label=$2; shift 2
+  # In --all mode the selected namespace follows the parent, including both
+  # grants and denials. The cross-namespace checks still require denial.
+  if [ "$ALL" = 1 ] && [[ " $* " == *" -n $NS "* ]]; then
+    want=$(kubectl auth can-i "$@" 2>/dev/null || true)
+    case "$want" in
+      yes|no) ;;
+      *) printf '  [FAIL] parent permission check failed: %s\n' "$label"
+         FAILED=1; return ;;
+    esac
+  fi
   local got; got=$(can_i "$@")
   if [ "$got" = "$want" ]; then
     printf '  [ok]   %-46s %s\n' "$label" "$got"
@@ -329,12 +383,16 @@ DELETE_PODS=0
 if [ "$TIER_ITERATE" = 1 ] || [ "$TIER_HOTFIX" = 1 ]; then DELETE_PODS=1; fi
 
 echo
-echo "==> confinement checks (as ${SA})"
+if [ "$ALL" = 1 ]; then
+  echo "==> sampled parent-permission and namespace-boundary checks (as ${SA})"
+else
+  echo "==> confinement checks (as ${SA})"
+fi
 echo "    inside ${NS}:"
 expect yes "read pods"                       get pods -n "$NS"
 expect yes "read deployments"                get deployments.apps -n "$NS"
 expect yes "read limitranges"                get limitranges -n "$NS"
-# Never granted, at any tier: with secrets the SA could read every other
+# Never granted by the podbench tiers (but copied by --all if held): with secrets the SA could read every other
 # ServiceAccount token in the namespace and become them.
 expect no  "read secrets"                    get secrets -n "$NS"
 # --subresource, never `pods/exec` as one word. kubectl splits that argument on
@@ -456,7 +514,11 @@ fi
 
 echo
 if [ "$FAILED" = 0 ]; then
-  echo "==> PASS: ${SA} reaches ${NS} and nothing else."
+  if [ "$ALL" = 1 ]; then
+    echo "==> PASS: parent permissions copied into a Role in ${NS}; sampled checks passed."
+  else
+    echo "==> PASS: ${SA} reaches ${NS} and nothing else."
+  fi
   echo "    use it with:  KUBECONFIG=${OUT}"
   if [ "$PODBENCH" = 1 ]; then
     echo "    check it with:  KUBECONFIG=${OUT} uvx podbench doctor -n ${NS}"
