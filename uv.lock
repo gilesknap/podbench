@@ -269,6 +269,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "tox-uv" },
+    { name = "types-mock" },
 ]
 
 [package.metadata]
@@ -282,6 +283,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "tox-uv" },
+    { name = "types-mock" },
 ]
 
 [[package]]
@@ -601,6 +603,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ae/40/4a3db7990d1f62a53182aa96eaef57aeb2886a27f90a195bc66713565d31/typer-0.27.1.tar.gz", hash = "sha256:a79bef8469a79c45498e7b814ecf8d603cc7644e9acbd9e19cac0334240b18df", size = 203994, upload-time = "2026-08-03T14:41:03.438Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/43/89/9518bc0c3929bee36b3a4a8e3daddd6e03f92f9961c66d4983b837160543/typer-0.27.1-py3-none-any.whl", hash = "sha256:53150287edd11baeb4e4722c8e394fcdf8181c0ae89485cba8d25c778d5edd56", size = 122874, upload-time = "2026-08-03T14:41:04.391Z" },
+]
+
+[[package]]
+name = "types-mock"
+version = "5.2.0.20260518"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ec/a4/26595e2a9407752c2e3cd5b17d7884db847e39834a2575cf15b5c3b19a27/types_mock-5.2.0.20260518.tar.gz", hash = "sha256:49af9c18aac4caa90e0e1e8437e2160cd8b3f126053dae6453d65b393590fcf9", size = 11577, upload-time = "2026-05-18T06:02:42.607Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/82/d6/da3bf7cc26ebe587e8c50a505d302f5755840fc24fbbd704b770c43b764b/types_mock-5.2.0.20260518-py3-none-any.whl", hash = "sha256:3c511875b6f37d30c70add3e72265d1c21202b8544751361e3ca94f7a757a03d", size = 10459, upload-time = "2026-05-18T06:02:41.224Z" },
 ]
 
 [[package]]

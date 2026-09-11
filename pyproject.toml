@@ -27,6 +27,7 @@ dev = [
     "pytest-cov",
     "ruff",
     "tox-uv",
+    "types-mock",
 ]
 
 [project.scripts]
@@ -60,12 +61,11 @@ testpaths = ["tests"]
 source = ["src", "**/site-packages/"]
 
 [tool.tox]
+skipsdist = true
 # envs to runs automatically with tox -p
 env_list = ["pre-commit", "type-checking", "tests"]
 
 [tool.tox.env_run_base]
-runner = "uv-venv-lock-runner"
-dependency_groups = ["dev"]
 # Pass all environment variables to the test environments
 passenv = ["*"]
 
@@ -88,7 +88,7 @@ commands = [
     [
         "pyright",
         "--pythonpath",
-        "{env_python}",
+        "{env:VIRTUAL_ENV}/bin/python",
         "src",
         "tests",
         { replace = "posargs", default = [
