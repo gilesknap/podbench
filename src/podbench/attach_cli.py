@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+import os
+import sys
+from collections.abc import Sequence
+from typing import Annotated
+
+import typer
+
+from .cli import new_app, run
+from .kubectl import KubectlError, Runner
+from .launcher import DEFAULT_PULL_POLICY, LauncherError, attach, kubectl_for
+from .model import DEFAULT_IMAGE, IMAGE_ENV
+
+
+def _build_app(runner: Runner | None = None) -> typer.Typer:
+    app = new_app()
+
+    @app.command()
+    def attach_command(
+        pod: Annotated[str, typer.Argument(metavar="POD")],
+        target: Annotated[str | None, typer.Option("--target")] = None,
+        image: Annotated[str | None, typer.Option("--image")] = None,
+        target_uid: Annotated[int | None, typer.Option("--target-uid")] = None,
+        target_gid: Annotated[int | None, typer.Option("--target-gid")] = None,
+        new: Annotated[bool, typer.Option("--new")] = False,
+        pull: Annotated[str, typer.Option("--pull")] = DEFAULT_PULL_POLICY,
+        timeout: Annotated[float, typer.Option("--timeout")] = 120.0,
+        namespace: Annotated[str | None, typer.Option("-n", "--namespace")] = None,
+        context: Annotated[str | None, typer.Option("--context")] = None,
+        kubectl: Annotated[str, typer.Option("--kubectl")] = "kubectl",
+    ) -> None:
+        kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
+        session = attach(
+            kube,
+            pod,
+            target=target,
+            image=image or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE),
+            target_uid=target_uid,
+            target_gid=target_gid,
+            force_new=new,
+            pull_policy=pull,
+            timeout=timeout,
+        )
+        action = "reusing" if session.reused else "landed"
+        print(
+            f"{action} degraded seat {session.seat.container} "
+            f"for {session.seat.pod}/{session.target}"
+        )
+        for warning in session.warnings:
+            print(f"warning: {warning}")
+        context_flag = f"--context {context} " if context else ""
+        print(
+            f"enter: {kubectl} {context_flag}-n {session.seat.pod.namespace} "
+            f"exec -it {session.seat.pod.name} "
+            f"-c {session.seat.container} -- bash"
+        )
+
+    return app
+
+
+def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> int:
+    argv = list(args) if args is not None else None
+    if argv and argv[0] == "attach":
+        argv.pop(0)
+    try:
+        return run(_build_app(runner), argv, prog="podbench attach")
+    except (LauncherError, KubectlError) as error:
+        print(f"podbench: {error}", file=sys.stderr)
+        return 2

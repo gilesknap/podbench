@@ -1,128 +1,43 @@
-name: CI
+name: Container
 
-# Every branch, not just `main`, because the only way to test an image change
-# against a real cluster is to pull a published image: the devcontainer has no
-# docker, and `_e2e.yml`'s side-loaded kind image never leaves the runner. A
-# branch push therefore publishes a prerelease image tagged after the branch
-# (see `_container.yml`), which is what makes an in-image change reviewable.
-#
-# `gh-pages` is excluded because it is a publishing target, not source: it holds
-# built HTML, and a CI run over it would be checking nothing. (The `peaceiris`
-# push uses `GITHUB_TOKEN`, which cannot trigger a workflow, so this is belt and
-# braces rather than a loop-breaker.)
-#
-# The cost is deliberate and worth naming: a branch that also has an open PR
-# gets two runs per push, one from each trigger. Nothing else in the pipeline
-# changes — `_docs.yml` and `_helm.yml` already gate their publish steps on tag
-# or `main`, so a branch build stays a build.
 on:
   push:
-    branches:
-      - '**'
-      - '!gh-pages'
-    tags:
-      - '*'
+    branches: ["**"]
+    tags: ["*"]
   pull_request:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
-
-  lint:
-    uses: ./.github/workflows/_tox.yml
-    with:
-      tox: pre-commit,type-checking
-      # pre-commit regenerates Charts/podbench/values.schema.json, which needs
-      # helm and the schema plugin on the runner.
-      helm: true
-    # This job now fetches and executes a third-party helm plugin, so cap the
-    # token it does that with. `_tox.yml` only checks out and runs tox, so read
-    # is all it can want.
-    permissions:
-      contents: read
-
-  test:
-    strategy:
-      matrix:
-        runs-on: ["ubuntu-latest"] # can add windows-latest, macos-latest
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
-    uses: ./.github/workflows/_test.yml
-    with:
-      runs-on: ${{ matrix.runs-on }}
-      python-version: ${{ matrix.python-version }}
-
   container:
-    needs: test
-    if: always()
-    uses: ./.github/workflows/_container.yml
-    with:
-      publish: ${{ needs.test.result == 'success' }}
-    permissions:
-      contents: read
-      packages: write
-
-  helm:
-    needs: test
-    if: always()
-    uses: ./.github/workflows/_helm.yml
-    with:
-      publish: ${{ needs.test.result == 'success' }}
-    permissions:
-      contents: read
-      packages: write
-
-  e2e:
-    needs: container
-    uses: ./.github/workflows/_e2e.yml
-
-  # A second runner, for one module, because the property it needs is global to
-  # a kernel. Issue #89 is a seat with no CAP_SYS_PTRACE that can ptrace its
-  # target anyway — classic same-uid ptrace, which only exists at
-  # `kernel.yama.ptrace_scope=0`. The runners ship 1, `kind.yaml` deliberately
-  # will not force 0 (S3 would then pass without the capability doing anything),
-  # and a sysctl cannot be scoped to a namespace or a pod. Hence a job rather
-  # than a skip: skipping unless the scope is 0 costs nothing and buys nothing,
-  # because CI would then never run the regression test at all.
-  e2e-dls:
-    needs: container
-    uses: ./.github/workflows/_e2e.yml
-    with:
-      ptrace-scope: "0"
-      pytest-target: tests/e2e/test_dls_ioc.py
-      # Only this job needs them. `test_dls_ioc.py` binds a
-      # MutatingAdmissionPolicy at admissionregistration.k8s.io/v1 and skips
-      # itself where that is not served, so on the action's default it would run
-      # green and empty. kind 0.32 brings Kubernetes 1.36.1 — the version the
-      # field cluster and the k3s bed both run. The main `e2e` job above is left
-      # on the defaults so this does not move the Kubernetes version every other
-      # regression test runs against.
-      kind-version: v0.32.0
-      kubectl-version: v1.36.1
-
-  docs:
-    uses: ./.github/workflows/_docs.yml
-    permissions:
-      contents: write
-
-  dist:
-    uses: ./.github/workflows/_dist.yml
-
-  # `container` is a hard prerequisite, not a nicety: the wheel's version *is*
-  # the image tag the launcher will ask for (podbench.model.image_tag_for), and
-  # a PyPI upload cannot be redone. Publishing a wheel whose image was never
-  # pushed hands every user an ImagePullBackOff in an ephemeral container that
-  # cannot be restarted.
-  pypi:
-    needs: [dist, test, container]
-    if: github.ref_type == 'tag'
-    uses: ./.github/workflows/_pypi.yml
-    permissions:
-      id-token: write
-
-  # `helm` is in the needs list because the release attaches the chart's
-  # generated values.schema.json, which that job uploads.
-  release:
-    needs: [dist, test, docs, helm]
-    if: github.ref_type == 'tag'
-    uses: ./.github/workflows/_release.yml
-    permissions:
-      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

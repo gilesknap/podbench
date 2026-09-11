@@ -1,54 +1,16 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm[toml]>=8"]
+requires = ["setuptools>=77", "setuptools_scm[toml]>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "podbench"
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-]
-description = "debugging container for kubernetes pods"
-# Two runtime dependencies, and neither buys an opinion about Kubernetes.
-#
-# typer is the CLI. It pulls click and rich, which is the whole point: the help
-# a developer reads at 3 a.m. is part of the product. Everything podbench does
-# to a cluster still goes through `kubectl`.
-#
-# ruamel.yaml is for exactly one thing: `hotfix values --values` reads a
-# service's own values file and emits it back whole, and a values file is mostly
-# comments explaining why each key is there. A parse-and-redump would hand the
-# user back a file that is no longer recognisably theirs, and hand-splicing YAML
-# text would put a block editor - flow style, anchors, tabs - between podbench
-# and a beamline's `volumes:` list, where the failure mode is a silently
-# unmounted data directory. Round-tripping is the only honest way to edit
-# somebody else's file. See docs/explanations/decisions/0005.
-dependencies = ["ruamel.yaml>=0.18", "typer>=0.12"]
+description = "Rapid Kubernetes attach and hotfix prototype"
+dependencies = ["typer>=0.12"]
 dynamic = ["version"]
-license.file = "LICENSE"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.11"
-
-[dependency-groups]
-dev = [
-    "myst-parser",
-    "pre-commit",
-    "pydata-sphinx-theme>=0.12",
-    "pyright",
-    "pytest",
-    "pytest-cov",
-    "pyyaml",
-    "ruff",
-    "sphinx-autobuild",
-    "sphinx-copybutton",
-    "sphinx-design",
-    "tox-uv",
-    "types-mock",
-]
 
 [project.scripts]
 podbench = "podbench.__main__:main"
@@ -56,152 +18,9 @@ podbench = "podbench.__main__:main"
 [project.urls]
 GitHub = "https://github.com/gilesknap/podbench"
 
-[[project.authors]] # Further authors may be added by duplicating this section
-email = "gilesknap@gmail.com"
+[[project.authors]]
 name = "Giles Knap"
+email = "gilesknap@gmail.com"
 
 [tool.setuptools_scm]
 version_file = "src/podbench/_version.py"
-
-[tool.pyright]
-typeCheckingMode = "strict"
-reportMissingImports = false # Ignore missing stubs in imported modules
-# Typer registers a command by decorating a nested function, whose name is then
-# never read again. pyright cannot see the registration, so it calls every
-# command in the package dead code.
-reportUnusedFunction = false
-
-[tool.pytest.ini_options]
-# Run pytest with all our checkers, and don't spam us with massive tracebacks on error
-addopts = """
-    --tb=native -vv --doctest-modules --doctest-glob="*.rst"
-    """
-# https://iscinumpy.gitlab.io/post/bound-version-constraints/#watch-for-warnings
-filterwarnings = "error"
-# Registered centrally as well as in tests/e2e/conftest.py: filterwarnings turns
-# PytestUnknownMarkWarning into a collection error, so an unregistered mark is
-# not a warning here, it is a failure.
-markers = [
-    "e2e: needs a real cluster; skipped unless PODBENCH_E2E=1 (see tests/e2e/README.md)",
-]
-# Doctest python code in docs, python code in src docstrings, test functions in tests
-testpaths = "docs src tests"
-
-[tool.coverage.run]
-patch = ["subprocess"]
-data_file = "/tmp/podbench.coverage"
-
-[tool.coverage.paths]
-# Tests are run from installed location, map back to the src directory
-source = ["src", "**/site-packages/"]
-
-[tool.tox]
-skipsdist = true
-# envs to runs automatically with tox -p
-env_list = ["pre-commit", "type-checking", "tests", "docs"]
-
-[tool.tox.env_run_base]
-# Pass all environment variables to the test environments
-passenv = ["*"]
-
-[tool.tox.env.pre-commit]
-description = "Run pre-commit on all files"
-commands = [
-    [
-        "pre-commit",
-        "run",
-        "--all-files",
-        "--show-diff-on-failure",
-        { replace = "posargs", default = [
-        ], extend = true },
-    ],
-]
-
-[tool.tox.env.type-checking]
-description = "Run pyright"
-commands = [
-    [
-        "pyright",
-        "--pythonpath",
-        "{env:VIRTUAL_ENV}/bin/python",
-        "src",
-        "tests",
-        # Developer tooling, neither shipped nor run by CI - but a tool nobody
-        # type-checks is a tool that rots, and this one is how the VS Code half
-        # of `podbench vscode` gets tested at all. See tools/vscode-bridge/.
-        "tools",
-        # CI tooling rather than shipped code, so it is not under `src` - but it
-        # imports podbench and asserts a user-facing invariant, so it is held to
-        # the same strict typing as the code it is checking.
-        ".github/scripts",
-        { replace = "posargs", default = [
-        ], extend = true },
-    ],
-]
-
-[tool.tox.env.tests]
-description = "Run tests with coverage"
-commands = [
-    [
-        "pytest",
-        "--cov=podbench",
-        "--cov-report",
-        "term",
-        "--cov-report",
-        "xml:cov.xml",
-        { replace = "posargs", default = [
-        ], extend = true },
-    ],
-]
-
-[tool.tox.env.docs]
-description = "Run docs build with clean environment"
-commands = [
-    [
-        "sphinx-build",
-        "--fresh-env",
-        "--show-traceback",
-        "--fail-on-warning",
-        "--keep-going",
-        "docs",
-        "build/html",
-        { replace = "posargs", default = [
-        ], extend = true },
-    ],
-]
-
-[tool.tox.env.docs-autobuild]
-description = "Run docs with autobuild on change"
-commands = [
-    [
-        "sphinx-autobuild",
-        "--show-traceback",
-        "--watch",
-        "README.md",
-        "docs",
-        "build/html",
-        { replace = "posargs", default = [
-        ], extend = true },
-    ],
-]
-
-[tool.ruff]
-src = ["src", "tests"]
-line-length = 88
-lint.select = [
-    "B",   # flake8-bugbear - https://docs.astral.sh/ruff/rules/#flake8-bugbear-b
-    "C4",  # flake8-comprehensions - https://docs.astral.sh/ruff/rules/#flake8-comprehensions-c4
-    "E",   # pycodestyle errors - https://docs.astral.sh/ruff/rules/#error-e
-    "F",   # pyflakes rules - https://docs.astral.sh/ruff/rules/#pyflakes-f
-    "N",   # pep8-naming - https://docs.astral.sh/ruff/rules/#pep8-naming-n
-    "W",   # pycodestyle warnings - https://docs.astral.sh/ruff/rules/#warning-w
-    "I",   # isort - https://docs.astral.sh/ruff/rules/#isort-i
-    "UP",  # pyupgrade - https://docs.astral.sh/ruff/rules/#pyupgrade-up
-    "SLF", # self - https://docs.astral.sh/ruff/settings/#lintflake8-self
-]
-
-[tool.ruff.lint.per-file-ignores]
-# By default, private member access is allowed in tests
-# See https://github.com/DiamondLightSource/python-copier-template/issues/154
-# Remove this line to forbid private member access in tests
-"tests/**/*" = ["SLF001"]
