@@ -105,7 +105,8 @@ def resolve_target(
     mount = application_mount(pod, chosen, HOTFIX_CLAIM_VOLUME)
     if require_wiring and mount.get("mountPath") != HOTFIX_APP_PATH:
         raise HotfixError(
-            f"{chosen} must mount volume {HOTFIX_CLAIM_VOLUME} at {HOTFIX_APP_PATH}; run hotfix values and redeploy"
+            f"{chosen} must mount volume {HOTFIX_CLAIM_VOLUME} at {HOTFIX_APP_PATH}; "
+            "run hotfix values and redeploy"
         )
     statuses = _items(as_dict(pod.get("status")).get("containerStatuses"))
     status = next((item for item in statuses if item.get("name") == chosen), {})

@@ -223,11 +223,13 @@ def attach(
     warnings: list[str] = []
     if uid is None or gid is None:
         warnings.append(
-            "the target identity is incomplete; degraded attach is being attempted anyway"
+            "the target identity is incomplete; "
+            "degraded attach is being attempted anyway"
         )
     if uid == 0:
         warnings.append(
-            "the target runs as root; this capless degraded seat may not be able to attach"
+            "the target runs as root; "
+            "this capless degraded seat may not be able to attach"
         )
     if existing is not None and existing.target == target and not force_new:
         return Session(

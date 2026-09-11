@@ -38,7 +38,8 @@ def supervisor(command: str) -> str:
     return "\n".join(
         [
             "while :; do",
-            f'  [ ! -x {HOTFIX_APP_PATH}/.venv/bin/python ] || export PATH="{HOTFIX_APP_PATH}/.venv/bin:$PATH"',
+            f"  [ ! -x {HOTFIX_APP_PATH}/.venv/bin/python ] || "
+            f'export PATH="{HOTFIX_APP_PATH}/.venv/bin:$PATH"',
             f"  setsid bash -c {launch} &",
             "  child=$!",
             f"  echo $child > {HOTFIX_CHILD_PID_PATH}",

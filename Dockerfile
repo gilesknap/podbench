@@ -358,36 +358,8 @@ ENV PATH=/app/.venv/bin:$PATH
 RUN uv pip install --python /app/.venv/bin/python \
     --target /opt/podbench/debugpy debugpy==1.8.21
 
-# Rust's pretty-printers, which no toolchain in this pod ships. A Rust binary
-# names `gdb_load_rust_pretty_printers.py` in .debug_gdb_scripts and that file
-# lives in a rustup toolchain, so in a production container the reference
-# resolves to nothing and `Vec`, `String` and `Option` print as the
-# RawVecInner/Unique/NonNull nest they are made of. 6 KiB against the ~700 MB
-# cap. Sourced only for a target podbench identified as Rust
-# (`podbench.gdbcmd.RUST_PRETTY_PRINTERS`), so it costs an unrelated attach
-# nothing.
-COPY image/gdb/ /opt/podbench/gdb/
-
-# Two files, both structural, and deliberately not the brief's per-subcommand
-# helpers - see image/README.md, deviation 6, for why those went away.
-#
-#   podbench      the venv at /app/.venv/bin is on no default PATH, and
-#                 /usr/local/bin is on sshd's compiled-in one whatever happens.
-#                 The agent's sshd_config now carries the container's PATH into
-#                 a session with SetEnv, so this is no longer the only route -
-#                 it is the route that does not depend on that config having
-#                 been written, which is the point of it.
-#   gdb-podbench  installed as `gdb` below, for third-party callers.
-COPY --chmod=0755 image/bin/ /usr/local/bin/
-
-# `gdb` on PATH is the wrapper, and /usr/local/bin comes first. Every tool that
-# shells out to `gdb --pid <n>` in a seat is broken twice without it — no
-# sysroot, so it reads this container's libraries for another container's
-# process, and a cwd cpptools may have deleted. debugpy's injection is the
-# instance that was caught; the bug belongs to the seat, not to debugpy, so the
-# fix goes where every caller gets it. `podbench dbg` and `podbench debug-config`
-# are unaffected: they set the sysroot themselves and never pass --pid.
-RUN ln -s gdb-podbench /usr/local/bin/gdb
+# Make the CLI available when a shell does not inherit the image's PATH.
+RUN ln -s /app/.venv/bin/podbench /usr/local/bin/podbench
 
 # For interactive login shells, and still needed after SetEnv: Debian's
 # /etc/profile assigns PATH outright rather than appending, so a login shell

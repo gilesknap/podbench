@@ -127,7 +127,10 @@ def restart(
     target, _ = resolve_target(kube, pod_name, container)
     _manifest(kube, target)
     if reinstall:
-        sync = f"cd {HOTFIX_APP_PATH} && UV_PYTHON_INSTALL_DIR={HOTFIX_APP_PATH}/.python uv sync --managed-python"
+        sync = (
+            f"cd {HOTFIX_APP_PATH} && "
+            f"UV_PYTHON_INSTALL_DIR={HOTFIX_APP_PATH}/.python uv sync --managed-python"
+        )
         seat = running_seat(kube.get_pod(target.pod.name))
         if not seat:
             raise HotfixError(
