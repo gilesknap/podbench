@@ -1,0 +1,4 @@
+# Generated kubeconfigs carry a live bearer token for a real cluster. They are
+# written here so they sit beside the script that made them, and ignored here so
+# that convenience never turns into a credential in the history.
+*.kubeconfig
