@@ -72,6 +72,16 @@ def include_state(text: str, wanted_line: str) -> IncludeState:
     return IncludeState.SHADOWED if shadowed else IncludeState.MISSING
 
 
+def include_is_active(config_dir: str | None = None) -> bool:
+    directory = client_directory(config_dir)
+    config = SSH_CONFIG.expanduser()
+    try:
+        text = config.read_text() if config.is_file() else ""
+    except OSError:
+        return False
+    return include_state(text, include_line(directory)) is IncludeState.ACTIVE
+
+
 def _write_include(config: Path, line: str) -> None:
     target = config.resolve() if config.is_symlink() else config
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

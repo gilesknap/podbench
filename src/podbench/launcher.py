@@ -1,5 +1,3 @@
-"""Degraded-only attach for the prototype."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -8,7 +6,7 @@ from typing import Any
 
 from .kubectl import Kubectl, Runner, run_subprocess
 from .model import DEFAULT_IMAGE, HOTFIX_CLAIM_VOLUME, PodRef, as_dict
-from .ssh_agent import PUBLIC_KEY_ENV, PYTHON
+from .ssh_agent import PYTHON, ROOT_SSH_CAPABILITIES
 
 CONTAINER_BASE = "podbench"
 DEFAULT_PULL_POLICY = "Always"
@@ -167,7 +165,7 @@ def _seat_spec(
     uid: int | None,
     gid: int | None,
     pull: str,
-    public_key: str | None = None,
+    ssh: bool = False,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {
         "allowPrivilegeEscalation": False,
@@ -175,6 +173,8 @@ def _seat_spec(
         "privileged": False,
         "runAsNonRoot": uid != 0,
     }
+    if uid == 0:
+        security["capabilities"]["add"] = list(ROOT_SSH_CAPABILITIES)
     if uid is not None:
         security["runAsUser"] = uid
         security["runAsNonRoot"] = uid != 0
@@ -197,9 +197,7 @@ def _seat_spec(
         "image": image,
         "imagePullPolicy": pull,
         "command": (
-            [PYTHON, "-m", "podbench.ssh_agent"]
-            if public_key is not None
-            else ["sleep", "infinity"]
+            [PYTHON, "-m", "podbench.ssh_agent"] if ssh else ["sleep", "infinity"]
         ),
         "targetContainerName": target,
         "terminationMessagePolicy": "File",
@@ -207,11 +205,6 @@ def _seat_spec(
         "env": [
             {"name": "HOME", "value": home},
             {"name": "UV_CACHE_DIR", "value": "/tmp/uv-cache"},
-            *(
-                [{"name": PUBLIC_KEY_ENV, "value": public_key}]
-                if public_key is not None
-                else []
-            ),
         ],
     }
     if mounts:
@@ -230,7 +223,7 @@ def attach(
     force_new: bool = False,
     pull_policy: str = DEFAULT_PULL_POLICY,
     timeout: float = 120.0,
-    public_key: str | None = None,
+    ssh: bool = False,
     **_: object,
 ) -> Session:
     pod_name = resolve_pod_name(pod_reference)
@@ -242,15 +235,9 @@ def attach(
     gid = target_gid if target_gid is not None else gid
     warnings: list[str] = []
     if uid is None or gid is None:
-        warnings.append(
-            "the target identity is incomplete; "
-            "degraded attach is being attempted anyway"
-        )
+        warnings.append("target identity incomplete; attach may fail")
     if uid == 0:
-        warnings.append(
-            "the target runs as root; "
-            "this capless degraded seat may not be able to attach"
-        )
+        warnings.append("root target; ptrace may be unavailable")
     if (
         existing is not None
         and existing.target == target
@@ -277,7 +264,7 @@ def attach(
             uid=uid,
             gid=gid,
             pull=pull_policy,
-            public_key=public_key,
+            ssh=ssh,
         ),
     )
     kubectl.wait_for_ephemeral_container(pod_name, name, timeout=timeout)

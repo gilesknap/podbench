@@ -12,12 +12,16 @@ from pathlib import Path
 
 from .kubectl import Kubectl, KubectlError
 from .model import PodRef, as_dict
-from .ssh_agent import PYTHON, ServerInfo
+from .ssh_agent import PYTHON, ROOT_SSH_CAPABILITIES, ServerInfo
 
 DEFAULT_IDENTITY = "~/.ssh/id_ed25519"
 DEFAULT_CONFIG_DIR = "~/.podbench"
 CONFIG_DIR_ENV = "PODBENCH_CONFIG_DIR"
 CONTROL_DIR = Path("/tmp/podbench-cm")
+CAPABILITY_PROBE = (
+    "import os; print(os.geteuid(), next(line.split()[1] for line in "
+    "open('/proc/self/status') if line.startswith('CapEff:')))"
+)
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,30 @@ def include_line(directory: Path) -> str:
     return f"Include {_quote_config(glob)}"
 
 
+def missing_ssh_capabilities(
+    kubectl: Kubectl, pod: PodRef, seat: str
+) -> tuple[str, ...] | None:
+    result = kubectl.exec_(
+        pod.name,
+        [PYTHON, "-c", CAPABILITY_PROBE],
+        container=seat,
+        check=False,
+    )
+    try:
+        uid, mask = result.stdout.split()
+        runtime_uid = int(uid)
+        effective = int(mask, 16)
+    except ValueError:
+        return None
+    if result.returncode or runtime_uid != 0:
+        return () if not result.returncode else None
+    return tuple(
+        name
+        for name, bit in ROOT_SSH_CAPABILITIES.items()
+        if not effective & (1 << bit)
+    )
+
+
 def _seat_suffix(seat: str) -> str:
     return seat.removeprefix("podbench-")
 
@@ -122,7 +150,7 @@ def wire_ssh(
     pod_json = kubectl.get_pod(pod.name)
     pod_uid = str(as_dict(pod_json.get("metadata")).get("uid") or pod.name)
     label = _seat_suffix(seat)
-    alias = f"podbench-{pod.namespace}-{pod.name}-{label}"
+    alias = f"podbench.{pod.namespace}.{pod.name}.{label}"
     host_key_alias = f"podbench-{pod_uid}-{seat}"
 
     directory = client_directory(config_dir)

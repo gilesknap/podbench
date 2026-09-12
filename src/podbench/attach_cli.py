@@ -8,10 +8,15 @@ from typing import Annotated
 import typer
 
 from .cli import console, error_console, new_app, run
+from .doctor import include_is_active
 from .kubectl import KubectlError, Runner
 from .launcher import DEFAULT_PULL_POLICY, LauncherError, attach, kubectl_for
 from .model import DEFAULT_IMAGE, IMAGE_ENV
-from .ssh_transport import DEFAULT_IDENTITY, read_public_key, wire_ssh
+from .ssh_transport import (
+    DEFAULT_IDENTITY,
+    missing_ssh_capabilities,
+    wire_ssh,
+)
 
 PULL_POLICIES = ("Always", "IfNotPresent", "Never")
 
@@ -49,6 +54,9 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
         ] = None,
         new: Annotated[
             bool, typer.Option("--new", help="land a new seat instead of reusing one")
+        ] = False,
+        verbose: Annotated[
+            bool, typer.Option("--verbose", help="show the kubectl fallback")
         ] = False,
         pull: Annotated[
             str,
@@ -91,7 +99,6 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
         ] = "kubectl",
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
-        private_key, public_key = read_public_key(identity)
         with console.status("Landing or reconnecting the seat..."):
             session = attach(
                 kube,
@@ -103,42 +110,57 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
                 force_new=new,
                 pull_policy=pull,
                 timeout=timeout,
-                public_key=public_key,
+                ssh=True,
             )
         action = "reusing" if session.reused else "landed"
         console.print(
-            f"{action} degraded seat {session.seat.container} "
+            f"{action} {session.seat.container} "
             f"for {session.seat.pod}/{session.target}",
             style="green",
         )
         for warning in session.warnings:
             console.print(f"warning: {warning}", style="yellow")
-        wiring = wire_ssh(
-            kube,
-            session.seat.pod,
-            session.seat.container,
-            identity=str(private_key),
-            config_dir=config_dir,
+        missing = missing_ssh_capabilities(
+            kube, session.seat.pod, session.seat.container
         )
-        console.print(f"ssh config: {wiring.config}")
-        console.print(f"connect: {wiring.command}", style="cyan")
-        console.print(f"for normal `ssh {wiring.alias}` and future Remote-SSH, add:")
-        console.print(f"  {wiring.include}")
-        fallback = [kubectl]
-        if context:
-            fallback += ["--context", context]
-        fallback += [
-            "-n",
-            session.seat.pod.namespace,
-            "exec",
-            "-it",
-            session.seat.pod.name,
-            "-c",
-            session.seat.container,
-            "--",
-            "bash",
-        ]
-        console.print(f"fallback: {shlex.join(fallback)}")
+        if missing is None:
+            console.print(
+                "warning: SSH unavailable; capabilities not measured", style="yellow"
+            )
+        elif missing:
+            console.print(
+                f"warning: SSH unavailable; missing {', '.join(missing)}",
+                style="yellow",
+            )
+        else:
+            wiring = wire_ssh(
+                kube,
+                session.seat.pod,
+                session.seat.container,
+                identity=identity,
+                config_dir=config_dir,
+            )
+            included = include_is_active(config_dir)
+            command = f"ssh {wiring.alias}" if included else wiring.command
+            console.print(f"connect: {command}", style="cyan")
+            if not included:
+                console.print("run podbench doctor --fix", style="red")
+        if verbose:
+            fallback = [kubectl]
+            if context:
+                fallback += ["--context", context]
+            fallback += [
+                "-n",
+                session.seat.pod.namespace,
+                "exec",
+                "-it",
+                session.seat.pod.name,
+                "-c",
+                session.seat.container,
+                "--",
+                "bash",
+            ]
+            console.print(f"fallback: {shlex.join(fallback)}")
 
     return app
 

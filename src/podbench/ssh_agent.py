@@ -16,6 +16,12 @@ from pathlib import Path
 PUBLIC_KEY_ENV = "PODBENCH_SSH_PUBLIC_KEY"
 SEAT_USER = "podbench"
 PYTHON = "/app/.venv/bin/python"
+ROOT_SSH_CAPABILITIES = {
+    "SETGID": 6,
+    "SETUID": 7,
+    "SYS_CHROOT": 18,
+    "AUDIT_WRITE": 29,
+}
 
 
 @dataclass(frozen=True)
@@ -209,6 +215,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ensure", action="store_true")
     args = parser.parse_args(argv)
     public_key = sys.stdin.read() if args.ensure else os.environ.get(PUBLIC_KEY_ENV, "")
+    if not args.ensure and not public_key:
+        _idle()
+        return 0
     try:
         info = ensure_server(public_key)
     except (OSError, RuntimeError) as error:
