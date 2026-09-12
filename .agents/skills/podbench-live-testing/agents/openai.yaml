@@ -1,0 +1,3 @@
+interface:
+  display_name: "Podbench Live Testing"
+  short_description: "Validate Podbench attach and hotfix on Kubernetes"
