@@ -55,13 +55,7 @@ def _read_process(path: Path) -> Process | None:
             state=fields["State"].split()[0],
             command=command,
         )
-    except (
-        FileNotFoundError,
-        KeyError,
-        PermissionError,
-        ProcessLookupError,
-        ValueError,
-    ):
+    except (OSError, KeyError, ValueError):
         return None
 
 
@@ -130,14 +124,17 @@ def _tree(rows: list[tuple[Process, str]], selected: int | None) -> Table:
     for offset, (process, prefix) in enumerate(visible):
         index = start + offset
         style = "bold reverse" if index == selected else None
-        command = Text(prefix + process.command)
+        command = Text()
+        command.append(prefix, style="dim")
+        command.append(process.command)
         if process.pid == 1:
             command.append("  main", style="green")
+        state_style = {"R": "green", "S": "cyan", "T": "yellow", "Z": "bold red"}
         table.add_row(
             "❯" if index == selected else "",
-            str(process.pid),
-            _username(process.uid),
-            process.state,
+            Text(str(process.pid), style="cyan"),
+            Text(_username(process.uid), style="dim"),
+            Text(process.state, style=state_style.get(process.state, "white")),
             command,
             style=style,
         )
