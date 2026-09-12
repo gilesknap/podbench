@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import os
-import sys
 from collections.abc import Sequence
 from typing import Annotated
 
 import typer
 
-from .cli import new_app, run
+from .cli import console, error_console, new_app, run
 from .kubectl import KubectlError, Runner
 from .launcher import DEFAULT_PULL_POLICY, LauncherError, attach, kubectl_for
 from .model import DEFAULT_IMAGE, IMAGE_ENV
@@ -48,12 +47,13 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
             public_key=public_key,
         )
         action = "reusing" if session.reused else "landed"
-        print(
+        console.print(
             f"{action} degraded seat {session.seat.container} "
-            f"for {session.seat.pod}/{session.target}"
+            f"for {session.seat.pod}/{session.target}",
+            style="green",
         )
         for warning in session.warnings:
-            print(f"warning: {warning}")
+            console.print(f"warning: {warning}", style="yellow")
         wiring = wire_ssh(
             kube,
             session.seat.pod,
@@ -61,15 +61,15 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
             identity=str(private_key),
             config_dir=config_dir,
         )
-        print(f"ssh config: {wiring.config}")
-        print(f"connect: {wiring.command}")
-        print(f"for normal `ssh {wiring.alias}` and future Remote-SSH, add:")
-        print(f"  {wiring.include}")
+        console.print(f"ssh config: {wiring.config}")
+        console.print(f"connect: {wiring.command}", style="cyan")
+        console.print(f"for normal `ssh {wiring.alias}` and future Remote-SSH, add:")
+        console.print(f"  {wiring.include}")
         context_flag = f"--context {context} " if context else ""
-        print(
+        console.print(
             f"fallback: {kubectl} {context_flag}-n {session.seat.pod.namespace} "
             f"exec -it {session.seat.pod.name} "
-            f"-c {session.seat.container} -- bash"
+            f"-c {session.seat.container} -- bash",
         )
 
     return app
@@ -82,5 +82,5 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
     try:
         return run(_build_app(runner), argv, prog="podbench attach")
     except (LauncherError, KubectlError) as error:
-        print(f"podbench: {error}", file=sys.stderr)
+        error_console.print(f"podbench: {error}", style="red")
         return 2

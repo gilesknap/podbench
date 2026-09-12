@@ -13,7 +13,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 description = "debugging container for kubernetes pods"
-dependencies = ["typer>=0.12"]
+dependencies = ["rich", "typer>=0.12"]
 dynamic = ["version"]
 license.file = "LICENSE"
 readme = "README.md"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shlex
 
+from .cli import console
 from .hotfix_core import (
     MANIFEST,
     HotfixError,
@@ -22,7 +23,10 @@ def _seat(kube: Kubectl, target: Target, pod: dict) -> str:
     current = running_seat(pod)
     if current:
         return current.name
-    print(f"landing a degraded seat in {target.pod.name}")
+    console.print(
+        f"landing a degraded seat in {target.pod.name}",
+        style="yellow",
+    )
     return attach(kube, target.pod.name, target=target.container).seat.container
 
 

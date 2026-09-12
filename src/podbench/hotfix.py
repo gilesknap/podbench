@@ -8,7 +8,7 @@ from typing import Annotated
 
 import typer
 
-from .cli import new_app, require_subcommand, run
+from .cli import console, error_console, new_app, require_subcommand, run
 from .hotfix_core import HotfixError
 from .hotfix_runtime import init as init_hotfix
 from .hotfix_runtime import restart as restart_hotfix
@@ -46,7 +46,7 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         pod = kube.get_pod(from_pod.removeprefix("pod/"))
-        print(
+        typer.echo(
             render_values(
                 pod,
                 app_name,
@@ -55,7 +55,7 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
                 gid=gid,
                 size=size,
             ),
-            end="",
+            nl=False,
         )
 
     @app.command(name="init")
@@ -70,7 +70,7 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         for line in init_hotfix(kube, pod, repo, ref=ref, container=container):
-            print(line)
+            console.print(line)
 
     @app.command(name="restart")
     def restart_command(
@@ -88,7 +88,7 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
         for line in restart_hotfix(
             kube, pod, container=container, reinstall=reinstall, deadline=deadline
         ):
-            print(line)
+            console.print(line)
 
     @app.command(name="status")
     def status_command(
@@ -99,7 +99,7 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         lines, healthy = hotfix_status(kube)
         for line in lines:
-            print(line)
+            console.print(line)
         if not healthy:
             raise typer.Exit(1)
 
@@ -114,7 +114,7 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         lines, complete = retire_hotfix(kube, target, delete_claim=delete_claim)
         for line in lines:
-            print(line)
+            console.print(line)
         if not complete:
             raise typer.Exit(1)
 
@@ -128,7 +128,7 @@ def main(args: Sequence[str] | None = None, *, runner: Runner | None = None) -> 
     try:
         return run(_build_app(runner), argv, prog="podbench hotfix")
     except (HotfixError, LauncherError, KubectlError, ValueError) as error:
-        print(f"podbench: {error}", file=sys.stderr)
+        error_console.print(f"podbench: {error}", style="red")
         return 2
 
 

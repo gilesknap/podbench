@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import typer
+from rich.console import Console
+
+console = Console(highlight=False, markup=False, soft_wrap=True)
+error_console = Console(stderr=True, highlight=False, markup=False, soft_wrap=True)
 
 
 def new_app() -> typer.Typer:
