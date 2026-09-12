@@ -12,7 +12,7 @@ These values came from the 2026-09-12 live test and may drift. Verify them befor
 - Source ConfigMap: `demo-service-src`, mounted at `/src`
 - Health endpoint: HTTP `/healthz` on port 8080
 - Hotfix claim used by the test: `demo-service-podbench-project`
-- Seat image used by the test: `ghcr.io/gilesknap/podbench:main`
+- Seat image for current tests: `ghcr.io/epics-containers/podbench:prototype-attach-hotfix`
 
 The administrative kubeconfig had no default namespace. Export it when PVC permissions are required and still pass `-n podbench-demo` to every Podbench and `kubectl` operation.
 

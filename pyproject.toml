@@ -34,7 +34,7 @@ dev = [
 podbench = "podbench.__main__:main"
 
 [project.urls]
-GitHub = "https://github.com/gilesknap/podbench"
+GitHub = "https://github.com/epics-containers/podbench"
 
 [[project.authors]] # Further authors may be added by duplicating this section
 email = "gilesknap@gmail.com"
