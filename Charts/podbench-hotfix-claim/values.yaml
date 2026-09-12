@@ -1,4 +1,10 @@
+# yaml-language-server: $schema=values.schema.json
+
+# @schema description: Create the persistent hotfix claim.
 enabled: false
+# @schema description: Override the generated claim name.
 claimName: ""
+# @schema description: Requested storage capacity for the claim.
 size: 10Gi
+# @schema description: Storage class for the claim. Empty uses the cluster default.
 storageClassName: ""

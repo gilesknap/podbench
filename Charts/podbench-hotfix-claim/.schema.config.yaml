@@ -1,0 +1,14 @@
+values:
+  - Charts/podbench-hotfix-claim/values.yaml
+
+output: Charts/podbench-hotfix-claim/values.schema.json
+
+bundleRoot: Charts
+bundle: false
+useHelmDocs: false
+noAdditionalProperties: true
+
+schemaRoot:
+  title: podbench-hotfix-claim Helm chart
+  description: Helm chart for creating a persistent Podbench hotfix claim
+  additionalProperties: false
