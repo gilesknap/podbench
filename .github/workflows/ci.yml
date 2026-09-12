@@ -37,6 +37,14 @@ jobs:
   dist:
     uses: ./.github/workflows/_dist.yml
 
+  helm:
+    uses: ./.github/workflows/_helm.yml
+    with:
+      publish: ${{ github.ref_type == 'tag' }}
+    permissions:
+      contents: read
+      packages: write
+
   pypi:
     needs: [dist, test]
     if: github.ref_type == 'tag'
@@ -45,7 +53,7 @@ jobs:
       id-token: write
 
   release:
-    needs: [dist, test]
+    needs: [dist, helm, test]
     if: github.ref_type == 'tag'
     uses: ./.github/workflows/_release.yml
     permissions:
