@@ -326,7 +326,7 @@ ENV DEBUGINFOD_TIMEOUT=2
 
 # The static uv binary, not the install script: no curl at build time and a
 # digest renovate can bump. uvx is skipped (~35 MiB for what `uv tool run` does).
-COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /usr/local/bin/uv
 
 # This is both podbench's own interpreter and the pre-seeded CPython that report
 # 4.4 asks for: it is a uv *managed* install, so pointing UV_PYTHON_INSTALL_DIR
