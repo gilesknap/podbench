@@ -10,7 +10,7 @@ from typing import Any, cast
 from . import __version__
 
 IMAGE_REPOSITORY = "ghcr.io/gilesknap/podbench"
-FLOATING_TAG = "main"
+FLOATING_TAG = "prototype-attach-hotfix"
 IMAGE_ENV = "PODBENCH_IMAGE"
 HOTFIX_CLAIM_VOLUME = "podbench-app"
 HOTFIX_APP_PATH = "/podbench/app"
@@ -23,7 +23,7 @@ _OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
 
 
 def image_tag_for(version: str) -> str:
-    """Use an exact release image, otherwise the image built from main."""
+    """Use an exact release image, otherwise the prototype branch image."""
     if ".dev" in version or "+" in version or not _OCI_TAG.fullmatch(version):
         return FLOATING_TAG
     return version

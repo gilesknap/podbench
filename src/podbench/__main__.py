@@ -41,7 +41,9 @@ def _build_app() -> typer.Typer:
     @app.callback(invoke_without_command=True)
     def root(
         ctx: typer.Context,
-        version: Annotated[bool, typer.Option("-v", "--version")] = False,
+        version: Annotated[
+            bool, typer.Option("-v", "--version", help="show the version and exit")
+        ] = False,
     ) -> None:
         """A small Kubernetes attach and hotfix prototype."""
         if version:

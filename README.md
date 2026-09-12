@@ -10,6 +10,8 @@ This branch intentionally keeps two modes and one capability tier:
 The image contains a shell, Git, uv, gdb, strace and basic process tools.
 Attach prints an SSH command carried by `kubectl exec` (no pod network), the
 `~/.ssh/config` Include line, and a raw exec fallback. Images pull by default.
+Development builds use `ghcr.io/gilesknap/podbench:prototype-attach-hotfix`;
+override that with `--image` or `PODBENCH_IMAGE`.
 
 ## Hotfix lifecycle
 

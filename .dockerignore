@@ -1,5 +1,8 @@
 .venv/
+.agents/worktrees/
+.claude/worktrees/
 build/
 dist/
+tmp/
 **/__pycache__/
 *.py[cod]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from collections.abc import Sequence
 from typing import Annotated
 
@@ -12,40 +13,98 @@ from .launcher import DEFAULT_PULL_POLICY, LauncherError, attach, kubectl_for
 from .model import DEFAULT_IMAGE, IMAGE_ENV
 from .ssh_transport import DEFAULT_IDENTITY, read_public_key, wire_ssh
 
+PULL_POLICIES = ("Always", "IfNotPresent", "Never")
+
+
+def _pull_policy(value: str) -> str:
+    for policy in PULL_POLICIES:
+        if value.lower() == policy.lower():
+            return policy
+    raise typer.BadParameter(f"must be one of {', '.join(PULL_POLICIES)}")
+
 
 def _build_app(runner: Runner | None = None) -> typer.Typer:
     app = new_app()
 
     @app.command()
     def attach_command(
-        pod: Annotated[str, typer.Argument(metavar="POD")],
-        target: Annotated[str | None, typer.Option("--target")] = None,
-        image: Annotated[str | None, typer.Option("--image")] = None,
-        target_uid: Annotated[int | None, typer.Option("--target-uid")] = None,
-        target_gid: Annotated[int | None, typer.Option("--target-gid")] = None,
-        new: Annotated[bool, typer.Option("--new")] = False,
-        pull: Annotated[str, typer.Option("--pull")] = DEFAULT_PULL_POLICY,
-        identity: Annotated[str, typer.Option("--identity")] = DEFAULT_IDENTITY,
-        config_dir: Annotated[str | None, typer.Option("--config-dir")] = None,
-        timeout: Annotated[float, typer.Option("--timeout")] = 120.0,
-        namespace: Annotated[str | None, typer.Option("-n", "--namespace")] = None,
-        context: Annotated[str | None, typer.Option("--context")] = None,
-        kubectl: Annotated[str, typer.Option("--kubectl")] = "kubectl",
+        pod: Annotated[
+            str, typer.Argument(metavar="POD", help="pod/NAME or bare NAME")
+        ],
+        target: Annotated[
+            str | None,
+            typer.Option("--target", metavar="NAME", help="workload container"),
+        ] = None,
+        image: Annotated[
+            str | None,
+            typer.Option("--image", metavar="REF", help="debug image reference"),
+        ] = None,
+        target_uid: Annotated[
+            int | None,
+            typer.Option("--target-uid", metavar="UID", help="override target UID"),
+        ] = None,
+        target_gid: Annotated[
+            int | None,
+            typer.Option("--target-gid", metavar="GID", help="override target GID"),
+        ] = None,
+        new: Annotated[
+            bool, typer.Option("--new", help="land a new seat instead of reusing one")
+        ] = False,
+        pull: Annotated[
+            str,
+            typer.Option(
+                "--pull",
+                metavar="POLICY",
+                help="image pull policy: Always, IfNotPresent or Never",
+                callback=_pull_policy,
+            ),
+        ] = DEFAULT_PULL_POLICY,
+        identity: Annotated[
+            str,
+            typer.Option("--identity", metavar="KEY", help="SSH private key"),
+        ] = DEFAULT_IDENTITY,
+        config_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--config-dir", metavar="DIR", help="generated SSH files directory"
+            ),
+        ] = None,
+        timeout: Annotated[
+            float,
+            typer.Option(
+                "--timeout", metavar="SECONDS", help="wait for the seat to start"
+            ),
+        ] = 120.0,
+        namespace: Annotated[
+            str | None,
+            typer.Option(
+                "-n", "--namespace", metavar="NAMESPACE", help="Kubernetes namespace"
+            ),
+        ] = None,
+        context: Annotated[
+            str | None,
+            typer.Option("--context", metavar="NAME", help="kubeconfig context"),
+        ] = None,
+        kubectl: Annotated[
+            str,
+            typer.Option("--kubectl", metavar="BIN", help="kubectl binary"),
+        ] = "kubectl",
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
         private_key, public_key = read_public_key(identity)
-        session = attach(
-            kube,
-            pod,
-            target=target,
-            image=image or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE),
-            target_uid=target_uid,
-            target_gid=target_gid,
-            force_new=new,
-            pull_policy=pull,
-            timeout=timeout,
-            public_key=public_key,
-        )
+        with console.status("Landing or reconnecting the seat..."):
+            session = attach(
+                kube,
+                pod,
+                target=target,
+                image=image or os.environ.get(IMAGE_ENV, DEFAULT_IMAGE),
+                target_uid=target_uid,
+                target_gid=target_gid,
+                force_new=new,
+                pull_policy=pull,
+                timeout=timeout,
+                public_key=public_key,
+            )
         action = "reusing" if session.reused else "landed"
         console.print(
             f"{action} degraded seat {session.seat.container} "
@@ -65,12 +124,21 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
         console.print(f"connect: {wiring.command}", style="cyan")
         console.print(f"for normal `ssh {wiring.alias}` and future Remote-SSH, add:")
         console.print(f"  {wiring.include}")
-        context_flag = f"--context {context} " if context else ""
-        console.print(
-            f"fallback: {kubectl} {context_flag}-n {session.seat.pod.namespace} "
-            f"exec -it {session.seat.pod.name} "
-            f"-c {session.seat.container} -- bash",
-        )
+        fallback = [kubectl]
+        if context:
+            fallback += ["--context", context]
+        fallback += [
+            "-n",
+            session.seat.pod.namespace,
+            "exec",
+            "-it",
+            session.seat.pod.name,
+            "-c",
+            session.seat.container,
+            "--",
+            "bash",
+        ]
+        console.print(f"fallback: {shlex.join(fallback)}")
 
     return app
 
