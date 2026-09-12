@@ -75,11 +75,12 @@ def init(
     script = "\n".join(
         [
             "set -euo pipefail",
-            "tmp=$(mktemp -d /tmp/podbench-clone.XXXXXX)",
-            "trap 'rm -rf \"$tmp\"' EXIT",
-            f'git clone {branch}{shlex.quote(repo)} "$tmp"',
-            f'cp -a "$tmp"/. {HOTFIX_APP_PATH}/',
+            f"find {HOTFIX_APP_PATH} -mindepth 1 -delete",
+            f"git clone {branch}{shlex.quote(repo)} {HOTFIX_APP_PATH}",
             f"cd {HOTFIX_APP_PATH}",
+            'mkdir -p "$HOME"',
+            f"git config --global --add safe.directory {HOTFIX_APP_PATH}",
+            f"[ ! -f pyproject.toml ] || "
             f"UV_PYTHON_INSTALL_DIR={HOTFIX_APP_PATH}/.python uv sync --managed-python",
             "git rev-parse HEAD",
         ]
@@ -133,7 +134,10 @@ def restart(
     if reinstall:
         sync = (
             f"cd {HOTFIX_APP_PATH} && "
-            f"UV_PYTHON_INSTALL_DIR={HOTFIX_APP_PATH}/.python uv sync --managed-python"
+            "if [ -f pyproject.toml ]; then "
+            f"UV_PYTHON_INSTALL_DIR={HOTFIX_APP_PATH}/.python "
+            "uv sync --managed-python; "
+            "else echo 'no pyproject.toml; nothing to reinstall'; fi"
         )
         seat = running_seat(kube.get_pod(target.pod.name))
         if not seat:
@@ -150,9 +154,15 @@ def restart(
             f"trap 'rm -f {HOTFIX_HOLD_PATH}' EXIT",
             f"child=$(cat {HOTFIX_CHILD_PID_PATH})",
             'kill -TERM -"$child" 2>/dev/null || kill -TERM "$child"',
-            "for _ in $(seq 1 100); do",
+            f"attempts=$(( {deadline} * 10 ))",
+            "grace=100",
+            '[ "$grace" -lt "$attempts" ] || grace=$(( attempts / 2 ))',
+            'for attempt in $(seq 1 "$attempts"); do',
             f"  new=$(cat {HOTFIX_CHILD_PID_PATH} 2>/dev/null || true)",
             '  [ -n "$new" ] && [ "$new" != "$child" ] && exit 0',
+            '  if [ "$attempt" -eq "$grace" ]; then',
+            '    kill -KILL -"$child" 2>/dev/null || kill -KILL "$child"',
+            "  fi",
             "  sleep 0.1",
             "done",
             "exit 1",

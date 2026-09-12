@@ -17,19 +17,21 @@ from .model import (
     as_dict,
 )
 
+RESTART_WINDOW_SECONDS = 120
+
 
 def claim_for(app: str) -> str:
     return f"{app}-podbench-project"[:63].rstrip("-")
 
 
 def entrypoint(container: Mapping[str, Any]) -> str:
-    words: list[str] = []
-    for key in ("command", "args"):
-        value = container.get(key, [])
-        if isinstance(value, list):
-            words.extend(str(word) for word in value)
-    if not words:
+    command = container.get("command")
+    if not isinstance(command, list) or not command:
         raise HotfixError("the entrypoint is only in the image; pass --entrypoint")
+    words = [str(word) for word in command]
+    args = container.get("args")
+    if isinstance(args, list):
+        words.extend(str(word) for word in args)
     return shlex.join(words)
 
 
@@ -57,9 +59,8 @@ def _liveness(container: Mapping[str, Any]) -> tuple[list[str], dict[str, Any]] 
         return None
     command = as_dict(probe.get("exec")).get("command")
     if not isinstance(command, list) or not command:
-        # HTTP, TCP, and gRPC probes cannot see the hold file. Leave them
-        # unchanged rather than refusing the workload; the normal Kubernetes
-        # failure threshold remains the bound on how long a restart may take.
+        # HTTP, TCP, and gRPC probes cannot see the hold file. Their failure
+        # threshold is extended below instead of replacing the probe action.
         return None
     timings = {key: value for key, value in probe.items() if key != "exec"}
     return [str(word) for word in command], timings
@@ -108,5 +109,15 @@ def render_values(
             "    command: [bash, -c, " + json.dumps(wrapped) + "]",
         ]
         lines += [f"  {key}: {json.dumps(value)}" for key, value in timings.items()]
+    elif probe := as_dict(container.get("livenessProbe")):
+        period = probe.get("periodSeconds", 10)
+        period = period if isinstance(period, int) and period > 0 else 10
+        failures = probe.get("failureThreshold", 3)
+        failures = failures if isinstance(failures, int) else 3
+        restart_failures = (RESTART_WINDOW_SECONDS + period - 1) // period + 1
+        lines += [
+            "livenessProbe:",
+            f"  failureThreshold: {max(failures, restart_failures)}",
+        ]
     lines += ["podSecurityContext:", f"  fsGroup: {gid}"]
     return "\n".join(lines) + "\n"

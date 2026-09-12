@@ -26,6 +26,12 @@ creates the SSH config directory and installs that Include safely.
 
        podbench hotfix init POD --repo URL -n NAMESPACE
 
+   Python projects are synced with uv. Other repositories are cloned without a
+   dependency-install step.
+
+   Generated values keep liveness probes but extend non-exec probe failure
+   thresholds for the two-minute restart window.
+
 4. Edit /podbench/app in the seat and relaunch:
 
        podbench hotfix restart POD -n NAMESPACE
