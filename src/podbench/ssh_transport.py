@@ -92,6 +92,19 @@ def _ensure_control_dir() -> None:
         CONTROL_DIR.chmod(0o700)
 
 
+def client_directory(config_dir: str | None = None) -> Path:
+    return (
+        Path(config_dir or os.environ.get(CONFIG_DIR_ENV, DEFAULT_CONFIG_DIR))
+        .expanduser()
+        .resolve()
+    )
+
+
+def include_line(directory: Path) -> str:
+    glob = str(directory / "config.d" / "*.conf")
+    return f"Include {_quote_config(glob)}"
+
+
 def _seat_suffix(seat: str) -> str:
     return seat.removeprefix("podbench-")
 
@@ -112,11 +125,7 @@ def wire_ssh(
     alias = f"podbench-{pod.namespace}-{pod.name}-{label}"
     host_key_alias = f"podbench-{pod_uid}-{seat}"
 
-    directory = (
-        Path(config_dir or os.environ.get(CONFIG_DIR_ENV, DEFAULT_CONFIG_DIR))
-        .expanduser()
-        .resolve()
-    )
+    directory = client_directory(config_dir)
     config_directory = directory / "config.d"
     config = config_directory / f"{pod.namespace}-{pod.name}-{label}.conf"
     known_hosts = directory / "known_hosts"
@@ -166,6 +175,4 @@ def wire_ssh(
     config_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     config.write_text(stanza)
     config.chmod(0o600)
-    include_glob = str(config_directory / "*.conf")
-    include = f"Include {_quote_config(include_glob)}"
-    return SSHWiring(alias, config, include)
+    return SSHWiring(alias, config, include_line(directory))

@@ -1,4 +1,4 @@
-"""The prototype has two user-facing modes: attach and hotfix."""
+"""The prototype has attach, hotfix and prerequisite checks."""
 
 from __future__ import annotations
 
@@ -35,6 +35,12 @@ def _hotfix(args: Sequence[str]) -> int:
     return main(args)
 
 
+def _doctor(args: Sequence[str]) -> int:
+    from .doctor import main
+
+    return main(args)
+
+
 def _build_app() -> typer.Typer:
     app = new_app()
 
@@ -60,6 +66,12 @@ def _build_app() -> typer.Typer:
         add_help_option=False,
         context_settings=settings,
     )(_forward(_attach, "attach"))
+    app.command(
+        name="doctor",
+        help="check local and cluster prerequisites",
+        add_help_option=False,
+        context_settings=settings,
+    )(_forward(_doctor, "doctor"))
     app.command(
         name="hotfix",
         help="work on durable code beside a live application",
