@@ -11,6 +11,7 @@ from .cli import new_app, run
 from .kubectl import KubectlError, Runner
 from .launcher import DEFAULT_PULL_POLICY, LauncherError, attach, kubectl_for
 from .model import DEFAULT_IMAGE, IMAGE_ENV
+from .ssh_transport import DEFAULT_IDENTITY, read_public_key, wire_ssh
 
 
 def _build_app(runner: Runner | None = None) -> typer.Typer:
@@ -25,12 +26,15 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
         target_gid: Annotated[int | None, typer.Option("--target-gid")] = None,
         new: Annotated[bool, typer.Option("--new")] = False,
         pull: Annotated[str, typer.Option("--pull")] = DEFAULT_PULL_POLICY,
+        identity: Annotated[str, typer.Option("--identity")] = DEFAULT_IDENTITY,
+        config_dir: Annotated[str | None, typer.Option("--config-dir")] = None,
         timeout: Annotated[float, typer.Option("--timeout")] = 120.0,
         namespace: Annotated[str | None, typer.Option("-n", "--namespace")] = None,
         context: Annotated[str | None, typer.Option("--context")] = None,
         kubectl: Annotated[str, typer.Option("--kubectl")] = "kubectl",
     ) -> None:
         kube = kubectl_for(namespace, context=context, binary=kubectl, runner=runner)
+        private_key, public_key = read_public_key(identity)
         session = attach(
             kube,
             pod,
@@ -41,6 +45,7 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
             force_new=new,
             pull_policy=pull,
             timeout=timeout,
+            public_key=public_key,
         )
         action = "reusing" if session.reused else "landed"
         print(
@@ -49,9 +54,20 @@ def _build_app(runner: Runner | None = None) -> typer.Typer:
         )
         for warning in session.warnings:
             print(f"warning: {warning}")
+        wiring = wire_ssh(
+            kube,
+            session.seat.pod,
+            session.seat.container,
+            identity=str(private_key),
+            config_dir=config_dir,
+        )
+        print(f"ssh config: {wiring.config}")
+        print(f"connect: {wiring.command}")
+        print(f"for normal `ssh {wiring.alias}` and future Remote-SSH, add:")
+        print(f"  {wiring.include}")
         context_flag = f"--context {context} " if context else ""
         print(
-            f"enter: {kubectl} {context_flag}-n {session.seat.pod.namespace} "
+            f"fallback: {kubectl} {context_flag}-n {session.seat.pod.namespace} "
             f"exec -it {session.seat.pod.name} "
             f"-c {session.seat.container} -- bash"
         )

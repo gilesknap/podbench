@@ -8,9 +8,10 @@ from typing import Any
 
 from .kubectl import Kubectl, Runner, run_subprocess
 from .model import DEFAULT_IMAGE, HOTFIX_CLAIM_VOLUME, PodRef, as_dict
+from .ssh_agent import PUBLIC_KEY_ENV, PYTHON
 
 CONTAINER_BASE = "podbench"
-DEFAULT_PULL_POLICY = "IfNotPresent"
+DEFAULT_PULL_POLICY = "Always"
 
 
 class LauncherError(RuntimeError):
@@ -166,6 +167,7 @@ def _seat_spec(
     uid: int | None,
     gid: int | None,
     pull: str,
+    public_key: str | None = None,
 ) -> dict[str, Any]:
     security: dict[str, Any] = {
         "allowPrivilegeEscalation": False,
@@ -187,17 +189,29 @@ def _seat_spec(
         if mount and "subPath" not in mount and "subPathExpr" not in mount
         else []
     )
+    home = (
+        "/root" if uid == 0 else f"/tmp/podbench-{uid}" if uid is not None else "/tmp"
+    )
     spec: dict[str, Any] = {
         "name": name,
         "image": image,
         "imagePullPolicy": pull,
-        "command": ["sleep", "infinity"],
+        "command": (
+            [PYTHON, "-m", "podbench.ssh_agent"]
+            if public_key is not None
+            else ["sleep", "infinity"]
+        ),
         "targetContainerName": target,
         "terminationMessagePolicy": "File",
         "securityContext": security,
         "env": [
-            {"name": "HOME", "value": "/tmp"},
+            {"name": "HOME", "value": home},
             {"name": "UV_CACHE_DIR", "value": "/tmp/uv-cache"},
+            *(
+                [{"name": PUBLIC_KEY_ENV, "value": public_key}]
+                if public_key is not None
+                else []
+            ),
         ],
     }
     if mounts:
@@ -216,6 +230,7 @@ def attach(
     force_new: bool = False,
     pull_policy: str = DEFAULT_PULL_POLICY,
     timeout: float = 120.0,
+    public_key: str | None = None,
     **_: object,
 ) -> Session:
     pod_name = resolve_pod_name(pod_reference)
@@ -262,6 +277,7 @@ def attach(
             uid=uid,
             gid=gid,
             pull=pull_policy,
+            public_key=public_key,
         ),
     )
     kubectl.wait_for_ephemeral_container(pod_name, name, timeout=timeout)

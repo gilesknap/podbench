@@ -8,7 +8,8 @@ This branch intentionally keeps two modes and one capability tier:
   single-replica workload.
 
 The image contains a shell, Git, uv, gdb, strace and basic process tools.
-Enter a seat with the kubectl exec command printed by attach.
+Attach prints an SSH command carried by `kubectl exec` (no pod network), the
+`~/.ssh/config` Include line, and a raw exec fallback. Images pull by default.
 
 ## Hotfix lifecycle
 
