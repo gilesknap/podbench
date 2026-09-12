@@ -1,0 +1,3 @@
+interface:
+  display_name: "gkcluster T11"
+  short_description: "Manage gkcluster and validate its T11 beamline"
