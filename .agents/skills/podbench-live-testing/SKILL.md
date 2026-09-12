@@ -20,4 +20,4 @@ Choose the relevant procedure:
 - For claim wiring, checkout initialization, edit/restart, reinstall, status, retirement, or cleanup, read [references/hotfix.md](references/hotfix.md).
 - When working with the maintained demo environment, read [references/demo-cluster.md](references/demo-cluster.md) and verify its remembered values before use.
 
-Report observable evidence: selected pod and target, seat creation or reuse, target process visibility, old and new application PID, response before and after an edit, Kubernetes container restart count, health state, and final cleanup. Distinguish expected degraded-seat limitations from product failures.
+Report observable evidence: selected pod and target, seat creation or reuse, target process visibility, old and new application PID, response before and after an edit, Kubernetes container restart count, health state, and final cleanup. Distinguish expected seat limitations from product failures.

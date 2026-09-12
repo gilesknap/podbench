@@ -68,7 +68,7 @@ def _build_app() -> typer.Typer:
     settings = {"ignore_unknown_options": True, "allow_extra_args": True}
     app.command(
         name="attach",
-        help="land or reconnect to a degraded debug seat",
+        help="land or reconnect to a debug seat",
         add_help_option=False,
         context_settings=settings,
         rich_help_panel="Workstation commands",

@@ -24,7 +24,7 @@ def _seat(kube: Kubectl, target: Target, pod: dict) -> str:
     if current:
         return current.name
     console.print(
-        f"landing a degraded seat in {target.pod.name}",
+        f"landing a seat in {target.pod.name}",
         style="yellow",
     )
     return attach(kube, target.pod.name, target=target.container).seat.container

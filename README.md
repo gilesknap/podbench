@@ -1,6 +1,6 @@
 # podbench prototype
 
-This branch intentionally keeps two modes and one capability tier:
+This branch intentionally keeps two modes and a single seat shape:
 
 - podbench attach POD lands a capless ephemeral container using the target
   container's UID, GID and seccomp profile when Kubernetes reports them.
@@ -43,5 +43,5 @@ creates the SSH config directory and installs that Include safely.
 
        podbench hotfix retire PVC --delete-claim -n NAMESPACE
 
-This is a rapid-iteration prototype. Root and unknown-identity targets are
-attempted with the same degraded spec and may not provide useful ptrace access.
+This is a rapid-iteration prototype. Root and unknown-identity targets use the
+same seat spec and may not provide useful ptrace access.
