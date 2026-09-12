@@ -9,8 +9,12 @@
 # writes a self-contained kubeconfig to k8s/<namespace>-claude-<user>.kubeconfig
 # (gitignored) and runs the confinement checks against it.
 #
+# With no authorization flag, snapshots every resource the parent can read in
+# <namespace>, retaining only get/list/watch verbs. This includes secrets if the
+# parent can read them. Requires jq and a complete SelfSubjectRulesReview.
+#
 # --podbench grants the verbs podbench needs, in the same tiers the chart uses:
-#   observe  attach: ephemeral container + exec           (the default tier)
+#   observe  attach: ephemeral container + exec              (base tier)
 #   iterate  `podbench dev`: create/delete pods, patch a Service selector
 #   resize   `--resize`: get+patch pods/resize
 #   hotfix   `podbench hotfix`: patch a pod template, which DEPLOYS CODE
@@ -20,8 +24,8 @@
 # policies, neither of which a namespace-confined account can do.
 #
 # --all snapshots your current resource permissions in <namespace>, including
-# secrets if you can access them. Resource-name restrictions are preserved.
-# Requires jq and a complete SelfSubjectRulesReview from the API server.
+# write verbs and secrets if you can access them. Resource-name restrictions
+# are preserved. It also requires jq and a complete SelfSubjectRulesReview.
 # Re-run to refresh permissions; later parent permission changes are not synced.
 # It still creates only a Role/RoleBinding: no cluster-scoped access is copied.
 # --all cannot be combined with the podbench tier flags.
@@ -88,8 +92,12 @@ if [ "$ALL" = 1 ] && [ "$PODBENCH" = 1 ]; then
   echo "--all cannot be combined with podbench tier flags" >&2
   exit 1
 fi
-if [ "$ALL" = 1 ]; then
-  command -v jq >/dev/null || { echo "--all requires jq" >&2; exit 1; }
+PARENT_READONLY=0
+if [ "$ALL" = 0 ] && [ "$PODBENCH" = 0 ]; then
+  PARENT_READONLY=1
+fi
+if [ "$ALL" = 1 ] || [ "$PARENT_READONLY" = 1 ]; then
+  command -v jq >/dev/null || { echo "copying parent permissions requires jq" >&2; exit 1; }
 fi
 
 command -v kubectl >/dev/null || { echo "kubectl not on PATH" >&2; exit 1; }
@@ -122,8 +130,10 @@ done
 echo "==> provisioning $SA in $NS"
 if [ "$ALL" = 1 ]; then
   echo "    permissions: snapshot of parent resource permissions in ${NS}"
+elif [ "$PARENT_READONLY" = 1 ]; then
+  echo "    permissions: read-only snapshot of parent resource permissions in ${NS}"
 else
-  echo "    podbench tiers: ${TIERS:-none (read-only)}"
+  echo "    podbench tiers: ${TIERS}"
 fi
 
 # --- the RBAC --------------------------------------------------------------
@@ -218,22 +228,28 @@ fi
 # its columns cannot faithfully round-trip resourceNames or API groups.
 # The API server still authorizes the Role/RoleBinding writes, including RBAC
 # escalation/bind checks; this review does not authorize those operations.
-if [ "$ALL" = 1 ]; then
+if [ "$ALL" = 1 ] || [ "$PARENT_READONLY" = 1 ]; then
   REVIEW=$(jq -n --arg namespace "$NS" '{
     apiVersion: "authorization.k8s.io/v1", kind: "SelfSubjectRulesReview",
     spec: {namespace: $namespace}
   }' | kubectl create -f - -o json)
-  if ! RULES=$(printf '%s' "$REVIEW" | jq -ce '
+  if ! RULES=$(printf '%s' "$REVIEW" | jq -ce --arg read_only "$PARENT_READONLY" '
     if .status.incomplete != false or
        ((.status.evaluationError // "") != "") or
        (.status.resourceRules | type) != "array"
     then error("cannot copy permissions: incomplete or invalid rules review")
     else .status.resourceRules | map(
-      {apiGroups, resources, verbs} +
+      (if $read_only == "1" then
+         if (.verbs | index("*")) then ["get", "list", "watch"]
+         else [.verbs[] | select(. == "get" or . == "list" or . == "watch")]
+         end
+       else .verbs end) as $verbs |
+      select($verbs | length > 0) |
+      {apiGroups, resources, verbs: $verbs} +
       (if (.resourceNames | length) > 0
        then {resourceNames} else {} end)
     ) end'); then
-    echo "--all could not obtain a complete permission snapshot; nothing applied" >&2
+    echo "could not obtain a complete parent permission snapshot; nothing applied" >&2
     exit 1
   fi
 fi
@@ -353,15 +369,22 @@ can_i() { $K auth can-i "$@" 2>/dev/null || true; }
 FAILED=0
 expect() { # expect <yes|no> <label> <can-i args...>
   local want=$1 label=$2; shift 2
-  # In --all mode the selected namespace follows the parent, including both
-  # grants and denials. The cross-namespace checks still require denial.
-  if [ "$ALL" = 1 ] && [[ " $* " == *" -n $NS "* ]]; then
-    want=$(kubectl auth can-i "$@" 2>/dev/null || true)
-    case "$want" in
-      yes|no) ;;
-      *) printf '  [FAIL] parent permission check failed: %s\n' "$label"
-         FAILED=1; return ;;
-    esac
+  # A copied mode follows the parent inside the selected namespace. Read-only
+  # mode deliberately denies every non-read verb even when the parent has it.
+  # The cross-namespace checks always require denial.
+  if { [ "$ALL" = 1 ] || [ "$PARENT_READONLY" = 1 ]; } &&
+     [[ " $* " == *" -n $NS "* ]]; then
+    if [ "$PARENT_READONLY" = 1 ] &&
+       [ "$1" != get ] && [ "$1" != list ] && [ "$1" != watch ]; then
+      want=no
+    else
+      want=$(kubectl auth can-i "$@" 2>/dev/null || true)
+      case "$want" in
+        yes|no) ;;
+        *) printf '  [FAIL] parent permission check failed: %s\n' "$label"
+           FAILED=1; return ;;
+      esac
+    fi
   fi
   local got; got=$(can_i "$@")
   if [ "$got" = "$want" ]; then
@@ -385,6 +408,8 @@ if [ "$TIER_ITERATE" = 1 ] || [ "$TIER_HOTFIX" = 1 ]; then DELETE_PODS=1; fi
 echo
 if [ "$ALL" = 1 ]; then
   echo "==> sampled parent-permission and namespace-boundary checks (as ${SA})"
+elif [ "$PARENT_READONLY" = 1 ]; then
+  echo "==> sampled read-only parent-permission and namespace-boundary checks (as ${SA})"
 else
   echo "==> confinement checks (as ${SA})"
 fi
@@ -392,8 +417,9 @@ echo "    inside ${NS}:"
 expect yes "read pods"                       get pods -n "$NS"
 expect yes "read deployments"                get deployments.apps -n "$NS"
 expect yes "read limitranges"                get limitranges -n "$NS"
-# Never granted by the podbench tiers (but copied by --all if held): with secrets the SA could read every other
-# ServiceAccount token in the namespace and become them.
+# Never granted by the podbench tiers (but copied by either parent mode if held):
+# with secrets the SA could read every other ServiceAccount token in the
+# namespace and become them.
 expect no  "read secrets"                    get secrets -n "$NS"
 # --subresource, never `pods/exec` as one word. kubectl splits that argument on
 # the slash into resource and resource *name*, so `can-i create pods/exec` asks
@@ -516,6 +542,8 @@ echo
 if [ "$FAILED" = 0 ]; then
   if [ "$ALL" = 1 ]; then
     echo "==> PASS: parent permissions copied into a Role in ${NS}; sampled checks passed."
+  elif [ "$PARENT_READONLY" = 1 ]; then
+    echo "==> PASS: parent read permissions copied into a Role in ${NS}; sampled checks passed."
   else
     echo "==> PASS: ${SA} reaches ${NS} and nothing else."
   fi

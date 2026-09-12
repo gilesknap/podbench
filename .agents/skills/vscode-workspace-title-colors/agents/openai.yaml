@@ -1,0 +1,4 @@
+interface:
+  display_name: "VS Code Workspace Title Colors"
+  short_description: "Set a named workspace title bar color"
+  default_prompt: "Use $vscode-workspace-title-colors to apply one English colour to this workspace's active and inactive title bars."

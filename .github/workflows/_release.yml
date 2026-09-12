@@ -4,47 +4,13 @@ on:
 jobs:
   artifacts:
     runs-on: ubuntu-latest
-
     steps:
-      # Named rather than "download everything", because `files: "*"` below
-      # attaches whatever happens to be in the workdir. `_container.yml` hands
-      # its per-architecture image digests between jobs as artifacts holding a
-      # zero-byte file named after the digest; GitHub rejects a zero-byte
-      # release asset ("size must be greater than or equal to 1") and fails the
-      # whole step, so a release job that hoovers up every artifact breaks the
-      # moment an unrelated job uses one to pass state.
-      - name: Download the wheel and sdist
+      - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
-          name: dist
-
-      # The chart's generated values.schema.json, so the release carries a
-      # per-tag URL a site's values file can name in a
-      # `# yaml-language-server: $schema=` line and get completion against the
-      # chart version it actually deploys.
-      - name: Download the chart values schema
-        uses: actions/download-artifact@v8
-        with:
-          name: chart-schema
-
-      - name: Download the built docs
-        uses: actions/download-artifact@v8
-        with:
-          name: docs
-
-      - name: Zip up docs
-        run: |
-          set -vxeuo pipefail
-          if [ -d html ]; then
-            mv html $GITHUB_REF_NAME
-            zip -r docs.zip $GITHUB_REF_NAME
-            rm -rf $GITHUB_REF_NAME
-          fi
-
+          merge-multiple: true
       - name: Create GitHub Release
-        # We pin to the SHA, not the tag, for security reasons.
-        # https://docs.github.com/en/actions/learn-github-actions/security-hardening-for-github-actions#using-third-party-actions
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
           files: "*"

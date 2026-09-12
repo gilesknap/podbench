@@ -1,19 +1,15 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "title": "podbench hotfix claim",
-    "description": "The PersistentVolumeClaim podbench Hotfix mode needs beside a pod",
+    "title": "podbench-hotfix-claim Helm chart",
+    "description": "Helm chart for creating a persistent Podbench hotfix claim",
     "type": "object",
     "properties": {
-        "annotations": {
-            "type": "object",
-            "additionalProperties": {
-                "type": "string"
-            }
-        },
         "claimName": {
+            "description": "Override the generated claim name.",
             "type": "string"
         },
         "enabled": {
+            "description": "Create the persistent hotfix claim.",
             "type": "boolean"
         },
         "global": {
@@ -24,16 +20,12 @@
                 "null"
             ]
         },
-        "labels": {
-            "type": "object",
-            "additionalProperties": {
-                "type": "string"
-            }
-        },
         "size": {
+            "description": "Requested storage capacity for the claim.",
             "type": "string"
         },
         "storageClassName": {
+            "description": "Storage class for the claim. Empty uses the cluster default.",
             "type": "string"
         }
     },

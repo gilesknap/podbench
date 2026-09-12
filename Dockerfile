@@ -206,15 +206,15 @@ RUN mkdir -p /run/sshd /etc/podbench
 # from, which is #98's shape.
 #
 # Mode 0666 on the record file is not an escalation, and the reason is different
-# on each rung, so both are stated. On `degraded` and `seat` sshd runs as the
-# seat's own uid (SshdLayout.for_uid(n), run_as_root=False): it skips privilege
+# for each target identity, so both are stated. On a non-root seat sshd runs as
+# the seat's own uid (SshdLayout.for_uid(n), run_as_root=False): it skips
+# privilege
 # separation and never setuids out of a passwd record, so a forged record buys
 # its author the uid it already had, and NoNewPrivs has already made every
-# setuid binary in the seat inert. On `full` sshd *is* root - that rung ships
-# today, and pretending otherwise is how this comment was wrong once - and there
+# setuid binary in the seat inert. For a root target sshd *is* root, and there
 # the reason is that a root seat has no unprivileged principal: every process in
 # it, the kubectl exec carrying ssh included, is already uid 0. Because that is
-# an accident of the rung rather than an enforced property, the agent enforces
+# a property of the target rather than an enforced property, the agent enforces
 # it anyway and takes group/other write off this file on a root seat
 # (agent.restrict_seat_nss_database).
 #
@@ -222,7 +222,7 @@ RUN mkdir -p /run/sshd /etc/podbench
 # sshd that setuids into a *non-root* session, i.e. one container holding both an
 # unprivileged writer of this file and a privileged reader of it. Whichever of
 # the two lands second has to close the other off - either the database gains an
-# owner and loses group/other write on that rung too, or the root sshd is not
+# owner and loses group/other write in that case too, or the root sshd is not
 # allowed to resolve from it.
 RUN chmod g=u /etc/passwd /etc/group
 RUN sed -i 's/^passwd:.*/passwd:         files extrausers/' /etc/nsswitch.conf \
@@ -285,13 +285,13 @@ RUN set -eu; \
 #   include.path       safe.directory cannot be baked - it names the claim's
 #                      mountPath, which is the application's choice and is not
 #                      known until attach time - and the agent that would write it
-#                      cannot write /etc at all: a degraded seat is a non-root uid
+#                      cannot write /etc at all: a non-root seat has a uid
 #                      with an empty effective set and /etc is root-owned. So the
 #                      agent writes only the included file, under world-writable,
 #                      container-local, volume-free /tmp. Same shape as `chmod g=u
 #                      /etc/passwd` and the 0666 database above, and
 #                      agent.SEAT_GITCONFIG_INCLUDE carries the same argument for
-#                      why the mode is not an escalation on either kind of rung.
+#                      why the mode is not an escalation for either kind of seat.
 #
 # Two things this rests on, both of which would fail by silently reinstating the
 # defect, and both measured on git 2.53.0 rather than assumed from git-config(1):
@@ -358,36 +358,8 @@ ENV PATH=/app/.venv/bin:$PATH
 RUN uv pip install --python /app/.venv/bin/python \
     --target /opt/podbench/debugpy debugpy==1.8.21
 
-# Rust's pretty-printers, which no toolchain in this pod ships. A Rust binary
-# names `gdb_load_rust_pretty_printers.py` in .debug_gdb_scripts and that file
-# lives in a rustup toolchain, so in a production container the reference
-# resolves to nothing and `Vec`, `String` and `Option` print as the
-# RawVecInner/Unique/NonNull nest they are made of. 6 KiB against the ~700 MB
-# cap. Sourced only for a target podbench identified as Rust
-# (`podbench.gdbcmd.RUST_PRETTY_PRINTERS`), so it costs an unrelated attach
-# nothing.
-COPY image/gdb/ /opt/podbench/gdb/
-
-# Two files, both structural, and deliberately not the brief's per-subcommand
-# helpers - see image/README.md, deviation 6, for why those went away.
-#
-#   podbench      the venv at /app/.venv/bin is on no default PATH, and
-#                 /usr/local/bin is on sshd's compiled-in one whatever happens.
-#                 The agent's sshd_config now carries the container's PATH into
-#                 a session with SetEnv, so this is no longer the only route -
-#                 it is the route that does not depend on that config having
-#                 been written, which is the point of it.
-#   gdb-podbench  installed as `gdb` below, for third-party callers.
-COPY --chmod=0755 image/bin/ /usr/local/bin/
-
-# `gdb` on PATH is the wrapper, and /usr/local/bin comes first. Every tool that
-# shells out to `gdb --pid <n>` in a seat is broken twice without it — no
-# sysroot, so it reads this container's libraries for another container's
-# process, and a cwd cpptools may have deleted. debugpy's injection is the
-# instance that was caught; the bug belongs to the seat, not to debugpy, so the
-# fix goes where every caller gets it. `podbench dbg` and `podbench debug-config`
-# are unaffected: they set the sysroot themselves and never pass --pid.
-RUN ln -s gdb-podbench /usr/local/bin/gdb
+# Make the CLI available when a shell does not inherit the image's PATH.
+RUN ln -s /app/.venv/bin/podbench /usr/local/bin/podbench
 
 # For interactive login shells, and still needed after SetEnv: Debian's
 # /etc/profile assigns PATH outright rather than appending, so a login shell

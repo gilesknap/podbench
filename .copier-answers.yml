@@ -6,9 +6,9 @@ author_name: Giles Knap
 description: debugging container for kubernetes pods
 distribution_name: podbench
 docker: true
-docs_type: sphinx
+docs_type: README
 git_platform: github.com
-github_org: gilesknap
+github_org: epics-containers
 package_name: podbench
 pypi: true
 repo_name: podbench
