@@ -44,9 +44,8 @@ repos:
       - id: gitleaks
 
   - repo: https://github.com/losisin/helm-values-schema-json
-    rev: v2.3.1
+    rev: v2.5.0
     hooks:
       - id: helm-schema
-        args:
-          - --config
-          - Charts/podbench-hotfix-claim/.schema.config.yaml
+        args: [--config, Charts/podbench-hotfix-claim/.schema.config.yaml]
+        files: ^Charts/podbench-hotfix-claim/(values\.yaml|\.schema\.config\.yaml|values\.schema\.json)$

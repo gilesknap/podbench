@@ -12,6 +12,7 @@ jobs:
     uses: ./.github/workflows/_tox.yml
     with:
       tox: pre-commit,type-checking
+      helm: true
 
   test:
     strategy:
