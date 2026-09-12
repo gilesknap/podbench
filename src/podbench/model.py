@@ -9,7 +9,7 @@ from typing import Any, cast
 
 from . import __version__
 
-IMAGE_REPOSITORY = "ghcr.io/gilesknap/podbench"
+IMAGE_REPOSITORY = "ghcr.io/epics-containers/podbench"
 FLOATING_TAG = "prototype-attach-hotfix"
 IMAGE_ENV = "PODBENCH_IMAGE"
 HOTFIX_CLAIM_VOLUME = "podbench-app"

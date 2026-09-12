@@ -12,7 +12,7 @@ Attach prints an SSH command carried by `kubectl exec` (no pod network), the
 `~/.ssh/config` Include line, and a raw exec fallback. Images pull by default.
 Inside a seat, `podbench debug` shows the process tree and attaches GDB to the
 selected process using its container filesystem.
-Development builds use `ghcr.io/gilesknap/podbench:prototype-attach-hotfix`;
+Development builds use `ghcr.io/epics-containers/podbench:prototype-attach-hotfix`;
 override that with `--image` or `PODBENCH_IMAGE`.
 Run `podbench doctor` to check local and cluster prerequisites; `--fix` only
 creates the SSH config directory and installs that Include safely.
