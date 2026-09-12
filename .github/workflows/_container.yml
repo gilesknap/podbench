@@ -39,9 +39,13 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=ref,event=tag
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            # PROTOTYPE: remove with the branch trigger in ci.yml once beta tags
+            # are again the way branch images are published.
+            type=raw,value=prototype-attach-hotfix,enable=${{ github.ref == 'refs/heads/prototype/attach-hotfix' }}
       - name: Push cached image to container registry
-        if: inputs.publish && github.ref_type == 'tag'
+        # PROTOTYPE: remove the branch clause when the temporary image retires.
+        if: inputs.publish && (github.ref_type == 'tag' || github.ref == 'refs/heads/prototype/attach-hotfix')
         uses: docker/build-push-action@v7
         env:
           DOCKER_BUILD_RECORD_UPLOAD: false
