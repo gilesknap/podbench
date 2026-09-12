@@ -44,6 +44,11 @@ jobs:
             helm package -d charts --version "$VERSION" \
               --app-version "$VERSION" "${chart%/}"
           done
+      - name: Upload Helm chart values schemas
+        uses: actions/upload-artifact@v7
+        with:
+          name: helm-chart-schemas
+          path: schemas/*
       - name: Log in to GHCR
         if: inputs.publish && github.ref_type == 'tag'
         uses: docker/login-action@v4
