@@ -21,6 +21,7 @@ class LauncherError(RuntimeError):
 class SeatInfo:
     name: str
     target: str | None
+    image: str
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,11 @@ def running_seat(pod: Mapping[str, Any]) -> SeatInfo | None:
         return None
     seat = seats[-1]
     target = seat.get("targetContainerName")
-    return SeatInfo(str(seat["name"]), target if isinstance(target, str) else None)
+    return SeatInfo(
+        str(seat["name"]),
+        target if isinstance(target, str) else None,
+        str(seat.get("image", "")),
+    )
 
 
 def _next_seat_name(pod: Mapping[str, Any]) -> str:
@@ -231,7 +236,12 @@ def attach(
             "the target runs as root; "
             "this capless degraded seat may not be able to attach"
         )
-    if existing is not None and existing.target == target and not force_new:
+    if (
+        existing is not None
+        and existing.target == target
+        and existing.image == image
+        and not force_new
+    ):
         return Session(
             SeatRef(PodRef(kubectl.namespace, pod_name), existing.name),
             target,

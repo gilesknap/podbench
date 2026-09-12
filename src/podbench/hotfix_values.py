@@ -57,7 +57,10 @@ def _liveness(container: Mapping[str, Any]) -> tuple[list[str], dict[str, Any]] 
         return None
     command = as_dict(probe.get("exec")).get("command")
     if not isinstance(command, list) or not command:
-        raise HotfixError("hotfix can only preserve an exec livenessProbe")
+        # HTTP, TCP, and gRPC probes cannot see the hold file. Leave them
+        # unchanged rather than refusing the workload; the normal Kubernetes
+        # failure threshold remains the bound on how long a restart may take.
+        return None
     timings = {key: value for key, value in probe.items() if key != "exec"}
     return [str(word) for word in command], timings
 
